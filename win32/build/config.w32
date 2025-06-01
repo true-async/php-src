@@ -428,4 +428,5 @@ ARG_ENABLE("experimental-async-api", "Enable experimental async API support", "n
 if (PHP_EXPERIMENTAL_ASYNC_API == "yes") {
     AC_DEFINE('PHP_ASYNC_API', 1, 'Enable experimental async API support');
     ADD_SOURCES("Zend", "zend_async_API.c");
+    ADD_SOURCES("main", "network_async.c");
 }

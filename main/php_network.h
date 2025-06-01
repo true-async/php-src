@@ -31,6 +31,7 @@
 #endif
 
 #ifdef PHP_ASYNC_API
+#include <Zend/zend_async_API.h>
 #include <network_async.h>
 #endif
 
@@ -141,6 +142,7 @@ typedef struct _php_pollfd {
 	short revents;
 } php_pollfd;
 
+ZEND_API extern int php_poll2_async(php_pollfd *ufds, unsigned int nfds, const int timeout);
 PHPAPI int php_poll2(php_pollfd *ufds, unsigned int nfds, int timeout);
 
 #ifndef POLLIN
@@ -165,7 +167,7 @@ ZEND_API extern int php_poll2_async(php_pollfd *ufds, unsigned int nfds, const i
 
 static zend_always_inline int _php_poll2_async(php_pollfd *ufds, unsigned int nfds, int timeout)
 {
-	if(UNEXPECTED(IN_ASYNC_CONTEXT)) {
+	if(UNEXPECTED(ZEND_ASYNC_IS_ACTIVE)) {
 		return php_poll2_async(ufds, nfds, timeout);
 	} else {
 		return poll(ufds, nfds, timeout);
