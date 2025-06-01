@@ -1800,6 +1800,8 @@ PHP_ADD_SOURCES([Zend], m4_normalize([
 if test "$PHP_EXPERIMENTAL_ASYNC_API" = "yes"; then
   PHP_ADD_SOURCES([Zend], m4_normalize([zend_async_API.c]),
     [-DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 $fiber_asm_cflag])
+  PHP_ADD_SOURCES([main], m4_normalize([network_async.c]),
+    [-DZEND_ENABLE_STATIC_TSRMLS_CACHE=1])
 fi
 
 PHP_ADD_MAKEFILE_FRAGMENT([$abs_srcdir/scripts/Makefile.frag],
