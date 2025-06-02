@@ -16,6 +16,8 @@
 #ifndef NETWORK_ASYNC_H
 #define NETWORK_ASYNC_H
 
+#include "php_network.h"
 
+void network_async_set_socket_blocking(php_socket_t socket, bool blocking);
 
 #endif //NETWORK_ASYNC_H

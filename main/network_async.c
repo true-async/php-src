@@ -13,10 +13,58 @@
   | Author: Edmond                                                       |
   +----------------------------------------------------------------------+
 */
-#include "php_network.h"
+#include "network_async.h"
 #include <Zend/zend_async_API.h>
 #include <Zend/zend_exceptions.h>
 
+#ifdef PHP_WIN32
+#include <winsock2.h>
+#else
+#include <fcntl.h>
+#include <errno.h>
+#include <string.h>
+#endif
+
+/**
+ * Sets a socket to blocking (true) or non-blocking (false) mode.
+ *
+ * @param socket
+ * @param blocking
+ */
+void network_async_set_socket_blocking(php_socket_t socket, bool blocking)
+{
+#ifdef PHP_WIN32
+	u_long mode = blocking ? 0 : 1;
+
+	if (UNEXPECTED(ioctlsocket(socket, FIONBIO, &mode) != 0)) {
+		int err = WSAGetLastError();
+		zend_async_throw(
+			ZEND_ASYNC_EXCEPTION_DEFAULT,
+			"ioctlsocket(FIONBIO) failed (WSA error %d)", err
+		);
+	}
+#else
+	int flags = fcntl(socket, F_GETFL, 0);
+
+	if (UNEXPECTED(flags == -1)) {
+		zend_async_throw(
+			ZEND_ASYNC_EXCEPTION_DEFAULT,
+			"fcntl(F_GETFL) failed: %s", strerror(errno)
+		);
+
+		return;
+	}
+
+	int new_flags = blocking ? (flags & ~O_NONBLOCK) : (flags | O_NONBLOCK);
+
+	if (UNEXPECTED(fcntl(socket, F_SETFL, new_flags) == -1)) {
+		zend_async_throw(
+			ZEND_ASYNC_EXCEPTION_DEFAULT,
+			"fcntl(F_SETFL) failed: %s", strerror(errno)
+		);
+	}
+#endif
+}
 ///////////////////////////////////////////////////////////////
 /// Poll2 Emulation for Async Context
 ///////////////////////////////////////////////////////////////
@@ -144,10 +192,11 @@ ZEND_API int php_poll2_async(php_pollfd *ufds, unsigned int nfds, const int time
 			goto cleanup;
 		}
 
-		poll_callback_t * callback = emalloc(sizeof(poll_callback_t));
+		poll_callback_t * callback = ecalloc(1, sizeof(poll_callback_t));
 		callback->callback.coroutine = coroutine;
 		callback->callback.base.ref_count = 1;
 		callback->callback.base.callback = poll_callback_resolve;
+		callback->ufd = &ufds[i];
 
 		// Register event with waker using simplified callback pattern
 		zend_async_resume_when(

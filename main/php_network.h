@@ -32,7 +32,6 @@
 
 #ifdef PHP_ASYNC_API
 #include <Zend/zend_async_API.h>
-#include <network_async.h>
 #endif
 
 #ifdef PHP_WIN32
