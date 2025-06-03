@@ -28,7 +28,21 @@
 #endif
 
 #ifndef PHP_WIN32
+#ifdef PHP_ASYNC_API
+#include <network_async.h>
+zend_always_inline int _php_select(php_socket_t max_fd, fd_set *rfds, fd_set *wfds, fd_set *efds, struct timeval *tv)
+{
+	if(IN_ASYNC_CONTEXT)
+	{
+		return php_select_async(m, r, w, e, t);
+	} else {
+		return select(m, r, w, e, t);
+	}
+}
+#define php_select(m, r, w, e, t) _php_select(m, r, w, e, t)
+#else
 #define php_select(m, r, w, e, t)	select(m, r, w, e, t)
+#endif
 typedef unsigned long long php_timeout_ull;
 #else
 #include "win32/select.h"
