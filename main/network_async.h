@@ -18,6 +18,11 @@
 
 #include "php_network.h"
 
+BEGIN_EXTERN_C()
+
 void network_async_set_socket_blocking(php_socket_t socket, bool blocking);
+ZEND_API int php_select_async(php_socket_t max_fd, fd_set *rfds, fd_set *wfds, fd_set *efds, struct timeval *tv);
+
+END_EXTERN_C()
 
 #endif //NETWORK_ASYNC_H

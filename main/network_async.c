@@ -148,7 +148,9 @@ static void poll_callback_resolve(
 		poll_callback->ufd->revents = async_events_to_poll2(poll_event->triggered_events);
 
 		if (poll_callback->ufd->revents != 0) {
-			// inc coroutine->waker->result
+			// Increment the total count of ready descriptors in waker result.
+			// We use the waker's result zval to accumulate the count across
+			// all callbacks, since multiple file descriptors may trigger simultaneously.
 			if (Z_TYPE(coroutine->waker->result) == IS_UNDEF) {
 				ZVAL_LONG(&coroutine->waker->result, 1);
 			} else {
@@ -165,6 +167,39 @@ static void poll_callback_resolve(
 		goto error; \
 	}
 
+/**
+ * Asynchronous poll() implementation for coroutine contexts.
+ *
+ * This function provides an async-compatible version of the standard poll()
+ * system call, allowing coroutines to wait for I/O events on multiple file
+ * descriptors without blocking the entire thread.
+ *
+ * @param ufds      Array of pollfd structures specifying file descriptors
+ *                  and events to monitor. The revents field of each structure
+ *                  is modified to indicate which events occurred.
+ * @param nfds      Number of elements in the ufds array.
+ * @param timeout   Timeout in milliseconds. Use -1 for infinite timeout,
+ *                  0 for immediate return (non-blocking), or positive value
+ *                  for maximum wait time.
+ *
+ * @return          On success, returns the number of file descriptors that
+ *                  have events available. Returns 0 if the timeout expired
+ *                  with no events. Returns -1 on error, with errno set:
+ *                  - EINVAL: Not called from async context
+ *                  - ENOMEM: Memory allocation failure
+ *                  - EINTR: Operation interrupted
+ *                  - ECANCELED: Operation was cancelled
+ *                  - ETIMEDOUT: Operation timed out
+ *
+ * @note            This function can only be called from within an async
+ *                  coroutine context. Calling from regular PHP code will
+ *                  result in EINVAL error.
+ * @note            The revents field of each pollfd structure is updated
+ *                  to reflect the events that occurred, following standard
+ *                  poll() semantics.
+ *
+ * @see             poll(2), php_select_async()
+ */
 ZEND_API int php_poll2_async(php_pollfd *ufds, unsigned int nfds, const int timeout)
 {
 	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
@@ -176,6 +211,8 @@ ZEND_API int php_poll2_async(php_pollfd *ufds, unsigned int nfds, const int time
 
 	int result = 0;
 
+	// Initialize waker with timeout. The waker will manage the coroutine
+	// suspension and resumption, either on events or timeout.
 	zend_async_waker_new_with_timeout(coroutine, (zend_ulong)timeout, NULL);
 	IF_EXCEPTION_GOTO_ERROR;
 
@@ -192,13 +229,18 @@ ZEND_API int php_poll2_async(php_pollfd *ufds, unsigned int nfds, const int time
 			goto cleanup;
 		}
 
+		// Create callback structure that will be invoked when the event triggers.
+		// Each callback holds a reference to its corresponding pollfd structure
+		// so it can update the revents field when the event occurs.
 		poll_callback_t * callback = ecalloc(1, sizeof(poll_callback_t));
 		callback->callback.coroutine = coroutine;
 		callback->callback.base.ref_count = 1;
 		callback->callback.base.callback = poll_callback_resolve;
 		callback->ufd = &ufds[i];
 
-		// Register event with waker using simplified callback pattern
+		// Register the event with the async system. When the event triggers,
+		// poll_callback_resolve will be called to update the pollfd and
+		// increment the ready count.
 		zend_async_resume_when(
 			coroutine,
 			&poll_event->base,
@@ -210,9 +252,12 @@ ZEND_API int php_poll2_async(php_pollfd *ufds, unsigned int nfds, const int time
 		IF_EXCEPTION_GOTO_ERROR;
 	}
 
-	// Suspend coroutine and wait for events
+	// Initialize the result counter to 0 before suspending.
+	// Callbacks will increment this as events trigger.
 	ZVAL_LONG(&coroutine->waker->result, 0);
 
+	// Suspend the coroutine until events occur or timeout expires.
+	// The async system will resume us when something happens.
 	ZEND_ASYNC_SUSPEND();
 
 	IF_EXCEPTION_GOTO_ERROR;
@@ -251,4 +296,246 @@ cleanup:
 
 ///////////////////////////////////////////////////////////////
 /// Poll2 Emulation for Async Context END
+///////////////////////////////////////////////////////////////
+
+///////////////////////////////////////////////////////////////
+/// Select Emulation for Async Context
+///////////////////////////////////////////////////////////////
+
+typedef struct
+{
+	zend_coroutine_event_callback_t callback;
+	php_socket_t fd;
+	fd_set *rfds;
+	fd_set *wfds;
+	fd_set *efds;
+} select_callback_t;
+
+static void select_callback_resolve(
+	zend_async_event_t *event, zend_async_event_callback_t *callback, void * result, zend_object *exception
+)
+{
+	zend_coroutine_t * coroutine = ((zend_coroutine_event_callback_t *) callback)->coroutine;
+
+	if (UNEXPECTED(exception != NULL)) {
+		ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(event);
+		ZEND_ASYNC_RESUME_WITH_ERROR(coroutine, exception, false);
+		return;
+	}
+
+	if (EXPECTED(coroutine->waker != NULL)) {
+		zend_async_poll_event_t * poll_event = (zend_async_poll_event_t *) event;
+		select_callback_t * select_callback = (select_callback_t *) callback;
+
+		zend_ulong triggered_events = poll_event->triggered_events;
+
+		if (triggered_events != 0) {
+			// Increment the total count of ready descriptors in waker result.
+			// We use the waker's result zval to accumulate the count across
+			// all callbacks, since multiple file descriptors may trigger simultaneously.
+			if (Z_TYPE(coroutine->waker->result) == IS_UNDEF) {
+				ZVAL_LONG(&coroutine->waker->result, 1);
+			} else {
+				Z_LVAL(coroutine->waker->result)++;
+			}
+
+			// Set appropriate fd_set bits
+			if ((triggered_events & ASYNC_READABLE) && select_callback->rfds) {
+				FD_SET(select_callback->fd, select_callback->rfds);
+			}
+
+			if ((triggered_events & ASYNC_WRITABLE) && select_callback->wfds) {
+				FD_SET(select_callback->fd, select_callback->wfds);
+			}
+
+			if ((triggered_events & (ASYNC_DISCONNECT | ASYNC_PRIORITIZED)) && select_callback->efds) {
+				FD_SET(select_callback->fd, select_callback->efds);
+			}
+		}
+	}
+
+	ZEND_ASYNC_RESUME_WITH_ERROR(coroutine, exception, false);
+}
+
+/**
+ * Asynchronous select() implementation for coroutine contexts.
+ *
+ * This function provides an async-compatible version of the standard select()
+ * system call, allowing coroutines to wait for I/O events on multiple file
+ * descriptors without blocking the entire thread.
+ *
+ * @param max_fd    The highest-numbered file descriptor in any of the sets,
+ *                  plus 1. Must not exceed INT_MAX.
+ * @param rfds      Pointer to fd_set for read events, or NULL if not monitoring
+ *                  for read events. Modified to indicate which descriptors are
+ *                  ready for reading.
+ * @param wfds      Pointer to fd_set for write events, or NULL if not monitoring
+ *                  for write events. Modified to indicate which descriptors are
+ *                  ready for writing.
+ * @param efds      Pointer to fd_set for exception events, or NULL if not
+ *                  monitoring for exceptions. Modified to indicate which
+ *                  descriptors have exceptions.
+ * @param tv        Timeout specification, or NULL for infinite timeout.
+ *                  Specifies maximum time to wait for events.
+ *
+ * @return          On success, returns the number of file descriptors that are
+ *                  ready for I/O. Returns 0 if the timeout expired with no
+ *                  events. Returns -1 on error, with errno set appropriately:
+ *                  - EINVAL: Not called from async context or invalid max_fd
+ *                  - ENOMEM: Memory allocation failure
+ *                  - EINTR: Operation interrupted
+ *                  - ECANCELED: Operation was cancelled
+ *                  - ETIMEDOUT: Operation timed out
+ *
+ * @note            This function can only be called from within an async
+ *                  coroutine context. Calling from regular PHP code will
+ *                  result in EINVAL error.
+ * @note            On Windows, only socket file descriptors are supported.
+ *                  On Unix-like systems, both sockets and regular file
+ *                  descriptors are supported.
+ * @note            The function modifies the input fd_set structures to
+ *                  indicate which descriptors triggered events, similar to
+ *                  the standard select() behavior.
+ *
+ * @see             select(2), php_poll2_async()
+ */
+ZEND_API int php_select_async(php_socket_t max_fd, fd_set *rfds, fd_set *wfds, fd_set *efds, struct timeval *tv)
+{
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+
+	if (coroutine == NULL) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	/* As max_fd is unsigned, non socket might overflow. */
+	if (max_fd > (php_socket_t)INT_MAX) {
+		return -1;
+	}
+
+	int result = 0;
+	fd_set aread, awrite, aexcept;
+
+	// Clear result fd_sets
+	FD_ZERO(&aread);
+	FD_ZERO(&awrite);
+	FD_ZERO(&aexcept);
+
+	// Calculate timeout in milliseconds
+	zend_ulong timeout = 0;
+
+	if (tv != NULL) {
+		timeout = (zend_ulong)(tv->tv_sec * 1000 + tv->tv_usec / 1000);
+	}
+
+	zend_async_waker_new_with_timeout(coroutine, timeout, NULL);
+	IF_EXCEPTION_GOTO_ERROR;
+
+#define SAFE_FD_ISSET(fd, set)	(set != NULL && FD_ISSET(fd, set))
+
+	// Create poll events for each file descriptor
+	for (int i = 0; (uint32_t)i < max_fd; i++) {
+		zend_ulong events = 0;
+
+		if (SAFE_FD_ISSET(i, rfds)) {
+			events |= ASYNC_READABLE;
+		}
+
+		if (SAFE_FD_ISSET(i, wfds)) {
+			events |= ASYNC_WRITABLE;
+		}
+
+		if (SAFE_FD_ISSET(i, efds)) {
+			events |= ASYNC_PRIORITIZED;
+		}
+
+		if (events == 0) {
+			continue;
+		}
+
+#ifdef PHP_WIN32
+		zend_async_poll_event_t * poll_event = ZEND_ASYNC_NEW_SOCKET_EVENT(i, events);
+#else
+		zend_async_poll_event_t * poll_event = ZEND_ASYNC_NEW_POLL_EVENT(i, NULL, events);
+#endif
+
+		if (UNEXPECTED(EG(exception) != NULL)) {
+			errno = ENOMEM;
+			result = -1;
+			goto cleanup;
+		}
+
+		select_callback_t * callback = ecalloc(1, sizeof(select_callback_t));
+		callback->callback.coroutine = coroutine;
+		callback->callback.base.ref_count = 1;
+		callback->callback.base.callback = select_callback_resolve;
+		callback->fd = i;
+		callback->rfds = &aread;
+		callback->wfds = &awrite;
+		callback->efds = &aexcept;
+
+		// Register event with waker using simplified callback pattern
+		zend_async_resume_when(
+			coroutine,
+			&poll_event->base,
+			true,
+			NULL,
+			&callback->callback
+		);
+
+		IF_EXCEPTION_GOTO_ERROR;
+	}
+
+	// Initialize the result counter to 0 before suspending.
+	// Callbacks will increment this as events trigger.
+	ZVAL_LONG(&coroutine->waker->result, 0);
+
+	// Suspend the coroutine until events occur or timeout expires.
+	// The async system will resume us when something happens.
+	ZEND_ASYNC_SUSPEND();
+
+	IF_EXCEPTION_GOTO_ERROR;
+
+	zend_async_waker_t *waker = coroutine->waker;
+	ZEND_ASSERT(waker != NULL && "Waker must not be NULL in async context");
+
+	// Get the final count of ready descriptors from the waker result
+	result = Z_LVAL(coroutine->waker->result);
+
+	// Copy the populated temporary fd_sets back to the original sets.
+	// This preserves the select() API semantics where the input sets
+	// are modified to show which descriptors are ready.
+	if (rfds) *rfds = aread;
+	if (wfds) *wfds = awrite;
+	if (efds) *efds = aexcept;
+
+	goto cleanup;
+
+error:
+	errno = EINTR;
+	result = -1;
+
+	if (EG(exception)) {
+		zend_object *error = EG(exception);
+		zend_clear_exception();
+
+		zend_class_entry *cancellation_ce = ZEND_ASYNC_GET_EXCEPTION_CE(ZEND_ASYNC_EXCEPTION_CANCELLATION);
+		zend_class_entry *timeout_ce = ZEND_ASYNC_GET_EXCEPTION_CE(ZEND_ASYNC_EXCEPTION_TIMEOUT);
+
+		if (error->ce == cancellation_ce) {
+			errno = ECANCELED;
+		} else if (error->ce == timeout_ce) {
+			errno = ETIMEDOUT;
+		} else {
+			zend_exception_error(error, E_WARNING);
+		}
+	}
+
+cleanup:
+	zend_async_waker_destroy(coroutine);
+	return result;
+}
+
+///////////////////////////////////////////////////////////////
+/// Select Emulation for Async Context END
 ///////////////////////////////////////////////////////////////
