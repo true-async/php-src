@@ -32,7 +32,7 @@
 #include <network_async.h>
 zend_always_inline int _php_select(php_socket_t max_fd, fd_set *rfds, fd_set *wfds, fd_set *efds, struct timeval *tv)
 {
-	if(ZEND_ASYNC_IS_ACTIVE {
+	if(ZEND_ASYNC_IS_ACTIVE) {
 		return php_select_async(m, r, w, e, t);
 	} else {
 		return select(m, r, w, e, t);
