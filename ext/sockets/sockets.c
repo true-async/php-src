@@ -82,6 +82,11 @@
 #include "sendrecvmsg.h"
 #include "sockets_arginfo.h"
 
+#ifdef PHP_ASYNC_API
+#include "network_async.h"
+#include "zend_exceptions.h"
+#endif
+
 ZEND_DECLARE_MODULE_GLOBALS(sockets)
 
 #define SUN_LEN_NO_UB(su) (sizeof(*(su)) - sizeof((su)->sun_path) + strlen((su)->sun_path))
@@ -2792,9 +2797,27 @@ PHP_FUNCTION(socket_addrinfo_lookup)
 		} ZEND_HASH_FOREACH_END();
 	}
 
+#ifdef PHP_ASYNC_API
+	bool is_async = ZEND_ASYNC_IS_ACTIVE;
+
+	if (is_async) {
+		zend_string * z_service = service ? zend_string_init(service, service_len, 0) : NULL;
+		php_network_getaddrinfo_async(hostname, z_service, &hints, &result);
+		zend_string_release(z_service);
+
+		if (EG(exception)) {
+			zend_clear_exception();
+			RETURN_FALSE;
+		}
+
+	} else if (getaddrinfo(ZSTR_VAL(hostname), service, &hints, &result) != 0) {
+		RETURN_FALSE;
+	}
+#else
 	if (getaddrinfo(ZSTR_VAL(hostname), service, &hints, &result) != 0) {
 		RETURN_FALSE;
 	}
+#endif
 
 	array_init(return_value);
 	zend_hash_real_init_packed(Z_ARRVAL_P(return_value));
@@ -2819,7 +2842,15 @@ PHP_FUNCTION(socket_addrinfo_lookup)
 		}
 	}
 
+#ifdef PHP_ASYNC_API
+	if (is_async) {
+		php_network_freeaddrinfo_async(result);
+	} else {
+		freeaddrinfo(result);
+	}
+#else
 	freeaddrinfo(result);
+#endif
 }
 /* }}} */
 

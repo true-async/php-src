@@ -21,7 +21,14 @@
 BEGIN_EXTERN_C()
 
 void network_async_set_socket_blocking(php_socket_t socket, bool blocking);
+ZEND_API int php_poll2_async(php_pollfd *ufds, unsigned int nfds, int timeout);
 ZEND_API int php_select_async(php_socket_t max_fd, fd_set *rfds, fd_set *wfds, fd_set *efds, struct timeval *tv);
+
+ZEND_API int php_network_getaddrinfo_async(const char *node, const char *service, const struct addrinfo *hints, struct addrinfo **res);
+ZEND_API struct hostent* php_network_gethostbyname_async(const char *name);
+ZEND_API zend_string* php_network_gethostbyaddr_async(const char *ip);
+ZEND_API void php_network_freeaddrinfo_async(struct addrinfo *ai);
+ZEND_API int php_network_getaddresses_async(const char *host, int socktype, struct sockaddr ***sal, zend_string **error_string);
 
 END_EXTERN_C()
 

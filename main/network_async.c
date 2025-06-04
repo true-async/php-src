@@ -19,10 +19,15 @@
 
 #ifdef PHP_WIN32
 #include <winsock2.h>
+#include <ws2tcpip.h>
 #else
 #include <fcntl.h>
 #include <errno.h>
 #include <string.h>
+#include <netdb.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #endif
 
 /**
@@ -167,6 +172,31 @@ static void poll_callback_resolve(
 		goto error; \
 	}
 
+static zend_always_inline void handle_exception_and_errno(void)
+{
+	if (EG(exception)) {
+		zend_object *error = EG(exception);
+		GC_ADDREF(error);
+		zend_clear_exception();
+
+		zend_class_entry *cancellation_ce = ZEND_ASYNC_GET_EXCEPTION_CE(ZEND_ASYNC_EXCEPTION_CANCELLATION);
+		zend_class_entry *timeout_ce = ZEND_ASYNC_GET_EXCEPTION_CE(ZEND_ASYNC_EXCEPTION_TIMEOUT);
+
+		if (error->ce == cancellation_ce) {
+			errno = ECANCELED;
+		} else if (error->ce == timeout_ce) {
+			errno = ETIMEDOUT;
+		} else {
+			errno = EINTR;
+			zend_exception_error(error, E_WARNING);
+		}
+		
+		OBJ_RELEASE(error);
+	} else {
+		errno = EINTR;
+	}
+}
+
 /**
  * Asynchronous poll() implementation for coroutine contexts.
  *
@@ -275,26 +305,8 @@ ZEND_API int php_poll2_async(php_pollfd *ufds, unsigned int nfds, int timeout)
 	goto cleanup;
 
 error:
-	errno = EINTR;
 	result = -1;
-
-	if (EG(exception)) {
-		zend_object *error = EG(exception);
-		GC_ADDREF(error);
-		zend_clear_exception();
-
-		zend_class_entry *cancellation_ce = ZEND_ASYNC_GET_EXCEPTION_CE(ZEND_ASYNC_EXCEPTION_CANCELLATION);
-		zend_class_entry *timeout_ce = ZEND_ASYNC_GET_EXCEPTION_CE(ZEND_ASYNC_EXCEPTION_TIMEOUT);
-
-		if (error->ce == cancellation_ce) {
-			errno = ECANCELED;
-		} else if (error->ce == timeout_ce) {
-			errno = ETIMEDOUT;
-		} else {
-			zend_exception_error(error, E_WARNING);
-			OBJ_RELEASE(error);
-		}
-	}
+	handle_exception_and_errno();
 
 cleanup:
 	zend_async_waker_destroy(coroutine);
@@ -361,7 +373,7 @@ static void select_callback_resolve(
 		}
 	}
 
-	ZEND_ASYNC_RESUME_WITH_ERROR(coroutine, exception, false);
+	ZEND_ASYNC_RESUME(coroutine);
 }
 
 /**
@@ -519,24 +531,8 @@ ZEND_API int php_select_async(php_socket_t max_fd, fd_set *rfds, fd_set *wfds, f
 	goto cleanup;
 
 error:
-	errno = EINTR;
 	result = -1;
-
-	if (EG(exception)) {
-		zend_object *error = EG(exception);
-		zend_clear_exception();
-
-		zend_class_entry *cancellation_ce = ZEND_ASYNC_GET_EXCEPTION_CE(ZEND_ASYNC_EXCEPTION_CANCELLATION);
-		zend_class_entry *timeout_ce = ZEND_ASYNC_GET_EXCEPTION_CE(ZEND_ASYNC_EXCEPTION_TIMEOUT);
-
-		if (error->ce == cancellation_ce) {
-			errno = ECANCELED;
-		} else if (error->ce == timeout_ce) {
-			errno = ETIMEDOUT;
-		} else {
-			zend_exception_error(error, E_WARNING);
-		}
-	}
+	handle_exception_and_errno();
 
 cleanup:
 	zend_async_waker_destroy(coroutine);
@@ -545,4 +541,325 @@ cleanup:
 
 ///////////////////////////////////////////////////////////////
 /// Select Emulation for Async Context END
+///////////////////////////////////////////////////////////////
+
+///////////////////////////////////////////////////////////////
+/// DNS API Implementation
+///////////////////////////////////////////////////////////////
+
+typedef struct {
+	zend_coroutine_event_callback_t callback;
+	struct addrinfo **result;
+	zend_string **hostname_result;
+} dns_callback_t;
+
+static void dns_callback_resolve(
+	zend_async_event_t *event, zend_async_event_callback_t *callback, void *result, zend_object *exception
+)
+{
+	zend_coroutine_t *coroutine = ((zend_coroutine_event_callback_t *) callback)->coroutine;
+
+	if (UNEXPECTED(exception != NULL)) {
+		ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(event);
+		ZEND_ASYNC_RESUME_WITH_ERROR(coroutine, exception, false);
+		return;
+	}
+
+	if (EXPECTED(coroutine->waker != NULL)) {
+		dns_callback_t *dns_callback = (dns_callback_t *) callback;
+		zend_async_dns_addrinfo_t *dns_event = (zend_async_dns_addrinfo_t *) event;
+
+		if (dns_callback->result != NULL) {
+			*(dns_callback->result) = (struct addrinfo *) result;
+		}
+
+		ZVAL_TRUE(&coroutine->waker->result);
+	}
+
+	ZEND_ASYNC_RESUME(coroutine);
+}
+
+static void dns_nameinfo_callback_resolve(
+	zend_async_event_t *event, zend_async_event_callback_t *callback, void *result, zend_object *exception
+)
+{
+	zend_coroutine_t *coroutine = ((zend_coroutine_event_callback_t *) callback)->coroutine;
+
+	if (UNEXPECTED(exception != NULL)) {
+		ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(event);
+		ZEND_ASYNC_RESUME_WITH_ERROR(coroutine, exception, false);
+		return;
+	}
+
+	if (EXPECTED(coroutine->waker != NULL)) {
+		dns_callback_t *dns_callback = (dns_callback_t *) callback;
+		zend_async_dns_nameinfo_t *dns_event = (zend_async_dns_nameinfo_t *) event;
+
+		if (dns_callback->hostname_result != NULL) {
+			*(dns_callback->hostname_result) = zend_string_init(dns_event->hostname, strlen(dns_event->hostname), 0);
+		}
+
+		ZVAL_TRUE(&coroutine->waker->result);
+	}
+
+	ZEND_ASYNC_RESUME(coroutine);
+}
+
+/**
+ * Asynchronous getaddrinfo() implementation for coroutine contexts.
+ */
+ZEND_API int php_network_getaddrinfo_async(const char *node, const char *service, const struct addrinfo *hints, struct addrinfo **res)
+{
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+
+	if (coroutine == NULL) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	if (node == NULL && service == NULL) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	zend_async_waker_new(coroutine);
+	IF_EXCEPTION_GOTO_ERROR;
+
+	zend_async_dns_addrinfo_t *dns_event = ZEND_ASYNC_GETADDRINFO(node, service, hints, 0);
+
+	if (UNEXPECTED(EG(exception) != NULL || dns_event == NULL)) {
+		errno = ENOMEM;
+		goto error;
+	}
+
+	dns_callback_t *callback = ecalloc(1, sizeof(dns_callback_t));
+	callback->callback.coroutine = coroutine;
+	callback->callback.base.ref_count = 1;
+	callback->callback.base.callback = dns_callback_resolve;
+	callback->result = res;
+
+	zend_async_resume_when(
+		coroutine,
+		&dns_event->base,
+		true,
+		NULL,
+		&callback->callback
+	);
+
+	IF_EXCEPTION_GOTO_ERROR;
+
+	ZVAL_FALSE(&coroutine->waker->result);
+
+	ZEND_ASYNC_SUSPEND();
+
+	IF_EXCEPTION_GOTO_ERROR;
+
+	if (Z_TYPE(coroutine->waker->result) == IS_TRUE) {
+		zend_async_waker_destroy(coroutine);
+		return 0;
+	}
+
+error:
+	handle_exception_and_errno();
+	zend_async_waker_destroy(coroutine);
+	return -1;
+}
+
+/**
+ * Asynchronous gethostbyname() implementation for coroutine contexts.
+ */
+ZEND_API struct hostent* php_network_gethostbyname_async(const char *name)
+{
+	if (name == NULL) {
+		return NULL;
+	}
+
+	struct addrinfo hints = {0};
+	hints.ai_family = AF_INET;
+	hints.ai_socktype = SOCK_STREAM;
+
+	struct addrinfo *result = NULL;
+	
+	if (php_network_getaddrinfo_async(name, NULL, &hints, &result) != 0) {
+		return NULL;
+	}
+
+	if (result == NULL || result->ai_family != AF_INET) {
+		if (result) {
+			php_network_freeaddrinfo_async(result);
+		}
+		return NULL;
+	}
+
+	struct hostent *hostent = emalloc(sizeof(struct hostent));
+	memset(hostent, 0, sizeof(struct hostent));
+
+	char **addr_list = emalloc(2 * sizeof(char *));
+	addr_list[0] = emalloc(sizeof(struct in_addr));
+	addr_list[1] = NULL;
+
+	struct sockaddr_in *addr_in = (struct sockaddr_in *)result->ai_addr;
+	memcpy(addr_list[0], &addr_in->sin_addr, sizeof(struct in_addr));
+
+	hostent->h_name = result->ai_canonname ? estrdup(result->ai_canonname) : estrdup(name);
+	hostent->h_aliases = NULL;
+	hostent->h_addrtype = AF_INET;
+	hostent->h_length = sizeof(struct in_addr);
+	hostent->h_addr_list = addr_list;
+
+	php_network_freeaddrinfo_async(result);
+
+	return hostent;
+}
+
+/**
+ * Asynchronous gethostbyaddr() implementation for coroutine contexts.
+ */
+ZEND_API zend_string* php_network_gethostbyaddr_async(const char *ip)
+{
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+
+	if (coroutine == NULL || ip == NULL) {
+		return NULL;
+	}
+
+	struct sockaddr_in addr;
+	memset(&addr, 0, sizeof(addr));
+	addr.sin_family = AF_INET;
+
+	if (inet_pton(AF_INET, ip, &addr.sin_addr) != 1) {
+		return NULL;
+	}
+
+	zend_async_waker_new(coroutine);
+	IF_EXCEPTION_GOTO_ERROR;
+
+	zend_async_dns_nameinfo_t *dns_event = ZEND_ASYNC_GETNAMEINFO((struct sockaddr*)&addr, 0);
+
+	if (UNEXPECTED(EG(exception) != NULL || dns_event == NULL)) {
+		goto error;
+	}
+
+	zend_string *hostname_result = NULL;
+	dns_callback_t *callback = ecalloc(1, sizeof(dns_callback_t));
+	callback->callback.coroutine = coroutine;
+	callback->callback.base.ref_count = 1;
+	callback->callback.base.callback = dns_nameinfo_callback_resolve;
+	callback->hostname_result = &hostname_result;
+
+	zend_async_resume_when(
+		coroutine,
+		&dns_event->base,
+		true,
+		NULL,
+		&callback->callback
+	);
+
+	IF_EXCEPTION_GOTO_ERROR;
+
+	ZVAL_FALSE(&coroutine->waker->result);
+
+	ZEND_ASYNC_SUSPEND();
+
+	IF_EXCEPTION_GOTO_ERROR;
+
+	if (Z_TYPE(coroutine->waker->result) == IS_TRUE) {
+		zend_async_waker_destroy(coroutine);
+		return hostname_result;
+	}
+
+error:
+	if (EG(exception)) {
+		zend_object *error = EG(exception);
+		GC_ADDREF(error);
+		zend_clear_exception();
+		OBJ_RELEASE(error);
+	}
+	zend_async_waker_destroy(coroutine);
+	return NULL;
+}
+
+/**
+ * Free addrinfo structure obtained from php_getaddrinfo_async().
+ */
+ZEND_API void php_network_freeaddrinfo_async(struct addrinfo *ai)
+{
+	if (ai != NULL) {
+		freeaddrinfo(ai);
+	}
+}
+
+/**
+ * Asynchronous network address resolution implementation for coroutine contexts.
+ * 
+ * This function resolves a hostname to multiple socket addresses, similar to
+ * the standard getaddrinfo() but compatible with the async coroutine system.
+ */
+ZEND_API int php_network_getaddresses_async(const char *host, int socktype, struct sockaddr ***sal, zend_string **error_string)
+{
+	if (host == NULL) {
+		return 0;
+	}
+
+	struct addrinfo hints = {0};
+	hints.ai_family = AF_UNSPEC;
+	hints.ai_socktype = socktype;
+
+	struct addrinfo *result = NULL;
+	int ret = php_network_getaddrinfo_async(host, NULL, &hints, &result);
+
+	if (ret != 0) {
+		if (error_string) {
+			/* free error string received during previous iteration (if any) */
+			if (*error_string) {
+				zend_string_release_ex(*error_string, 0);
+			}
+
+			*error_string = strpprintf(0, "getaddrinfo for %s failed", host);
+		} else {
+			php_error_docref(NULL, E_WARNING, "getaddrinfo for %s failed", host);
+		}
+		return -1;
+	}
+
+	if (result == NULL) {
+		if (error_string) {
+			if (*error_string) {
+				zend_string_release_ex(*error_string, 0);
+			}
+			*error_string = strpprintf(0, "no addresses found for %s", host);
+		} else {
+			php_error_docref(NULL, E_WARNING, "no addresses found for %s", host);
+		}
+		return -1;
+	}
+
+	/* Count the number of addresses */
+	int n = 0;
+	struct addrinfo *sai = result;
+	while (sai != NULL) {
+		n++;
+		sai = sai->ai_next;
+	}
+
+	/* Allocate array for sockaddr pointers */
+	*sal = safe_emalloc((n + 1), sizeof(struct sockaddr *), 0);
+
+	/* Copy addresses */
+	struct sockaddr **sap = *sal;
+	sai = result;
+	while (sai != NULL) {
+		*sap = emalloc(sai->ai_addrlen);
+		memcpy(*sap, sai->ai_addr, sai->ai_addrlen);
+		sap++;
+		sai = sai->ai_next;
+	}
+	*sap = NULL;
+
+	php_network_freeaddrinfo_async(result);
+	return n;
+}
+
+///////////////////////////////////////////////////////////////
+/// DNS API Implementation END
 ///////////////////////////////////////////////////////////////
