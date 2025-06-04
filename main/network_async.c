@@ -625,7 +625,7 @@ ZEND_API int php_network_getaddrinfo_async(const char *node, const char *service
 	zend_async_waker_new(coroutine);
 	IF_EXCEPTION_GOTO_ERROR;
 
-	zend_async_dns_addrinfo_t *dns_event = ZEND_ASYNC_GETADDRINFO(node, service, hints, 0);
+	zend_async_dns_addrinfo_t *dns_event = ZEND_ASYNC_GETADDRINFO(node, service, hints);
 
 	if (UNEXPECTED(EG(exception) != NULL || dns_event == NULL)) {
 		errno = ENOMEM;
