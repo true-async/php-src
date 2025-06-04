@@ -200,7 +200,7 @@ static void poll_callback_resolve(
  *
  * @see             poll(2), php_select_async()
  */
-ZEND_API int php_poll2_async(php_pollfd *ufds, unsigned int nfds, const int timeout)
+ZEND_API int php_poll2_async(php_pollfd *ufds, unsigned int nfds, int timeout)
 {
 	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 
@@ -210,6 +210,11 @@ ZEND_API int php_poll2_async(php_pollfd *ufds, unsigned int nfds, const int time
 	}
 
 	int result = 0;
+
+	// Convert Infinite timeout (-1) to 0 for the async waker.
+	if (timeout < 0) {
+		timeout = 0;
+	}
 
 	// Initialize waker with timeout. The waker will manage the coroutine
 	// suspension and resumption, either on events or timeout.
@@ -275,6 +280,7 @@ error:
 
 	if (EG(exception)) {
 		zend_object *error = EG(exception);
+		GC_ADDREF(error);
 		zend_clear_exception();
 
 		zend_class_entry *cancellation_ce = ZEND_ASYNC_GET_EXCEPTION_CE(ZEND_ASYNC_EXCEPTION_CANCELLATION);
@@ -286,6 +292,7 @@ error:
 			errno = ETIMEDOUT;
 		} else {
 			zend_exception_error(error, E_WARNING);
+			OBJ_RELEASE(error);
 		}
 	}
 

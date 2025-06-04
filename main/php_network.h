@@ -141,7 +141,7 @@ typedef struct _php_pollfd {
 	short revents;
 } php_pollfd;
 
-ZEND_API extern int php_poll2_async(php_pollfd *ufds, unsigned int nfds, const int timeout);
+ZEND_API extern int php_poll2_async(php_pollfd *ufds, unsigned int nfds, int timeout);
 PHPAPI int php_poll2(php_pollfd *ufds, unsigned int nfds, int timeout);
 
 #ifndef POLLIN
