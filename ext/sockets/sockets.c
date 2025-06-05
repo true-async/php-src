@@ -2801,9 +2801,7 @@ PHP_FUNCTION(socket_addrinfo_lookup)
 	bool is_async = ZEND_ASYNC_IS_ACTIVE;
 
 	if (is_async) {
-		zend_string * z_service = service ? zend_string_init(service, service_len, 0) : NULL;
-		php_network_getaddrinfo_async(hostname, z_service, &hints, &result);
-		zend_string_release(z_service);
+		php_network_getaddrinfo_async(ZSTR_VAL(hostname), service, &hints, &result);
 
 		if (EG(exception)) {
 			zend_clear_exception();

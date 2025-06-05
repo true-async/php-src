@@ -570,7 +570,7 @@ static void dns_callback_resolve(
 		zend_async_dns_addrinfo_t *dns_event = (zend_async_dns_addrinfo_t *) event;
 
 		if (dns_callback->result != NULL) {
-			*(dns_callback->result) = (struct addrinfo *) dns_event->hints;
+			*(dns_callback->result) = (struct addrinfo *) dns_event->result;
 		}
 
 		ZVAL_TRUE(&coroutine->waker->result);
@@ -596,7 +596,7 @@ static void dns_nameinfo_callback_resolve(
 		zend_async_dns_nameinfo_t *dns_event = (zend_async_dns_nameinfo_t *) event;
 
 		if (dns_callback->hostname_result != NULL) {
-			*(dns_callback->hostname_result) = zend_string_init(dns_event->hostname, strlen(dns_event->hostname), 0);
+			*(dns_callback->hostname_result) = dns_event->hostname;
 		}
 
 		ZVAL_TRUE(&coroutine->waker->result);
@@ -763,6 +763,10 @@ ZEND_API zend_string* php_network_gethostbyaddr_async(const char *ip)
 
 	IF_EXCEPTION_GOTO_ERROR;
 
+	if (hostname_result != NULL) {
+		zend_string_addref(hostname_result);
+	}
+
 	if (Z_TYPE(coroutine->waker->result) == IS_TRUE) {
 		zend_async_waker_destroy(coroutine);
 		return hostname_result;
@@ -775,6 +779,7 @@ error:
 		zend_clear_exception();
 		OBJ_RELEASE(error);
 	}
+
 	zend_async_waker_destroy(coroutine);
 	return NULL;
 }
