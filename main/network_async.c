@@ -691,6 +691,13 @@ ZEND_API struct hostent* php_network_gethostbyname_async(const char *name)
 		return NULL;
 	}
 
+	//
+	// We need allocate a hostent structure and fill it with the resolved address.
+	// However, we cannot do this using malloc,
+	// since our function runs asynchronously in different coroutines,
+	// so we need storage that is bound to the coroutine.
+	//
+
 	struct hostent *hostent = emalloc(sizeof(struct hostent));
 	memset(hostent, 0, sizeof(struct hostent));
 
