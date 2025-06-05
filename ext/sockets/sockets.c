@@ -2844,7 +2844,7 @@ PHP_FUNCTION(socket_addrinfo_lookup)
 
 #ifdef PHP_ASYNC_API
 	if (is_async) {
-		php_network_freeaddrinfo_async(result);
+		ZEND_ASYNC_FREEADDRINFO(result);
 	} else {
 		freeaddrinfo(result);
 	}

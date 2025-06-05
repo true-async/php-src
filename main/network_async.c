@@ -686,7 +686,7 @@ ZEND_API struct hostent* php_network_gethostbyname_async(const char *name)
 
 	if (result == NULL || result->ai_family != AF_INET) {
 		if (result) {
-			php_network_freeaddrinfo_async(result);
+			ZEND_ASYNC_FREEADDRINFO(result);
 		}
 		return NULL;
 	}
@@ -707,7 +707,7 @@ ZEND_API struct hostent* php_network_gethostbyname_async(const char *name)
 	hostent->h_length = sizeof(struct in_addr);
 	hostent->h_addr_list = addr_list;
 
-	php_network_freeaddrinfo_async(result);
+	ZEND_ASYNC_FREEADDRINFO(result);
 
 	return hostent;
 }
@@ -780,16 +780,6 @@ error:
 }
 
 /**
- * Free addrinfo structure obtained from php_getaddrinfo_async().
- */
-ZEND_API void php_network_freeaddrinfo_async(struct addrinfo *ai)
-{
-	if (ai != NULL) {
-		freeaddrinfo(ai);
-	}
-}
-
-/**
  * Asynchronous network address resolution implementation for coroutine contexts.
  * 
  * This function resolves a hostname to multiple socket addresses, similar to
@@ -856,7 +846,7 @@ ZEND_API int php_network_getaddresses_async(const char *host, int socktype, stru
 	}
 	*sap = NULL;
 
-	php_network_freeaddrinfo_async(result);
+	ZEND_ASYNC_FREEADDRINFO(result);
 	return n;
 }
 
