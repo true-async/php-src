@@ -570,7 +570,7 @@ static void dns_callback_resolve(
 		zend_async_dns_addrinfo_t *dns_event = (zend_async_dns_addrinfo_t *) event;
 
 		if (dns_callback->result != NULL) {
-			*(dns_callback->result) = (struct addrinfo *) result;
+			*(dns_callback->result) = (struct addrinfo *) dns_event->hints;
 		}
 
 		ZVAL_TRUE(&coroutine->waker->result);
