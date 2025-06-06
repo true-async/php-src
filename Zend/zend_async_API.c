@@ -45,6 +45,8 @@ static zend_async_context_t * new_context(void)
 	return NULL;
 }
 
+/* Internal context stubs removed - using direct implementation */
+
 static zend_class_entry * get_class_ce(zend_async_class type)
 {
 	if (type == ZEND_ASYNC_EXCEPTION_DEFAULT
@@ -101,6 +103,8 @@ zend_async_queue_task_t zend_async_queue_task_fn = NULL;
 
 /* Context API */
 zend_async_new_context_t zend_async_new_context_fn = new_context;
+
+/* Internal Context API - now uses direct functions */
 
 ZEND_API bool zend_async_is_enabled(void)
 {
@@ -169,6 +173,7 @@ void zend_async_globals_dtor(void)
 void zend_async_shutdown(void)
 {
 	zend_async_globals_dtor();
+	zend_async_internal_context_api_shutdown();
 }
 
 ZEND_API int zend_async_get_api_version_number(void)
@@ -727,4 +732,164 @@ ZEND_API ZEND_COLD zend_object * zend_async_throw_timeout(const char *format, co
 
 //////////////////////////////////////////////////////////////////////
 /* Exception API end */
+//////////////////////////////////////////////////////////////////////
+
+//////////////////////////////////////////////////////////////////////
+/// ### Internal Coroutine Context
+///
+/// The internal coroutine context is intended for use in PHP-extensions.
+/// The flow is as follows:
+///
+/// 1. The extension registers a unique numeric index by `zend_async_internal_context_key_alloc`,
+/// described by a static C string.
+/// 2. The **TrueAsync API** verifies the uniqueness of the mapping between the index and the C string address.
+/// 3. The extension uses `zend_async_internal_context_*` functions to get, set, or unset keys.
+/// 4. Keys are automatically destroyed when the coroutine completes.
+//////////////////////////////////////////////////////////////////////
+
+// Global variables for internal context key management
+static HashTable *zend_async_context_key_names = NULL;
+
+#ifdef ZTS
+static MUTEX_T zend_async_context_mutex = NULL;
+#endif
+
+void zend_async_init_internal_context_api(void) 
+{
+#ifdef ZTS
+    zend_async_context_mutex = tsrm_mutex_alloc();
+#endif
+    // Initialize key names table - stores string pointers directly
+    zend_async_context_key_names = pemalloc(sizeof(HashTable), 1);
+    zend_hash_init(zend_async_context_key_names, 8, NULL, NULL, 1);  // No destructor - we don't own the strings
+}
+
+uint32_t zend_async_internal_context_key_alloc(const char *key_name) 
+{
+#ifdef ZTS
+    tsrm_mutex_lock(zend_async_context_mutex);
+#endif
+    
+    // Check if this string address already has a key
+    const char **existing_ptr;
+    ZEND_HASH_FOREACH_NUM_KEY_PTR(zend_async_context_key_names, zend_ulong existing_key, existing_ptr) {
+        if (*existing_ptr == key_name) {
+            // Found existing key for this string address
+#ifdef ZTS
+            tsrm_mutex_unlock(zend_async_context_mutex);
+#endif
+            return (uint32_t)existing_key;
+        }
+    } ZEND_HASH_FOREACH_END();
+    
+    // Use next available index as key
+    uint32_t key = zend_hash_num_elements(zend_async_context_key_names) + 1;
+    
+    // Store string pointer directly
+    zend_hash_index_add_ptr(zend_async_context_key_names, key, (void*)key_name);
+    
+#ifdef ZTS
+    tsrm_mutex_unlock(zend_async_context_mutex);
+#endif
+    
+    return key;
+}
+
+const char* zend_async_internal_context_key_name(uint32_t key) 
+{
+    if (zend_async_context_key_names == NULL) {
+        return NULL;
+    }
+    
+#ifdef ZTS
+    tsrm_mutex_lock(zend_async_context_mutex);
+#endif
+    
+    const char *name = zend_hash_index_find_ptr(zend_async_context_key_names, key);
+    
+#ifdef ZTS
+    tsrm_mutex_unlock(zend_async_context_mutex);
+#endif
+    
+    return name;
+}
+
+bool zend_async_internal_context_get(zend_coroutine_t *coroutine, uint32_t key, zval *result) 
+{
+    if (coroutine == NULL || coroutine->internal_context == NULL) {
+        return false;
+    }
+    
+    zval *value = zend_hash_index_find(coroutine->internal_context, key);
+    if (value == NULL) {
+        return false;
+    }
+    
+    ZVAL_COPY(result, value);
+    return true;
+}
+
+void zend_async_internal_context_set(zend_coroutine_t *coroutine, uint32_t key, zval *value) 
+{
+    if (coroutine == NULL) {
+        return;
+    }
+    
+    // Initialize internal_context if needed
+    if (coroutine->internal_context == NULL) {
+        coroutine->internal_context = zend_new_array(0);
+    }
+    
+    // Set the value
+    zval copy;
+    ZVAL_COPY(&copy, value);
+    zend_hash_index_update(coroutine->internal_context, key, &copy);
+}
+
+bool zend_async_internal_context_unset(zend_coroutine_t *coroutine, uint32_t key) 
+{
+    if (coroutine == NULL || coroutine->internal_context == NULL) {
+        return false;
+    }
+    
+    return zend_hash_index_del(coroutine->internal_context, key) == SUCCESS;
+}
+
+void zend_async_coroutine_internal_context_dispose(zend_coroutine_t *coroutine)
+{
+    if (coroutine->internal_context != NULL) {
+    	zend_array_release(coroutine->internal_context);
+        coroutine->internal_context = NULL;
+    }
+}
+
+void zend_async_internal_context_api_shutdown(void)
+{
+#ifdef ZTS
+    if (zend_async_context_mutex != NULL) {
+        tsrm_mutex_lock(zend_async_context_mutex);
+    }
+#endif
+    
+    if (zend_async_context_key_names != NULL) {
+        zend_hash_destroy(zend_async_context_key_names);
+        pefree(zend_async_context_key_names, 1);
+        zend_async_context_key_names = NULL;
+    }
+    
+#ifdef ZTS
+    if (zend_async_context_mutex != NULL) {
+        tsrm_mutex_unlock(zend_async_context_mutex);
+        tsrm_mutex_free(zend_async_context_mutex);
+        zend_async_context_mutex = NULL;
+    }
+#endif
+}
+
+void zend_async_coroutine_internal_context_init(zend_coroutine_t *coroutine)
+{
+    coroutine->internal_context = NULL;
+}
+//////////////////////////////////////////////////////////////////////
+/* Internal Context API end */
 //////////////////////////////////////////////////////////////////////
