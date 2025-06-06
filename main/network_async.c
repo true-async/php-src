@@ -172,26 +172,45 @@ static void poll_callback_resolve(
 		goto error; \
 	}
 
+/**
+ * The function suppresses exceptions from the Async namespace
+ * and converts special exceptions like Timeout into an errno state.
+ */
 static zend_always_inline void handle_exception_and_errno(void)
 {
-	if (EG(exception)) {
+	if (EXPECTED(EG(exception))) {
 		zend_object *error = EG(exception);
-		GC_ADDREF(error);
-		zend_clear_exception();
+		bool should_throw = true;
+		bool as_warning = false;
 
+		zend_class_entry *default_ce = ZEND_ASYNC_GET_EXCEPTION_CE(ZEND_ASYNC_EXCEPTION_DEFAULT);
 		zend_class_entry *cancellation_ce = ZEND_ASYNC_GET_EXCEPTION_CE(ZEND_ASYNC_EXCEPTION_CANCELLATION);
 		zend_class_entry *timeout_ce = ZEND_ASYNC_GET_EXCEPTION_CE(ZEND_ASYNC_EXCEPTION_TIMEOUT);
 
-		if (error->ce == cancellation_ce) {
+		if (instanceof_function(error->ce, cancellation_ce)) {
 			errno = ECANCELED;
 		} else if (error->ce == timeout_ce) {
 			errno = ETIMEDOUT;
+			should_throw = false;
+		} else if (instanceof_function(error->ce, default_ce)) {
+			errno = EINTR;
+			should_throw = false;
+			as_warning = true;
 		} else {
 			errno = EINTR;
-			zend_exception_error(error, E_WARNING);
 		}
-		
-		OBJ_RELEASE(error);
+
+		if (false == should_throw) {
+			GC_ADDREF(error);
+			zend_clear_exception();
+
+			if (as_warning) {
+				zend_exception_error(error, E_WARNING);
+			}
+
+			OBJ_RELEASE(error);
+		}
+
 	} else {
 		errno = EINTR;
 	}
@@ -553,6 +572,53 @@ typedef struct {
 	zend_string **hostname_result;
 } dns_callback_t;
 
+/**
+ * This handler suppresses exceptions related to DNS.
+ */
+static zend_always_inline void dns_handle_exception_and_errno(void)
+{
+	if (EXPECTED(EG(exception))) {
+		zend_object *error = EG(exception);
+		bool should_throw = true;
+		bool as_warning = false;
+
+		zend_class_entry *default_ce = ZEND_ASYNC_GET_EXCEPTION_CE(ZEND_ASYNC_EXCEPTION_DEFAULT);
+		zend_class_entry *cancellation_ce = ZEND_ASYNC_GET_EXCEPTION_CE(ZEND_ASYNC_EXCEPTION_CANCELLATION);
+		zend_class_entry *timeout_ce = ZEND_ASYNC_GET_EXCEPTION_CE(ZEND_ASYNC_EXCEPTION_TIMEOUT);
+		zend_class_entry *dns_ce = ZEND_ASYNC_GET_EXCEPTION_CE(ZEND_ASYNC_EXCEPTION_DNS);
+
+		if (instanceof_function(error->ce, cancellation_ce)) {
+			errno = ECANCELED;
+		} else if (error->ce == timeout_ce) {
+			errno = ETIMEDOUT;
+			should_throw = false;
+		} else if (error->ce == dns_ce) {
+			errno = EINTR;
+			should_throw = false;
+		} else if (instanceof_function(error->ce, default_ce)) {
+			errno = EINTR;
+			should_throw = false;
+			as_warning = true;
+		} else {
+			errno = EINTR;
+		}
+
+		if (false == should_throw) {
+			GC_ADDREF(error);
+			zend_clear_exception();
+
+			if (as_warning) {
+				zend_exception_error(error, E_WARNING);
+			}
+
+			OBJ_RELEASE(error);
+		}
+
+	} else {
+		errno = EINTR;
+	}
+}
+
 static void dns_callback_resolve(
 	zend_async_event_t *event, zend_async_event_callback_t *callback, void *result, zend_object *exception
 )
@@ -660,7 +726,7 @@ ZEND_API int php_network_getaddrinfo_async(const char *node, const char *service
 	}
 
 error:
-	handle_exception_and_errno();
+	dns_handle_exception_and_errno();
 	zend_async_waker_destroy(coroutine);
 	return -1;
 }
@@ -772,12 +838,13 @@ ZEND_API struct hostent* php_network_gethostbyname_async(const char *name)
 
 	if (need_dispose_callback) {
 
-		zend_async_event_callback_t *callback = ecalloc(1, sizeof(zend_async_event_callback_t));
-		callback->callback = hostent_free_callback;
-		callback->ref_count = 1;
+		zend_coroutine_event_callback_t *callback = ecalloc(1, sizeof(zend_coroutine_event_callback_t));
+		callback->base.callback = hostent_free_callback;
+		callback->base.ref_count = 1;
+		callback->coroutine = coroutine;
 
 		// Register a cleanup handler to free the hostent when the coroutine ends.
-		coroutine->event.add_callback(&coroutine->event, callback);
+		coroutine->event.add_callback(&coroutine->event, &callback->base);
 	}
 
 	ZEND_ASYNC_FREEADDRINFO(result);
