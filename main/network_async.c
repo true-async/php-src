@@ -810,11 +810,12 @@ ZEND_API struct hostent* php_network_gethostbyname_async(const char *name)
 	bool need_dispose_callback = true;
 
 	if (hostent_zval != NULL) {
-		ZEND_ASYNC_INTERNAL_CONTEXT_UNSET(coroutine, hostent_key);
 		if (Z_TYPE_P(hostent_zval) == IS_PTR) {
 			hostent_free(Z_PTR_P(hostent_zval));
 			need_dispose_callback = false;
 		}
+
+		ZEND_ASYNC_INTERNAL_CONTEXT_UNSET(coroutine, hostent_key);
 	}
 
 	struct hostent *hostent = ecalloc(1, sizeof(struct hostent));
@@ -837,12 +838,7 @@ ZEND_API struct hostent* php_network_gethostbyname_async(const char *name)
 	ZEND_ASYNC_INTERNAL_CONTEXT_SET(coroutine, hostent_key, &value);
 
 	if (need_dispose_callback) {
-
-		zend_coroutine_event_callback_t *callback = ecalloc(1, sizeof(zend_coroutine_event_callback_t));
-		callback->base.callback = hostent_free_callback;
-		callback->base.ref_count = 1;
-		callback->coroutine = coroutine;
-
+		zend_coroutine_event_callback_t *callback = zend_async_coroutine_event_new(coroutine, hostent_free_callback, 0);
 		// Register a cleanup handler to free the hostent when the coroutine ends.
 		coroutine->event.add_callback(&coroutine->event, &callback->base);
 	}
