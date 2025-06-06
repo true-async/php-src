@@ -1,0 +1,37 @@
+# TrueAsync API RFC
+
+## Introduction
+The **TrueAsync API** introduces a pluggable framework for asynchronous programming in PHP. It allows extensions to register their own scheduler, reactor and thread pool implementations while keeping the Zend Engine independent of any particular event loop library.
+
+## Motivation
+Prior to this branch, `master` lacked a unified asynchronous interface. The `work` branch adds two new core files, `Zend/zend_async_API.c` and `Zend/zend_async_API.h`, and integrates them into the engine. Supporting files such as `main/network_async.c` and documentation under `docs/source/true_async_api` are also included. These changes enable non‑blocking operations and cancellation handling across the core.
+
+## Specification
+### API Definition
+- Located in `Zend/zend_async_API.h` and implemented in `Zend/zend_async_API.c`.
+- Defines function pointers and structures for events, coroutines, scopes and wakers.
+- Provides registration functions for:
+  - Scheduler (`zend_async_scheduler_register`)
+  - Reactor (`zend_async_reactor_register`)
+  - Thread pool (`zend_async_thread_pool_register`)
+- Exposes macros such as `ZEND_ASYNC_GETADDRINFO` and event reference counters.
+
+### Integration with Core
+- `Zend/zend.c` and other core files now include the header when `PHP_ASYNC_API` is defined.
+- A new `CancellationException` class is registered via `Zend/zend_exceptions.c`.
+- Network functions call async counterparts from `main/network_async.c` when available.
+- The API is disabled by default; if no backend is registered all stubs throw errors.
+
+## Impact on Core
+The API keeps implementation details out of the Zend Engine. Extensions may implement async features using `libuv` or other libraries and register them during module initialization. When enabled, coroutine management and I/O polling are delegated to those backends while the engine interacts only through the standardized interfaces.
+
+## Backward Compatibility
+When no backend is loaded, the stubs simply throw runtime errors so behavior matches that of the `master` branch. Existing extensions remain unaffected unless they opt in by using the new API.
+
+## Future Scope
+Further work may extend the API with higher level abstractions, additional event types and tighter integration with PHP Fibers. Documentation continues to evolve under `docs/source/true_async_api`.
+
+## References
+- `Zend/zend_async_API.h`
+- `Zend/zend_async_API.c`
+- `docs/source/true_async_api/*`
