@@ -609,9 +609,9 @@ static zend_always_inline void dns_handle_exception_and_errno(void)
 
 			if (as_warning) {
 				zend_exception_error(error, E_WARNING);
+			} else {
+				OBJ_RELEASE(error);
 			}
-
-			OBJ_RELEASE(error);
 		}
 
 	} else {
@@ -909,14 +909,8 @@ ZEND_API zend_string* php_network_gethostbyaddr_async(const char *ip)
 	}
 
 error:
-	if (EG(exception)) {
-		zend_object *error = EG(exception);
-		GC_ADDREF(error);
-		zend_clear_exception();
-		OBJ_RELEASE(error);
-	}
-
 	zend_async_waker_destroy(coroutine);
+	dns_handle_exception_and_errno();
 	return NULL;
 }
 
