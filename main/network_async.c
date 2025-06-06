@@ -665,12 +665,40 @@ error:
 	return -1;
 }
 
+static int hostent_key = 0;
+
+static zend_always_inline void hostent_free(struct hostent *hostent)
+{
+	if (UNEXPECTED(hostent == NULL)) {
+		return;
+	}
+
+	if (hostent->h_name) {
+		efree(hostent->h_name);
+	}
+
+	if (hostent->h_addr_list) {
+		for (char **addr = hostent->h_addr_list; *addr != NULL; addr++) {
+			efree(*addr);
+		}
+		efree(hostent->h_addr_list);
+	}
+
+	efree(hostent);
+}
+
 /**
  * Asynchronous gethostbyname() implementation for coroutine contexts.
  */
 ZEND_API struct hostent* php_network_gethostbyname_async(const char *name)
 {
-	if (name == NULL) {
+	if (UNEXPECTED(name == NULL)) {
+		return NULL;
+	}
+
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+
+	if (UNEXPECTED(coroutine == NULL)) {
 		return NULL;
 	}
 
@@ -697,9 +725,19 @@ ZEND_API struct hostent* php_network_gethostbyname_async(const char *name)
 	// since our function runs asynchronously in different coroutines,
 	// so we need storage that is bound to the coroutine.
 	//
+	if (UNEXPECTED(hostent_key == 0)) {
+		hostent_key = zend_async_internal_context_key_alloc("php_network_hostent");
+	}
 
-	struct hostent *hostent = emalloc(sizeof(struct hostent));
-	memset(hostent, 0, sizeof(struct hostent));
+	zval hostent_zval;
+	ZVAL_UNDEF(&hostent_zval);
+	zend_async_internal_context_get(coroutine, hostent_key, &hostent_zval);
+
+	if (Z_TYPE(hostent_zval) == IS_PTR) {
+		hostent_free(Z_PTR(hostent_zval));
+	}
+
+	struct hostent *hostent = ecalloc(1, sizeof(struct hostent));
 
 	char **addr_list = emalloc(2 * sizeof(char *));
 	addr_list[0] = emalloc(sizeof(struct in_addr));
