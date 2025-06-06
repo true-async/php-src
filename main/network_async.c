@@ -859,18 +859,22 @@ ZEND_API zend_string* php_network_gethostbyaddr_async(const char *ip)
 		return NULL;
 	}
 
-	struct sockaddr_in addr;
-	memset(&addr, 0, sizeof(addr));
-	addr.sin_family = AF_INET;
+	struct sockaddr_storage ss = {0};
 
-	if (inet_pton(AF_INET, ip, &addr.sin_addr) != 1) {
+	if (inet_pton(AF_INET, ip, &((struct sockaddr_in*)&ss)->sin_addr) == 1) {
+		struct sockaddr_in *a4 = (struct sockaddr_in*)&ss;
+		a4->sin_family = AF_INET;
+	} else if (inet_pton(AF_INET6, ip, &((struct sockaddr_in6*)&ss)->sin6_addr) == 1) {
+		struct sockaddr_in6 *a6 = (struct sockaddr_in6*)&ss;
+		a6->sin6_family = AF_INET6;
+	} else {
 		return NULL;
 	}
 
 	zend_async_waker_new(coroutine);
 	IF_EXCEPTION_GOTO_ERROR;
 
-	zend_async_dns_nameinfo_t *dns_event = ZEND_ASYNC_GETNAMEINFO((struct sockaddr*)&addr, 0);
+	zend_async_dns_nameinfo_t *dns_event = ZEND_ASYNC_GETNAMEINFO((struct sockaddr*)&ss, 0);
 
 	if (UNEXPECTED(EG(exception) != NULL || dns_event == NULL)) {
 		goto error;
