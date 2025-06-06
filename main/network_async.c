@@ -689,7 +689,7 @@ static zend_always_inline void hostent_free(struct hostent *hostent)
 
 static void hostent_free_callback(zend_async_event_t *event, zend_async_event_callback_t *callback, void *result, zend_object *exception)
 {
-	zend_coroutine_t *coroutine = ((zend_coroutine_event_callback_t *) callback)->coroutine;
+	zend_coroutine_t *coroutine = (zend_coroutine_t *) event;
 
 	zval *hostent_zval = zend_async_internal_context_find(coroutine, hostent_key);
 	if (hostent_zval != NULL && Z_TYPE_P(hostent_zval) == IS_PTR) {
