@@ -687,6 +687,17 @@ static zend_always_inline void hostent_free(struct hostent *hostent)
 	efree(hostent);
 }
 
+static void hostent_free_callback(zend_async_event_t *event, zend_async_event_callback_t *callback, void *result, zend_object *exception)
+{
+	zend_coroutine_t *coroutine = ((zend_coroutine_event_callback_t *) callback)->coroutine;
+
+	zval *hostent_zval = zend_async_internal_context_find(coroutine, hostent_key);
+	if (hostent_zval != NULL && Z_TYPE_P(hostent_zval) == IS_PTR) {
+		hostent_free(Z_PTR_P(hostent_zval));
+		ZEND_ASYNC_INTERNAL_CONTEXT_UNSET(coroutine, hostent_key);
+	}
+}
+
 /**
  * Asynchronous gethostbyname() implementation for coroutine contexts.
  */
@@ -729,12 +740,15 @@ ZEND_API struct hostent* php_network_gethostbyname_async(const char *name)
 		hostent_key = zend_async_internal_context_key_alloc("php_network_hostent");
 	}
 
-	zval hostent_zval;
-	ZVAL_UNDEF(&hostent_zval);
-	zend_async_internal_context_get(coroutine, hostent_key, &hostent_zval);
+	zval * hostent_zval = zend_async_internal_context_find(coroutine, hostent_key);
+	bool need_dispose_callback = true;
 
-	if (Z_TYPE(hostent_zval) == IS_PTR) {
-		hostent_free(Z_PTR(hostent_zval));
+	if (hostent_zval != NULL) {
+		ZEND_ASYNC_INTERNAL_CONTEXT_UNSET(coroutine, hostent_key);
+		if (Z_TYPE_P(hostent_zval) == IS_PTR) {
+			hostent_free(Z_PTR_P(hostent_zval));
+			need_dispose_callback = false;
+		}
 	}
 
 	struct hostent *hostent = ecalloc(1, sizeof(struct hostent));
@@ -751,6 +765,20 @@ ZEND_API struct hostent* php_network_gethostbyname_async(const char *name)
 	hostent->h_addrtype = AF_INET;
 	hostent->h_length = sizeof(struct in_addr);
 	hostent->h_addr_list = addr_list;
+
+	zval value;
+	ZVAL_PTR(&value, hostent);
+	ZEND_ASYNC_INTERNAL_CONTEXT_SET(coroutine, hostent_key, &value);
+
+	if (need_dispose_callback) {
+
+		zend_async_event_callback_t *callback = ecalloc(1, sizeof(zend_async_event_callback_t));
+		callback->callback = hostent_free_callback;
+		callback->ref_count = 1;
+
+		// Register a cleanup handler to free the hostent when the coroutine ends.
+		coroutine->event.add_callback(&coroutine->event, callback);
+	}
 
 	ZEND_ASYNC_FREEADDRINFO(result);
 
