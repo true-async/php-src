@@ -50,10 +50,19 @@ When the API is active, several built-in functions delegate to the wrappers abov
 
 
 ### Integration with Core
-- `Zend/zend.c` and other core files now include the header when `PHP_ASYNC_API` is defined.
-- A new `CancellationException` class is registered via `Zend/zend_exceptions.c`.
+- `Zend/zend.c` and related files now include the header when `PHP_ASYNC_API` is defined.
 - Network functions call async counterparts from `main/network_async.c` when available.
 - The API is disabled by default; if no backend is registered all stubs throw errors.
+
+### CancellationException
+`CancellationException` lives alongside `Exception` but does not extend it. Its
+sole purpose is to signal coroutine cancellation. Making it a root exception
+ensures that generic `catch (Exception $e)` blocks do not intercept it
+accidentally. The class is defined in the core because fundamental engine
+functions such as `zend_throw_exception_internal()`, `zend_handle_exception()`
+and `zend_error_va_list()` assume that all throwable types are known at startup.
+Changing their logic from extensions would be brittle, so the cancellation class
+is registered by the engine itself.
 
 ### Garbage Collector Integration
 The garbage collector schedules cycle destruction using the async API. When a cycle is detected, it spawns a coroutine that runs the destructor chain through the registered scheduler. This keeps asynchronous tasks responsive while cyclic references are collected.
