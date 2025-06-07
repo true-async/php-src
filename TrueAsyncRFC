@@ -5,6 +5,8 @@ The **TrueAsync API** introduces a pluggable framework for asynchronous programm
 
 ## Motivation
 Prior to this branch, `master` lacked a unified asynchronous interface. The `work` branch adds two new core files, `Zend/zend_async_API.c` and `Zend/zend_async_API.h`, and integrates them into the engine. Supporting files such as `main/network_async.c` and documentation under `docs/source/true_async_api` are also included. These changes enable non‑blocking operations and cancellation handling across the core.
+- Including the API in the core ensures all extensions share the same asynchronous primitives and allows built-in features like cancellation to function consistently.
+- Concrete implementations may live in separate extensions such as libuv wrappers.
 
 ## Specification
 ### API Definition
@@ -15,6 +17,23 @@ Prior to this branch, `master` lacked a unified asynchronous interface. The `wor
   - Reactor (`zend_async_reactor_register`)
   - Thread pool (`zend_async_thread_pool_register`)
 - Exposes macros such as `ZEND_ASYNC_GETADDRINFO` and event reference counters.
+### API Functions
+The following functions and macros form the public interface:
+- `zend_async_scheduler_register`
+- `zend_async_reactor_register`
+- `zend_async_thread_pool_register`
+- `zend_async_event_callback_new` and `zend_async_event_callback_dispose`
+- `ZEND_ASYNC_NEW_SOCKET_EVENT`, `ZEND_ASYNC_NEW_TIMER_EVENT`, `ZEND_ASYNC_EXEC`
+- `ZEND_ASYNC_QUEUE_TASK`
+
+Networking wrappers exported from `main/network_async.c` include:
+- `php_poll2_async`
+- `php_select_async`
+- `php_network_getaddrinfo_async`
+- `php_network_gethostbyname_async`
+- `php_network_gethostbyaddr_async`
+- `php_network_getaddresses_async`
+
 
 ### Integration with Core
 - `Zend/zend.c` and other core files now include the header when `PHP_ASYNC_API` is defined.
