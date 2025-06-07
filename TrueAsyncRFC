@@ -1,12 +1,16 @@
 # TrueAsync API RFC
 
 ## Introduction
-The **TrueAsync API** introduces a pluggable framework for asynchronous programming in PHP. It allows extensions to register their own scheduler, reactor and thread pool implementations while keeping the Zend Engine independent of any particular event loop library.
+The **TrueAsync API** introduces a pluggable framework for asynchronous programming in PHP. It allows extensions to register their own scheduler, reactor and thread pool implementations while keeping the Zend Engine independent of any particular event loop library. The primary goal is to separate the core PHP functions from any specific asynchronous backend so that alternative implementations can be swapped in without modifying the engine.
 
 ## Motivation
 Prior to this branch, `master` lacked a unified asynchronous interface. The `work` branch adds two new core files, `Zend/zend_async_API.c` and `Zend/zend_async_API.h`, and integrates them into the engine. Supporting files such as `main/network_async.c` and documentation under `docs/source/true_async_api` are also included. These changes enable non‑blocking operations and cancellation handling across the core.
 - Including the API in the core ensures all extensions share the same asynchronous primitives and allows built-in features like cancellation to function consistently.
 - Concrete implementations may live in separate extensions such as libuv wrappers.
+The API is part of the Zend Engine for the following reasons:
+1. As a core module it is available before extension initialization, enabling schedulers and reactors to cooperate correctly.
+2. Core functions and extensions can always reference its symbols regardless of whether a backend is installed.
+3. The garbage collector uses it to run cycle collection in its own coroutine so that user code is not blocked while destroying cycles.
 
 ## Specification
 ### API Definition
@@ -50,6 +54,9 @@ When the API is active, several built-in functions delegate to the wrappers abov
 - A new `CancellationException` class is registered via `Zend/zend_exceptions.c`.
 - Network functions call async counterparts from `main/network_async.c` when available.
 - The API is disabled by default; if no backend is registered all stubs throw errors.
+
+### Garbage Collector Integration
+The garbage collector schedules cycle destruction using the async API. When a cycle is detected, it spawns a coroutine that runs the destructor chain through the registered scheduler. This keeps asynchronous tasks responsive while cyclic references are collected.
 
 ## Impact on Core
 The API keeps implementation details out of the Zend Engine. Extensions may implement async features using `libuv` or other libraries and register them during module initialization. When enabled, coroutine management and I/O polling are delegated to those backends while the engine interacts only through the standardized interfaces.
