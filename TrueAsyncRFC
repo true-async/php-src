@@ -38,6 +38,18 @@ Networking wrappers exported from `main/network_async.c` include:
 - `php_network_gethostbyname_async`
 - `php_network_gethostbyaddr_async`
 - `php_network_getaddresses_async`
+### Architecture Overview
+The API defines four foundational types used by all asynchronous backends.
+
+**Events** are the low-level representation of sockets, timers and other sources of readiness. They store callbacks and are started or stopped by the reactor. Reference counters and macros manage their lifetime.
+
+**Coroutines** are stackful tasks built on Zend Fibers. Every coroutine has an associated **waker** and belongs to a **scope**. The scheduler resumes or cancels coroutines via their wakers and dispatches them according to their scope.
+
+**Scopes** form a hierarchy for coroutine lifetime management. A scope remains alive while any of its coroutines run, enabling grouped cancellation and cleanup hooks.
+
+**Wakers** hold triggered events along with a result or error. They ensure a suspended coroutine resumes exactly once when its events complete or are cancelled.
+These primitives let different reactors and schedulers interoperate without coupling the engine to one implementation.
+
 
 ### Affected PHP Functions
 When the API is active, several built-in functions delegate to the wrappers above:
