@@ -26,6 +26,7 @@ The following functions and macros form the public interface:
 - `ZEND_ASYNC_NEW_SOCKET_EVENT`, `ZEND_ASYNC_NEW_TIMER_EVENT`, `ZEND_ASYNC_EXEC`
 - `ZEND_ASYNC_QUEUE_TASK`
 
+
 Networking wrappers exported from `main/network_async.c` include:
 - `php_poll2_async`
 - `php_select_async`
@@ -33,6 +34,15 @@ Networking wrappers exported from `main/network_async.c` include:
 - `php_network_gethostbyname_async`
 - `php_network_gethostbyaddr_async`
 - `php_network_getaddresses_async`
+
+### Affected PHP Functions
+When the API is active, several built-in functions delegate to the wrappers above:
+- `fsockopen()` and `pfsockopen()`
+- `stream_socket_client()` and `stream_socket_server()`
+- `stream_select()`
+- `gethostbyaddr()`, `gethostbyname()` and `gethostbynamel()`
+- `socket_addrinfo_lookup()`, `socket_addrinfo_bind()` and `socket_addrinfo_connect()`
+- Networking routines in the FTP and PgSQL extensions, which rely on `php_poll2()`
 
 
 ### Integration with Core
