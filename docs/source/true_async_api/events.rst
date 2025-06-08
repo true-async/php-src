@@ -204,35 +204,45 @@ If ``ZEND_ASYNC_EVENT_F_ZEND_OBJ`` is set, the event also acts as a Zend object 
 This allows events to be exposed to userland seamlessly while keeping the internal lifecycle consistent.
 
 The ``php-async`` extension provides ``Async\\Timeout`` objects that embed a
-timer event. The object factory allocates the event, marks it as a Zend object
-and sets up the handlers::
+timer event.  Recent updates introduce a helper API for linking an event with a
+Zend object.  A helper macro ``ZEND_ASYNC_EVENT_REF_PROLOG`` reserves fields at
+the beginning of the object to hold an event reference.  ``ZEND_ASYNC_EVENT_REF_SET``
+stores the pointer to the newly created event and the offset of the ``zend_object``
+inside the structure.  ``ZEND_ASYNC_EVENT_WITH_OBJECT_REF`` then marks the event
+so reference counting will use the Zend object rather than the internal counter.
+
+The object factory now uses these helpers when creating the timer::
 
    static zend_object *async_timeout_create(const zend_ulong ms, const bool is_periodic)
    {
+       async_timeout_object_t *object =
+           ecalloc(1, sizeof(async_timeout_object_t) +
+                   zend_object_properties_size(async_ce_timeout));
+
        zend_async_event_t *event = (zend_async_event_t *) ZEND_ASYNC_NEW_TIMER_EVENT_EX(
-           ms, is_periodic, sizeof(async_timeout_ext_t) + zend_object_properties_size(async_ce_timeout)
+           ms, is_periodic, sizeof(async_timeout_ext_t)
        );
 
-       async_timeout_ext_t *timeout = ASYNC_TIMEOUT_FROM_EVENT(event);
-       event->before_notify = timeout_before_notify_handler;
-
-       zend_object_std_init(&timeout->std, async_ce_timeout);
-       object_properties_init(&timeout->std, async_ce_timeout);
-
-       ZEND_ASYNC_EVENT_SET_ZEND_OBJ(event);
-       ZEND_ASYNC_EVENT_SET_NO_FREE_MEMORY(event);
-       ZEND_ASYNC_EVENT_SET_ZEND_OBJ_OFFSET(
-           event,
-           ((uint32_t)((event)->extra_offset + XtOffsetOf(async_timeout_ext_t, std)))
-       );
-
-       if (async_timeout_handlers.offset == 0) {
-           async_timeout_handlers.offset = (int) event->zend_object_offset;
+       if (UNEXPECTED(event == NULL)) {
+           efree(object);
+           return NULL;
        }
 
-   timeout->std.handlers = &async_timeout_handlers;
-   return &timeout->std;
-}
+       ZEND_ASYNC_EVENT_REF_SET(object, XtOffsetOf(async_timeout_object_t, std), (zend_async_timer_event_t *) event);
+       ZEND_ASYNC_EVENT_WITH_OBJECT_REF(event);
+
+       async_timeout_ext_t *timeout = ASYNC_TIMEOUT_FROM_EVENT(event);
+       timeout->std = &object->std;
+       timeout->prev_dispose = event->dispose;
+       event->before_notify = timeout_before_notify_handler;
+       event->dispose = async_timeout_event_dispose;
+
+       zend_object_std_init(&object->std, async_ce_timeout);
+       object_properties_init(&object->std, async_ce_timeout);
+       object->std.handlers = &async_timeout_handlers;
+
+       return &object->std;
+   }
 
 .. note::
 
