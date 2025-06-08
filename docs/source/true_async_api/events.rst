@@ -230,7 +230,15 @@ and sets up the handlers::
            async_timeout_handlers.offset = (int) event->zend_object_offset;
        }
 
-       timeout->std.handlers = &async_timeout_handlers;
-       return &timeout->std;
-   }
+   timeout->std.handlers = &async_timeout_handlers;
+   return &timeout->std;
+}
+
+.. note::
+
+   Events must not be exposed as Zend objects if their memory is released
+   asynchronously.  Zend assumes that object destruction happens entirely
+   during the ``zend_object_release`` call and cannot wait for callbacks such as
+   ``uv_close`` to free the underlying event.  The ``Async\\Timeout`` class will
+   be redesigned to avoid this pattern.
 
