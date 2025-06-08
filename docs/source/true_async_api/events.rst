@@ -53,6 +53,14 @@ important flags are:
     Set by the callback once it has fully processed an exception. If this flag
     is not set the exception will be rethrown after callbacks finish.
 
+``ZEND_ASYNC_EVENT_F_REFERENCE``
+    Indicates that this structure is only an event reference which stores a
+    pointer to the real event.
+
+``ZEND_ASYNC_EVENT_F_OBJ_REF``
+    Marks that the event keeps a pointer to the Zend object in its
+    ``extra_offset`` region so reference counting works through the object.
+
 Convenience macros such as ``ZEND_ASYNC_EVENT_SET_CLOSED`` and
 ``ZEND_ASYNC_EVENT_IS_EXCEPTION_HANDLED`` are provided to manipulate these
 flags.
@@ -65,13 +73,14 @@ The core maintains a dynamic vector of callbacks for each event. Implementations
 provide the ``add_callback`` and ``del_callback`` methods which internally use
 ``zend_async_callbacks_push`` and ``zend_async_callbacks_remove``. The
 ``zend_async_callbacks_notify`` helper iterates over all registered callbacks
-and passes the result or exception. Before any callback is invoked the optional
-``before_notify`` handler of the event is executed. It receives pointers to the
-result and exception variables and may modify them or return ``false`` to skip
-notification entirely.  The ``php-async`` extension provides convenience macros
-``ZEND_ASYNC_CALLBACKS_NOTIFY`` for regular use and
+and passes the result or exception.  If a ``notify_handler`` is set on the event
+it is invoked first and can adjust the result or exception as needed.  The
+handler is expected to call ``ZEND_ASYNC_CALLBACKS_NOTIFY_FROM_HANDLER`` to
+forward the values to all listeners.  The ``php-async`` extension provides
+convenience macros ``ZEND_ASYNC_CALLBACKS_NOTIFY`` for regular use,
 ``ZEND_ASYNC_CALLBACKS_NOTIFY_FROM_HANDLER`` when called from inside a
-``before_notify`` handler.
+``notify_handler``, and ``ZEND_ASYNC_CALLBACKS_NOTIFY_AND_CLOSE`` to close the
+event before notifying listeners.
 
 The following example shows a libuv poll event that dispatches its callbacks
 once the underlying handle becomes readable:
@@ -92,7 +101,7 @@ once the underlying handle becomes readable:
 
        poll->event.triggered_events = events;
 
-       zend_async_callbacks_notify(&poll->event.base, NULL, exception);
+       ZEND_ASYNC_CALLBACKS_NOTIFY(&poll->event.base, NULL, exception);
 
        if (exception != NULL) {
            zend_object_release(exception);
@@ -212,6 +221,18 @@ If ``ZEND_ASYNC_EVENT_F_ZEND_OBJ`` is set, the event also acts as a Zend object 
 
 This allows events to be exposed to userland seamlessly while keeping the internal lifecycle consistent.
 
+For events that are destroyed asynchronously (e.g. libuv timers) the actual
+event structure cannot be a Zend object.  Instead a lightweight reference
+structure is used.  ``ZEND_ASYNC_EVENT_REF_PROLOG`` reserves the required fields
+in the Zend object and ``ZEND_ASYNC_EVENT_REF_SET`` stores the pointer to the
+real event together with the ``zend_object`` offset.  The event must then be
+flagged with ``ZEND_ASYNC_EVENT_WITH_OBJECT_REF`` so that reference counting
+delegates to the object.
+
+When accessing the event from userland objects use
+``ZEND_ASYNC_OBJECT_TO_EVENT`` and ``ZEND_ASYNC_EVENT_TO_OBJECT`` which handle
+both direct and reference-based layouts transparently.
+
 The ``php-async`` extension provides ``Async\\Timeout`` objects that embed a
 timer event.  Recent updates introduce a helper API for linking an event with a
 Zend object.  A helper macro ``ZEND_ASYNC_EVENT_REF_PROLOG`` reserves fields at
@@ -243,7 +264,7 @@ The object factory now uses these helpers when creating the timer::
        async_timeout_ext_t *timeout = ASYNC_TIMEOUT_FROM_EVENT(event);
        timeout->std = &object->std;
        timeout->prev_dispose = event->dispose;
-       event->before_notify = timeout_before_notify_handler;
+       event->notify_handler = timeout_before_notify_handler;
        event->dispose = async_timeout_event_dispose;
 
        zend_object_std_init(&object->std, async_ce_timeout);
