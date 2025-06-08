@@ -63,9 +63,18 @@ Event Callbacks
 
 The core maintains a dynamic vector of callbacks for each event. Implementations
 provide the ``add_callback`` and ``del_callback`` methods which internally use
-``zend_async_callbacks_push`` and ``zend_async_callbacks_remove``. When the
-backend operation completes ``zend_async_callbacks_notify`` iterates over all
-registered callbacks and passes the result or exception:
+``zend_async_callbacks_push`` and ``zend_async_callbacks_remove``. The
+``zend_async_callbacks_notify`` helper iterates over all registered callbacks
+and passes the result or exception. Before any callback is invoked the optional
+``before_notify`` handler of the event is executed. It receives pointers to the
+result and exception variables and may modify them or return ``false`` to skip
+notification entirely.  The ``php-async`` extension provides convenience macros
+``ZEND_ASYNC_CALLBACKS_NOTIFY`` for regular use and
+``ZEND_ASYNC_CALLBACKS_NOTIFY_FROM_HANDLER`` when called from inside a
+``before_notify`` handler.
+
+The following example shows a libuv poll event that dispatches its callbacks
+once the underlying handle becomes readable:
 
 .. code:: c
 
@@ -242,6 +251,25 @@ The object factory now uses these helpers when creating the timer::
        object->std.handlers = &async_timeout_handlers;
 
        return &object->std;
+   }
+
+   static void timeout_before_notify_handler(zend_async_event_t *event,
+                                             void *result,
+                                             zend_object *exception)
+   {
+       if (UNEXPECTED(exception != NULL)) {
+           ZEND_ASYNC_CALLBACKS_NOTIFY_FROM_HANDLER(event, result, exception);
+           return;
+       }
+
+       zend_object *timeout_exception = async_new_exception(
+           async_ce_timeout_exception,
+           "Timeout occurred after %lu milliseconds",
+           ((zend_async_timer_event_t *) event)->timeout
+       );
+
+       ZEND_ASYNC_CALLBACKS_NOTIFY_FROM_HANDLER(event, result, timeout_exception);
+       zend_object_release(timeout_exception);
    }
 
 .. note::
