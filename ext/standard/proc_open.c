@@ -1611,10 +1611,6 @@ static zend_long async_wait_process(zend_process_t process_h, const zend_ulong t
 	}
 #endif
 
-	if (!ZEND_ASYNC_REACTOR_IS_ENABLED()) {
-		return -1;
-	}
-
 	zend_async_process_event_t *event = ZEND_ASYNC_NEW_PROCESS_EVENT(process_h);
 	if (UNEXPECTED(event == NULL)) {
 		return -1;
