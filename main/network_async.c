@@ -70,6 +70,85 @@ void network_async_set_socket_blocking(php_socket_t socket, bool blocking)
 	}
 #endif
 }
+
+bool network_async_ensure_socket_nonblocking(php_socket_t socket)
+{
+#ifdef PHP_WIN32
+	/* Set the socket to nonblocking mode */
+	DWORD yes = 1;
+	if (ioctlsocket(socket, FIONBIO, &yes) == SOCKET_ERROR) {
+		const int error = WSAGetLastError();
+		char *buffer = php_win32_error_to_msg(error);
+
+		if (!buffer[0]) {
+			zend_error(E_WARNING, "Unable to set socket to non-blocking mode [0x%08lx]", (unsigned long)error);
+		} else {
+			zend_error(E_WARNING, "Unable to set socket to non-blocking mode [0x%08lx]: %s", (unsigned long)error, buffer);
+		}
+
+		php_win32_error_msg_free(buffer);
+
+		return false;
+	}
+#else
+	int flags = fcntl(socket, F_GETFL);
+
+	if (flags == -1) {
+		zend_error(E_WARNING, "Unable to obtain blocking state");
+		return false;
+	}
+
+	if (fcntl(socket, F_SETFL, flags | O_NONBLOCK) == -1) {
+		zend_error(E_WARNING, "Unable to set socket to non-blocking mode");
+		return false;
+	}
+#endif
+
+	return true;
+}
+
+void network_async_wait_socket(php_socket_t socket, const zend_ulong events, const zend_ulong timeout)
+{
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+
+	if (coroutine == NULL) {
+		zend_throw_error(NULL, "async_wait_socket() can only be called from within a coroutine");
+		return;
+	}
+
+	// Initialize waker with timeout
+	zend_async_waker_new_with_timeout(coroutine, timeout, NULL);
+
+	if (UNEXPECTED(EG(exception) != NULL)) {
+		return;
+	}
+
+	// Create socket event
+	zend_async_poll_event_t *poll_event = zend_async_new_socket_event_fn(socket, events, 0);
+
+	if (UNEXPECTED(EG(exception) != NULL)) {
+		goto cleanup;
+	}
+
+	// Register event with waker using standard callback
+	zend_async_resume_when(
+		coroutine,
+		&poll_event->base,
+		true,
+		zend_async_waker_callback_resolve,
+		NULL
+	);
+
+	if (UNEXPECTED(EG(exception) != NULL)) {
+		goto cleanup;
+	}
+
+	// Suspend the coroutine until event occurs or timeout expires
+	ZEND_ASYNC_SUSPEND();
+
+cleanup:
+	zend_async_waker_destroy(coroutine);
+}
 ///////////////////////////////////////////////////////////////
 /// Poll2 Emulation for Async Context
 ///////////////////////////////////////////////////////////////

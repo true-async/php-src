@@ -71,6 +71,10 @@ typedef struct {
 	int			type;
 	int			error;
 	int			blocking;
+#ifdef PHP_ASYNC_API
+	/* Equals TRUE if the socket was transferred to a nonblocking mode */
+	bool 		non_blocking;
+#endif
 	zval		zstream;
 	zend_object std;
 } php_socket;
