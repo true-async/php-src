@@ -117,6 +117,10 @@ PHPAPI php_basic_globals basic_globals;
 #include "zend_frameless_function.h"
 #include "basic_functions_arginfo.h"
 
+#ifdef PHP_ASYNC_API
+#include "Zend/zend_async_API.h"
+#endif
+
 #if __has_feature(memory_sanitizer)
 # include <sanitizer/msan_interface.h>
 #endif
@@ -1102,6 +1106,37 @@ PHP_FUNCTION(flush)
 }
 /* }}} */
 
+#ifdef PHP_ASYNC_API
+static zend_long sleep_async(zend_long ms, zend_long nanoseconds)
+{
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+	if (UNEXPECTED(coroutine == NULL)) {
+		return -1;
+	}
+
+	if (nanoseconds == 0) {
+		zend_async_waker_new_with_timeout(coroutine, ms, NULL);
+	} else {
+		zend_async_waker_new(coroutine);
+		zend_async_resume_when(
+			coroutine,
+			&ZEND_ASYNC_NEW_TIMER_EVENT_NS(ms, nanoseconds, false)->base,
+			true,
+			zend_async_waker_callback_resolve,
+			NULL
+		);
+	}
+
+	if (UNEXPECTED(EG(exception) != NULL)) {
+		return -1;
+	}
+
+	ZEND_ASYNC_SUSPEND();
+	zend_async_waker_destroy(coroutine);
+	return 0;
+}
+#endif
+
 /* {{{ Delay for a given number of seconds */
 PHP_FUNCTION(sleep)
 {
@@ -1116,6 +1151,15 @@ PHP_FUNCTION(sleep)
 		RETURN_THROWS();
 	}
 
+#ifdef PHP_ASYNC_API
+	if (ZEND_ASYNC_IS_ACTIVE) {
+		sleep_async(num * 1000, 0);
+		if (UNEXPECTED(EG(exception) != NULL)) {
+			RETURN_THROWS();
+		}
+		RETURN_LONG(0);
+	}
+#endif
 	RETURN_LONG(php_sleep((unsigned int)num));
 }
 /* }}} */
@@ -1133,6 +1177,16 @@ PHP_FUNCTION(usleep)
 		zend_argument_value_error(1, "must be greater than or equal to 0");
 		RETURN_THROWS();
 	}
+
+#ifdef PHP_ASYNC_API
+	if (ZEND_ASYNC_IS_ACTIVE) {
+		sleep_async(0, num * 1000);
+		if (UNEXPECTED(EG(exception) != NULL)) {
+			RETURN_THROWS();
+		}
+		RETURN_LONG(0);
+	}
+#endif
 
 #ifdef HAVE_USLEEP
 	usleep((unsigned int)num);
@@ -1160,6 +1214,18 @@ PHP_FUNCTION(time_nanosleep)
 		zend_argument_value_error(2, "must be greater than or equal to 0");
 		RETURN_THROWS();
 	}
+
+#ifdef PHP_ASYNC_API
+	if (ZEND_ASYNC_IS_ACTIVE) {
+		sleep_async(tv_sec * 1000, tv_nsec);
+
+		if (UNEXPECTED(EG(exception) != NULL)) {
+			RETURN_THROWS();
+		}
+
+		RETURN_TRUE;
+	}
+#endif
 
 	php_req.tv_sec = (time_t) tv_sec;
 	php_req.tv_nsec = (long)tv_nsec;
@@ -1211,6 +1277,19 @@ PHP_FUNCTION(time_sleep_until)
 	}
 
 	diff_ns = target_ns - current_ns;
+
+#ifdef PHP_ASYNC_API
+	if (ZEND_ASYNC_IS_ACTIVE) {
+		sleep_async(0, (zend_long) diff_ns);
+
+		if (UNEXPECTED(EG(exception) != NULL)) {
+			RETURN_THROWS();
+		}
+
+		RETURN_TRUE;
+	}
+#endif
+
 	php_req.tv_sec = (time_t) (diff_ns / ns_per_sec);
 	php_req.tv_nsec = (long) (diff_ns % ns_per_sec);
 
