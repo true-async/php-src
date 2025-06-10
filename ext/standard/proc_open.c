@@ -1637,7 +1637,7 @@ static zend_long async_wait_process(zend_process_t process_h, const zend_ulong t
 		return -1;
 	}
 
-	zend_coroutine_event_callback_t *callback = zend_async_coroutine_event_new(
+	zend_coroutine_event_callback_t *callback = zend_async_coroutine_callback_new(
 		coroutine, zend_async_waker_callback_resolve, 0
 	);
 
