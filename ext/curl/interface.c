@@ -34,6 +34,10 @@
 #include <curl/curl.h>
 #include <curl/easy.h>
 
+#ifdef PHP_ASYNC_API
+#include "curl_async.h"
+#endif
+
 /* As of curl 7.11.1 this is no longer defined inside curl.h */
 #ifndef HttpPost
 #define HttpPost curl_httppost
@@ -206,6 +210,16 @@ void _php_curl_verify_handlers(php_curl *ch, bool reporterror) /* {{{ */
 }
 /* }}} */
 
+#ifdef PHP_ASYNC_API
+/* {{{ */
+PHP_RSHUTDOWN_FUNCTION(curl)
+{
+	curl_async_shutdown();
+	return SUCCESS;
+}
+/* }}} */
+#endif
+
 /* {{{ curl_module_entry */
 zend_module_entry curl_module_entry = {
 	STANDARD_MODULE_HEADER,
@@ -214,7 +228,11 @@ zend_module_entry curl_module_entry = {
 	PHP_MINIT(curl),
 	PHP_MSHUTDOWN(curl),
 	NULL,
+#ifdef PHP_ASYNC_API
+	PHP_RSHUTDOWN(curl),
+#else
 	NULL,
+#endif
 	PHP_MINFO(curl),
 	PHP_CURL_VERSION,
 	PHP_MODULE_GLOBALS(curl),
@@ -2458,6 +2476,16 @@ PHP_FUNCTION(curl_exec)
 	_php_curl_verify_handlers(ch, /* reporterror */ true);
 
 	_php_curl_cleanup_handle(ch);
+
+#ifdef PHP_ASYNC_API
+	if (ZEND_ASYNC_IS_ACTIVE) {
+		error = curl_async_perform(ch->cp);
+	} else {
+		error = curl_easy_perform(ch->cp);
+	}
+#else
+	error = curl_easy_perform(ch->cp);
+#endif
 
 	error = curl_easy_perform(ch->cp);
 	SAVE_CURL_ERROR(ch, error);

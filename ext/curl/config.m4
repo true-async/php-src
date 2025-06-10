@@ -78,8 +78,14 @@ if test "$PHP_CURL" != "no"; then
     [AC_MSG_FAILURE([The libcurl check failed.])],
     [$CURL_LIBS])
 
+  curl_sources="interface.c multi.c share.c curl_file.c"
+
+  if test "$PHP_ASYNC_API" = "yes"; then
+    curl_sources="$curl_sources curl_async.c"
+  fi
+
   PHP_NEW_EXTENSION([curl],
-    [interface.c multi.c share.c curl_file.c],
+    [$curl_sources],
     [$ext_shared])
   PHP_INSTALL_HEADERS([ext/curl], [php_curl.h])
   PHP_SUBST([CURL_SHARED_LIBADD])
