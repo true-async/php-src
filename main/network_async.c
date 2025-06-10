@@ -838,7 +838,7 @@ ZEND_API struct hostent* php_network_gethostbyname_async(const char *name)
 	ZEND_ASYNC_INTERNAL_CONTEXT_SET(coroutine, hostent_key, &value);
 
 	if (need_dispose_callback) {
-		zend_coroutine_event_callback_t *callback = zend_async_coroutine_event_new(coroutine, hostent_free_callback, 0);
+		zend_coroutine_event_callback_t *callback = zend_async_coroutine_callback_new(coroutine, hostent_free_callback, 0);
 		// Register a cleanup handler to free the hostent when the coroutine ends.
 		coroutine->event.add_callback(&coroutine->event, &callback->base);
 	}
