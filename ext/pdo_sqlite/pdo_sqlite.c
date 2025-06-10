@@ -388,11 +388,7 @@ static int php_sqlite_collation_callback(void *context, int string1_len, const v
 			zval_ptr_dtor(&retval);
 			return FAILURE;
 		}
-		if (Z_LVAL(retval) > 0) {
-			ret = 1;
-		} else if (Z_LVAL(retval) < 0) {
-			ret = -1;
-		}
+		ret = ZEND_NORMALIZE_BOOL(Z_LVAL(retval));
 	}
 
 	return ret;
