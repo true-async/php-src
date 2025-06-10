@@ -304,7 +304,7 @@ static void proc_open_rsrc_dtor(zend_resource *rsrc)
 	if (FG(pclose_wait)) {
 #ifdef PHP_ASYNC_API
 		if (ZEND_ASYNC_IS_ACTIVE) {
-			async_wait_process(proc->childHandle, 0);
+			wstatus = async_wait_process(proc->childHandle, 0);
 		} else {
 			WaitForSingleObject(proc->childHandle, INFINITE);
 		}
@@ -312,7 +312,13 @@ static void proc_open_rsrc_dtor(zend_resource *rsrc)
 		WaitForSingleObject(proc->childHandle, INFINITE);
 #endif
 	}
+#ifdef PHP_ASYNC_API
+	if (!ZEND_ASYNC_IS_ACTIVE) {
+		GetExitCodeProcess(proc->childHandle, &wstatus);
+	}
+#else
 	GetExitCodeProcess(proc->childHandle, &wstatus);
+#endif
 	if (wstatus == STILL_ACTIVE) {
 		FG(pclose_ret) = -1;
 	} else {
@@ -1641,13 +1647,11 @@ static zend_long async_wait_process(zend_process_t process_h, const zend_ulong t
 		return -1;
 	}
 
-	zend_async_resume_when(coroutine, &event->base, true, 
-		zend_async_waker_callback_resolve, callback);
+	zend_async_resume_when(coroutine, &event->base, true, zend_async_waker_callback_resolve, callback);
 
 	ZEND_ASYNC_SUSPEND();
 
 	zend_long exit_code = event->exit_code;
-	ZEND_ASYNC_EVENT_RELEASE(&event->base);
 
 	return exit_code;
 }
