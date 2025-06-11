@@ -19,30 +19,37 @@
 #include <Zend/zend_async_API.h>
 
 /********************************************************************************************************************
- * This module is designed for the asynchronous version of PHP functions that work with CURL.
- * The module implements two entry points:
- * * `curl_async_perform`
- * * `curl_async_select`
+ * This module provides asynchronous versions of PHP cURL functions using the TrueAsync API.
+ * The module implements two main entry points:
+ * * `curl_async_perform` - For single cURL requests
+ * * `curl_async_select` - For multi-handle operations
  *
- * which replace the calls to the corresponding CURL LIB functions.
+ * === SINGLE CURL REQUESTS (curl_async_perform) ===
+ * Uses a global CURL MULTI handle to execute individual requests asynchronously.
+ * Flow:
+ * 1. Creates curl_async_event_t wrapper for the CURL handle
+ * 2. Registers event with coroutine waker
+ * 3. Adds CURL handle to global multi and triggers socket action
+ * 4. Suspends coroutine until completion
+ * 5. CURL callbacks (socket/timer) manage I/O events through async reactor
+ * 6. On completion, processes result and resumes coroutine
  *
- * `curl_async_perform` internally uses a global CURL MULTI object to execute multiple CURL requests asynchronously.
- * The handlers `CURLMOPT_SOCKETFUNCTION` and `CURLMOPT_TIMERFUNCTION` ensure the integration of
- * CURL with the `PHP ASYNC Reactor` (Event Loop).
+ * === MULTI HANDLE OPERATIONS (curl_async_select) ===
+ * Wraps curl_multi_wait functionality with async reactor integration.
+ * Flow:
+ * 1. Creates curl_async_multi_event_t for the php_curlm handle
+ * 2. Sets up socket and timer callbacks specific to this multi handle
+ * 3. Creates waker with optional timeout
+ * 4. Suspends coroutine until any socket becomes ready or timeout
+ * 5. Multi callbacks dynamically create/manage poll events for active sockets
+ * 6. Resumes on first I/O event or timeout (not an error)
  *
- * Note that the algorithm for working with the Waker object is modified here.
- * Typically, all descriptors associated with a Waker object are declared before the Coroutine is suspended.
- * However, in the case of CURL, descriptors are declared and added to the Waker object after the Coroutine is suspended.
- * This is due to the integration logic with CURL.
- *
- * Keep in mind that if the Waker object is destroyed,
- * all associated descriptors will also be destroyed and removed from the event loop.
- *
- * `curl_async_select` is a wrapper for the CURL function `curl_multi_wait`.
- * It suspends the execution of the Coroutine until the first resolved descriptor.
- * It operates in a manner similar to the previous function,
- * with the difference that `curl_async_select` creates a special `Waker` object
- * with additional context that participates in callbacks `curl_async_context`.
+ * === KEY ARCHITECTURAL NOTES ===
+ * - Descriptors are added to waker AFTER coroutine suspension (CURL integration requirement)
+ * - Each multi handle gets its own event object with isolated socket/timer management
+ * - Global multi handle is shared for single requests, per-handle events for multi
+ * - Waker destruction automatically cleans up all associated descriptors
+ * - Event objects implement proper start/stop/dispose lifecycle management
  *
  * ******************************************************************************************************************
  */
@@ -150,11 +157,7 @@ static void curl_async_event_dtor(zend_async_event_t *event)
 
 	curl_async_event_t *curl_event = (curl_async_event_t *) event;
 
-	if (curl_event->curl) {
-		curl_multi_remove_handle(curl_multi_handle, curl_event->curl);
-		curl_event->curl = NULL;
-	}
-
+	// Cleanup is already handled in stop() - no need to duplicate
 	efree(curl_event);
 }
 
@@ -173,7 +176,7 @@ static void process_curl_completed_handles(void)
 
 			curl_async_event_t * curl_event = zend_hash_index_find_ptr(curl_multi_event_list, (zend_ulong) msg->easy_handle);
 
-			if (curl_event != NULL) {
+			if (curl_event == NULL) {
 				continue;
 			}
 
@@ -251,8 +254,15 @@ static int curl_socket_cb(CURL *curl, const curl_socket_t socket_fd, const int w
 			return CURLM_BAD_SOCKET;
 		}
 
-		curl_multi_assign(curl_multi_handle, socket_fd, socket_event);
 		socket_event->base.start(&socket_event->base);
+
+		if (EG(exception)) {
+			// Cleanup on start failure
+			socket_event->base.dispose(&socket_event->base);
+			return CURLM_BAD_SOCKET;
+		}
+
+		curl_multi_assign(curl_multi_handle, socket_fd, socket_event);
 	}
 
 	return 0;
@@ -352,10 +362,24 @@ void curl_async_setup(void)
 	}
 
 	curl_multi_handle = curl_multi_init();
-	curl_multi_setopt(curl_multi_handle, CURLMOPT_SOCKETFUNCTION, curl_socket_cb);
-	curl_multi_setopt(curl_multi_handle, CURLMOPT_TIMERFUNCTION, curl_timer_cb);
-	curl_multi_setopt(curl_multi_handle, CURLMOPT_SOCKETDATA, NULL);
+	if (curl_multi_handle == NULL) {
+		return;
+	}
+
+	if (curl_multi_setopt(curl_multi_handle, CURLMOPT_SOCKETFUNCTION, curl_socket_cb) != CURLM_OK ||
+		curl_multi_setopt(curl_multi_handle, CURLMOPT_TIMERFUNCTION, curl_timer_cb) != CURLM_OK ||
+		curl_multi_setopt(curl_multi_handle, CURLMOPT_SOCKETDATA, NULL) != CURLM_OK) {
+		curl_multi_cleanup(curl_multi_handle);
+		curl_multi_handle = NULL;
+		return;
+	}
+
 	curl_multi_event_list = pemalloc(sizeof(HashTable), false);
+	if (curl_multi_event_list == NULL) {
+		curl_multi_cleanup(curl_multi_handle);
+		curl_multi_handle = NULL;
+		return;
+	}
 	zend_hash_init(curl_multi_event_list, 8, NULL, NULL, false);
 
 	timer = NULL;
@@ -364,6 +388,7 @@ void curl_async_setup(void)
 void curl_async_shutdown(void)
 {
 	if (timer != NULL) {
+		timer->base.dispose(&timer->base);
 		timer = NULL;
 	}
 
@@ -381,6 +406,23 @@ void curl_async_shutdown(void)
 
 ///////////////////////////////////////////////////////////////
 /// CURL Async Multi API
+///
+/// MULTI HANDLE FLOW:
+/// 1. php_curlm created in PHP userland
+/// 2. First curl_async_select() → creates curl_multi_event for this php_curlm
+/// 3. curl_multi_event contains:
+///    - poll_list (HashTable of sockets)
+///    - timer (for timeouts)
+/// 4. Set CURL callbacks (multi_socket_cb, multi_timer_cb)
+/// 5. curl_async_select() links curl_multi_event with coroutine Waker
+/// 6. CURL calls callbacks:
+///    - multi_socket_cb → creates/updates poll events in poll_list
+///    - multi_timer_cb → creates timer event
+/// 7. When socket ready or timer fires → notify Waker
+/// 8. Coroutine resumes
+/// 
+/// ⚠️ IMPORTANT: Multiple coroutines can simultaneously wait on same php_curlm!
+///              Each select() creates its own Waker, but all use same curl_multi_event
 ///////////////////////////////////////////////////////////////
 typedef struct {
 	zend_async_event_t base;
@@ -422,20 +464,30 @@ static void curl_async_multi_event_stop(zend_async_event_t *event)
 		return; // Event is already closed, nothing to do
 	}
 
-	curl_async_event_t *curl_event = (curl_async_event_t *) event;
+	curl_async_multi_event_t *curl_event = (curl_async_multi_event_t *) event;
 	ZEND_ASYNC_EVENT_SET_CLOSED(event);
 
-	zend_hash_index_del(curl_multi_event_list, (zend_ulong) curl_event->curl);
-
-	if (curl_multi_handle && curl_event->curl) {
-		curl_multi_remove_handle(curl_multi_handle, curl_event->curl);
-		curl_event->curl = NULL;
+	// Cleanup timer if it exists
+	if (curl_event->timer != NULL) {
+		curl_event->timer->base.dispose(&curl_event->timer->base);
+		curl_event->timer = NULL;
 	}
+
+	// Cleanup all socket events in poll_list
+	zend_async_poll_event_t *socket_event;
+	ZEND_HASH_FOREACH_PTR(&curl_event->poll_list, socket_event) {
+		if (socket_event != NULL) {
+			socket_event->base.dispose(&socket_event->base);
+		}
+	} ZEND_HASH_FOREACH_END();
+
+	// Clear the poll list
+	zend_hash_clean(&curl_event->poll_list);
 }
 
 static zend_string * curl_async_multi_event_info(zend_async_event_t *event)
 {
-	curl_async_event_t *curl_event = (curl_async_event_t *) event;
+	curl_async_multi_event_t *curl_event = (curl_async_multi_event_t *) event;
 	return zend_string_init("CURL Multi Async Event", sizeof("CURL Multi Async Event") - 1, 0);
 }
 
@@ -467,9 +519,9 @@ static curl_async_multi_event_t * curl_async_multi_event_ctor(php_curlm * curl_m
 
 static zend_always_inline bool curl_async_multi_event_init(php_curlm * curl_m)
 {
-	curl_async_multi_event_t *async_event = curl_async_multi_event_ctor(curl_m);;
+	curl_async_multi_event_t *async_event = curl_async_multi_event_ctor(curl_m);
 
-	if (curl_m->async_event == NULL) {
+	if (async_event == NULL) {
 		return false;
 	}
 
@@ -522,7 +574,7 @@ static int multi_timer_cb(CURLM *multi, const long timeout_ms, void *user_p)
 		if (async_event->timer != NULL) {
 			timer_event = async_event->timer;
 			async_event->timer = NULL;
-			timer_event->base.dispose(&async_event->timer->base);
+			timer_event->base.dispose(&timer_event->base);
 		}
 
 		return 0;
@@ -539,6 +591,9 @@ static int multi_timer_cb(CURLM *multi, const long timeout_ms, void *user_p)
 		multi_timer_callback, sizeof(curl_multi_event_callback_t)
 	);
 
+	// Initialize the callback with the event reference
+	async_event_callback->curl_m_event = async_event;
+
 	timer_event->base.add_callback(&timer_event->base, &async_event_callback->base);
 
 	if (UNEXPECTED(EG(exception))) {
@@ -547,6 +602,7 @@ static int multi_timer_cb(CURLM *multi, const long timeout_ms, void *user_p)
 	}
 
 	async_event->timer = timer_event;
+	timer_event->base.start(&timer_event->base);
 
 	return 0;
 }
@@ -638,12 +694,18 @@ static int multi_socket_cb(CURL *curl, const curl_socket_t socket_fd, const int 
 		socket_event->base.add_callback(&socket_event->base, &poll_callback->base);
 
 		if (UNEXPECTED(EG(exception))) {
+			// Cleanup on callback registration failure
+			socket_event->base.dispose(&socket_event->base);
+			zend_hash_index_del(&async_event->poll_list, socket_fd);
 			return CURLM_BAD_SOCKET;
 		}
 
 		socket_event->base.start(&socket_event->base);
 
 		if (UNEXPECTED(EG(exception))) {
+			// Cleanup on start failure
+			socket_event->base.dispose(&socket_event->base);
+			zend_hash_index_del(&async_event->poll_list, socket_fd);
 			return CURLM_BAD_SOCKET;
 		}
 	} else {
