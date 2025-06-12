@@ -15,7 +15,7 @@ if (PHP_CURL != "no") {
 		 CHECK_LIB("nghttp2.lib", "curl", PHP_CURL))
 		) {
         var curl_sources = "interface.c multi.c share.c curl_file.c";
-        if (typedef PHP_ASYNC_API != "undefined" && PHP_ASYNC_API == "yes") {
+        if (typeof PHP_ASYNC_API !== "undefined" && PHP_ASYNC_API == "yes") {
             curl_sources += " curl_async.c";
         }
         EXTENSION("curl", curl_sources);
