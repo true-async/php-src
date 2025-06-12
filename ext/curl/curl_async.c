@@ -54,6 +54,10 @@
  * ******************************************************************************************************************
  */
 
+///////////////////////////////////////////////////////////////
+/// COMMON/SHARED SECTION
+///////////////////////////////////////////////////////////////
+
 ZEND_TLS CURLM * curl_multi_handle = NULL;
 /**
  * List of curl_async_event_t objects that are currently being processed.
@@ -61,13 +65,106 @@ ZEND_TLS CURLM * curl_multi_handle = NULL;
 ZEND_TLS HashTable * curl_multi_event_list = NULL;
 ZEND_TLS zend_async_timer_event_t * timer = NULL;
 
-///////////////////////////////////////////////////////////////
-/// curl_async_event_t - Structure for cURL Async Events
-///////////////////////////////////////////////////////////////
-typedef struct {
+// Struct definitions
+struct curl_async_event_s {
 	zend_async_event_t base;
 	CURL *curl; // The cURL handle associated with this event
-} curl_async_event_t;
+};
+
+struct curl_async_multi_event_s {
+	zend_async_event_t base;
+	HashTable poll_list;
+	php_curlm *curl_m;
+	zend_async_timer_event_t *timer; // Timer for the multi event
+};
+
+typedef struct curl_async_event_s curl_async_event_t;
+typedef struct curl_async_multi_event_s curl_async_multi_event_t;
+
+static int curl_socket_cb(CURL *curl, const curl_socket_t socket_fd, const int what, void *user_p, void *socket_poll);
+static int curl_timer_cb(CURLM *multi, const long timeout_ms, void *user_p);
+
+static int multi_socket_cb(CURL *curl, const curl_socket_t socket_fd, const int what, void *user_p, void *data);
+static int multi_timer_cb(CURLM *multi, const long timeout_ms, void *user_p);
+
+static void process_curl_completed_handles(void)
+{
+	CURLMsg *msg;
+	int msgs_in_queue = 0;
+
+	while ((msg = curl_multi_info_read(curl_multi_handle, &msgs_in_queue))) {
+		if (msg->msg == CURLMSG_DONE) {
+
+			curl_multi_remove_handle(curl_multi_handle, msg->easy_handle);
+
+			curl_async_event_t * curl_event = zend_hash_index_find_ptr(curl_multi_event_list, (zend_ulong) msg->easy_handle);
+
+			if (curl_event == NULL) {
+				continue;
+			}
+
+			zval result;
+			ZVAL_LONG(&result, msg->data.result);
+			ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(&curl_event->base);
+			ZEND_ASYNC_CALLBACKS_NOTIFY(&curl_event->base, &result, NULL);
+			curl_event->base.stop(&curl_event->base);
+		}
+	}
+}
+
+void curl_async_setup(void)
+{
+	if (curl_multi_handle != NULL) {
+		return;
+	}
+
+	curl_multi_handle = curl_multi_init();
+	if (curl_multi_handle == NULL) {
+		return;
+	}
+
+	if (curl_multi_setopt(curl_multi_handle, CURLMOPT_SOCKETFUNCTION, curl_socket_cb) != CURLM_OK ||
+		curl_multi_setopt(curl_multi_handle, CURLMOPT_TIMERFUNCTION, curl_timer_cb) != CURLM_OK ||
+		curl_multi_setopt(curl_multi_handle, CURLMOPT_SOCKETDATA, NULL) != CURLM_OK) {
+		curl_multi_cleanup(curl_multi_handle);
+		curl_multi_handle = NULL;
+		return;
+	}
+
+	curl_multi_event_list = pemalloc(sizeof(HashTable), false);
+	if (curl_multi_event_list == NULL) {
+		curl_multi_cleanup(curl_multi_handle);
+		curl_multi_handle = NULL;
+		return;
+	}
+
+	zend_hash_init(curl_multi_event_list, 8, NULL, NULL, false);
+
+	timer = NULL;
+}
+
+void curl_async_shutdown(void)
+{
+	if (timer != NULL) {
+		timer->base.dispose(&timer->base);
+		timer = NULL;
+	}
+
+	if (curl_multi_handle != NULL) {
+		curl_multi_cleanup(curl_multi_handle);
+		curl_multi_handle = NULL;
+	}
+
+	if (curl_multi_event_list != NULL) {
+		zend_hash_destroy(curl_multi_event_list);
+		pefree(curl_multi_event_list, false);
+		curl_multi_event_list = NULL;
+	}
+}
+
+///////////////////////////////////////////////////////////////
+/// SINGLE CURL SECTION
+///////////////////////////////////////////////////////////////
 
 static void curl_async_event_add_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
 {
@@ -144,6 +241,7 @@ static curl_async_event_t * curl_async_event_ctor(CURL* curl)
 	curl_event->base.stop = curl_async_event_stop;
 	curl_event->base.dispose = curl_async_event_dtor;
 	curl_event->base.info = curl_async_event_info;
+	// Link the event to the cURL handle
 	curl_event->curl = curl;
 
 	return curl_event;
@@ -157,36 +255,7 @@ static void curl_async_event_dtor(zend_async_event_t *event)
 
 	curl_async_event_t *curl_event = (curl_async_event_t *) event;
 
-	// Cleanup is already handled in stop() - no need to duplicate
 	efree(curl_event);
-}
-
-///////////////////////////////////////////////////////////////
-/// Common Functions for Processing cURL Completed Handles
-///////////////////////////////////////////////////////////////
-static void process_curl_completed_handles(void)
-{
-	CURLMsg *msg;
-	int msgs_in_queue = 0;
-
-	while ((msg = curl_multi_info_read(curl_multi_handle, &msgs_in_queue))) {
-		if (msg->msg == CURLMSG_DONE) {
-
-			curl_multi_remove_handle(curl_multi_handle, msg->easy_handle);
-
-			curl_async_event_t * curl_event = zend_hash_index_find_ptr(curl_multi_event_list, (zend_ulong) msg->easy_handle);
-
-			if (curl_event == NULL) {
-				continue;
-			}
-
-			zval result;
-			ZVAL_LONG(&result, msg->data.result);
-			ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(&curl_event->base);
-			ZEND_ASYNC_CALLBACKS_NOTIFY(&curl_event->base, &result, NULL);
-			curl_event->base.stop(&curl_event->base);
-		}
-	}
 }
 
 static void curl_poll_callback(
@@ -213,7 +282,6 @@ static void curl_poll_callback(
 	process_curl_completed_handles();
 }
 
-
 static int curl_socket_cb(CURL *curl, const curl_socket_t socket_fd, const int what, void *user_p, void *socket_poll)
 {
 	const curl_async_event_t * curl_event = zend_hash_index_find_ptr(curl_multi_event_list, (zend_ulong) curl);
@@ -225,6 +293,7 @@ static int curl_socket_cb(CURL *curl, const curl_socket_t socket_fd, const int w
 	if (what == CURL_POLL_REMOVE) {
 		if (socket_poll != NULL) {
 			zend_async_poll_event_t *socket_event = socket_poll;
+			socket_event->base.stop(&socket_event->base);
 			socket_event->base.dispose(&socket_event->base);
 		}
 
@@ -281,6 +350,7 @@ static int curl_timer_cb(CURLM *multi, const long timeout_ms, void *user_p)
 	if (timeout_ms < 0) {
 		// Cancel timer - in new API this is handled automatically by waker cleanup
 		if (timer != NULL) {
+			timer->base.stop(&timer->base);
 			timer->base.dispose(&timer->base);
 			timer = NULL;
 		}
@@ -289,6 +359,7 @@ static int curl_timer_cb(CURLM *multi, const long timeout_ms, void *user_p)
 	}
 
 	if (timer != NULL) {
+		timer->base.stop(&timer->base);
 		timer->base.dispose(&timer->base);
 		timer = NULL;
 	}
@@ -301,9 +372,25 @@ static int curl_timer_cb(CURLM *multi, const long timeout_ms, void *user_p)
 	}
 
 	timer->base.add_callback(&timer->base, ZEND_ASYNC_EVENT_CALLBACK(timer_callback));
+	if (EG(exception)) {
+		goto fail;
+	}
+
 	timer->base.start(&timer->base);
+	if (EG(exception)) {
+		goto fail;
+	}
 
 	return 0;
+
+fail:
+	if (timer != NULL) {
+		timer->base.stop(&timer->base);
+		timer->base.dispose(&timer->base);
+		timer = NULL;
+	}
+
+	return CURLM_INTERNAL_ERROR;
 }
 
 CURLcode curl_async_perform(CURL* curl)
@@ -319,13 +406,13 @@ CURLcode curl_async_perform(CURL* curl)
 	}
 
 	zend_async_waker_new(coroutine);
-	if (UNEXPECTED(EG(exception) != NULL)) {
+	if (UNEXPECTED(EG(exception))) {
 		return CURLE_FAILED_INIT;
 	}
 
 	curl_async_event_t *curl_event = curl_async_event_ctor(curl);
 
-	if (UNEXPECTED(EG(exception) != NULL)) {
+	if (UNEXPECTED(EG(exception))) {
 		zend_async_waker_destroy(coroutine);
 		return CURLE_FAILED_INIT;
 	}
@@ -338,11 +425,17 @@ CURLcode curl_async_perform(CURL* curl)
 		NULL
 	);
 
+	if (UNEXPECTED(EG(exception))) {
+		zend_async_waker_destroy(coroutine);
+		return CURLE_FAILED_INIT;
+	}
+
 	// Suspend coroutine until curl completes
 	ZEND_ASYNC_SUSPEND();
 
 	// Check for exception
 	if (EG(exception)) {
+		zend_async_waker_destroy(coroutine);
 		return CURLE_ABORTED_BY_CALLBACK;
 	}
 
@@ -352,60 +445,12 @@ CURLcode curl_async_perform(CURL* curl)
 		result = (CURLcode) Z_LVAL(coroutine->waker->result);
 	}
 
+	zend_async_waker_destroy(coroutine);
 	return result;
 }
 
-void curl_async_setup(void)
-{
-	if (curl_multi_handle != NULL) {
-		return;
-	}
-
-	curl_multi_handle = curl_multi_init();
-	if (curl_multi_handle == NULL) {
-		return;
-	}
-
-	if (curl_multi_setopt(curl_multi_handle, CURLMOPT_SOCKETFUNCTION, curl_socket_cb) != CURLM_OK ||
-		curl_multi_setopt(curl_multi_handle, CURLMOPT_TIMERFUNCTION, curl_timer_cb) != CURLM_OK ||
-		curl_multi_setopt(curl_multi_handle, CURLMOPT_SOCKETDATA, NULL) != CURLM_OK) {
-		curl_multi_cleanup(curl_multi_handle);
-		curl_multi_handle = NULL;
-		return;
-	}
-
-	curl_multi_event_list = pemalloc(sizeof(HashTable), false);
-	if (curl_multi_event_list == NULL) {
-		curl_multi_cleanup(curl_multi_handle);
-		curl_multi_handle = NULL;
-		return;
-	}
-	zend_hash_init(curl_multi_event_list, 8, NULL, NULL, false);
-
-	timer = NULL;
-}
-
-void curl_async_shutdown(void)
-{
-	if (timer != NULL) {
-		timer->base.dispose(&timer->base);
-		timer = NULL;
-	}
-
-	if (curl_multi_handle != NULL) {
-		curl_multi_cleanup(curl_multi_handle);
-		curl_multi_handle = NULL;
-	}
-
-	if (curl_multi_event_list != NULL) {
-		zend_hash_destroy(curl_multi_event_list);
-		pefree(curl_multi_event_list, false);
-		curl_multi_event_list = NULL;
-	}
-}
-
 ///////////////////////////////////////////////////////////////
-/// CURL Async Multi API
+/// MULTI CURL SECTION
 ///
 /// MULTI HANDLE FLOW:
 /// 1. php_curlm created in PHP userland
@@ -424,20 +469,11 @@ void curl_async_shutdown(void)
 /// ⚠️ IMPORTANT: Multiple coroutines can simultaneously wait on same php_curlm!
 ///              Each select() creates its own Waker, but all use same curl_multi_event
 ///////////////////////////////////////////////////////////////
-typedef struct {
-	zend_async_event_t base;
-	HashTable poll_list;
-	php_curlm *curl_m;
-	zend_async_timer_event_t *timer; // Timer for the multi event
-} curl_async_multi_event_t;
 
 typedef struct {
 	zend_async_event_callback_t base;
 	curl_async_multi_event_t *curl_m_event;
 } curl_multi_event_callback_t;
-
-static int multi_socket_cb(CURL *curl, const curl_socket_t socket_fd, const int what, void *user_p, void *data);
-static int multi_timer_cb(CURLM *multi, const long timeout_ms, void *user_p);
 
 static void curl_async_multi_event_add_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
 {
@@ -451,11 +487,6 @@ static void curl_async_multi_event_remove_callback(zend_async_event_t *event, ze
 
 static void curl_async_multi_event_start(zend_async_event_t *event)
 {
-	curl_async_multi_event_t *curl_event = (curl_async_multi_event_t *) event;
-
-	if (UNEXPECTED(EG(exception) != NULL)) {
-		event->stop(event);
-	}
 }
 
 static void curl_async_multi_event_stop(zend_async_event_t *event)
@@ -469,14 +500,17 @@ static void curl_async_multi_event_stop(zend_async_event_t *event)
 
 	// Cleanup timer if it exists
 	if (curl_event->timer != NULL) {
-		curl_event->timer->base.dispose(&curl_event->timer->base);
+		zend_async_timer_event_t *timer_event = curl_event->timer;
 		curl_event->timer = NULL;
+		timer_event->base.stop(&timer_event->base);
+		timer_event->base.dispose(&timer_event->base);
 	}
 
 	// Cleanup all socket events in poll_list
 	zend_async_poll_event_t *socket_event;
 	ZEND_HASH_FOREACH_PTR(&curl_event->poll_list, socket_event) {
 		if (socket_event != NULL) {
+			socket_event->base.stop(&socket_event->base);
 			socket_event->base.dispose(&socket_event->base);
 		}
 	} ZEND_HASH_FOREACH_END();
@@ -521,19 +555,19 @@ static zend_always_inline bool curl_async_multi_event_init(php_curlm * curl_m)
 {
 	curl_async_multi_event_t *async_event = curl_async_multi_event_ctor(curl_m);
 
-	if (async_event == NULL) {
+	if (UNEXPECTED(async_event == NULL)) {
+		return false;
+	}
+
+	async_event->base.start(&async_event->base);
+
+	if (UNEXPECTED(EG(exception))) {
+		async_event->base.dispose(&async_event->base);
 		return false;
 	}
 
 	curl_m->async_event = (void *)async_event;
-	async_event->base.start(&async_event->base);
-
-	if (UNEXPECTED(EG(exception) != NULL)) {
-		async_event->base.dispose(&async_event->base);
-		curl_m->async_event = NULL;
-		return false;
-	}
-
+	async_event->curl_m = curl_m;
 	return true;
 }
 
@@ -550,9 +584,6 @@ static void curl_async_multi_event_dtor(zend_async_event_t *event)
 	efree(curl_event);
 }
 
-///////////////////////////////////////////////////////////////
-/// curl_async_select - Wait for cURL Events
-///////////////////////////////////////////////////////////////
 static void multi_timer_callback(
 	zend_async_event_t *event, zend_async_event_callback_t *callback, void * result, zend_object *exception
 )
@@ -597,12 +628,19 @@ static int multi_timer_cb(CURLM *multi, const long timeout_ms, void *user_p)
 	timer_event->base.add_callback(&timer_event->base, &async_event_callback->base);
 
 	if (UNEXPECTED(EG(exception))) {
+		timer_event->base.stop(&timer_event->base);
+		timer_event->base.dispose(&timer_event->base);
+		return CURLM_INTERNAL_ERROR;
+	}
+
+	timer_event->base.start(&timer_event->base);
+	if (UNEXPECTED(EG(exception))) {
+		timer_event->base.stop(&timer_event->base);
 		timer_event->base.dispose(&timer_event->base);
 		return CURLM_INTERNAL_ERROR;
 	}
 
 	async_event->timer = timer_event;
-	timer_event->base.start(&timer_event->base);
 
 	return 0;
 }
@@ -695,8 +733,8 @@ static int multi_socket_cb(CURL *curl, const curl_socket_t socket_fd, const int 
 
 		if (UNEXPECTED(EG(exception))) {
 			// Cleanup on callback registration failure
-			socket_event->base.dispose(&socket_event->base);
 			zend_hash_index_del(&async_event->poll_list, socket_fd);
+			poll_callback->base.dispose(&poll_callback->base, NULL);
 			return CURLM_BAD_SOCKET;
 		}
 
@@ -704,8 +742,8 @@ static int multi_socket_cb(CURL *curl, const curl_socket_t socket_fd, const int 
 
 		if (UNEXPECTED(EG(exception))) {
 			// Cleanup on start failure
-			socket_event->base.dispose(&socket_event->base);
 			zend_hash_index_del(&async_event->poll_list, socket_fd);
+			poll_callback->base.dispose(&poll_callback->base, NULL);
 			return CURLM_BAD_SOCKET;
 		}
 	} else {
