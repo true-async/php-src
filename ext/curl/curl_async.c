@@ -43,14 +43,6 @@
  * 4. Suspends coroutine until any socket becomes ready or timeout
  * 5. Multi callbacks dynamically create/manage poll events for active sockets
  * 6. Resumes on first I/O event or timeout (not an error)
- *
- * === KEY ARCHITECTURAL NOTES ===
- * - Descriptors are added to waker AFTER coroutine suspension (CURL integration requirement)
- * - Each multi handle gets its own event object with isolated socket/timer management
- * - Global multi handle is shared for single requests, per-handle events for multi
- * - Waker destruction automatically cleans up all associated descriptors
- * - Event objects implement proper start/stop/dispose lifecycle management
- *
  * ******************************************************************************************************************
  */
 
