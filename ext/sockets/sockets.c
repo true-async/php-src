@@ -472,6 +472,8 @@ static int recv_async(php_socket *sock, void *buf, size_t maxlen, int flags)
 		return 0;
 	}
 
+	flags &= ~MSG_WAITALL;
+
 	while (total_read < maxlen) {
 		const int bytes_received = recv(sock->bsd_socket, buffer + total_read, (int)maxlen - total_read, flags);
 
