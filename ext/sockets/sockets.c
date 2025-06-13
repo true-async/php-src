@@ -137,6 +137,10 @@ static zend_object *socket_create_object(zend_class_entry *class_type) {
 
 	intern->bsd_socket = -1; /* invalid socket */
 	intern->type		 = PF_UNSPEC;
+#ifdef PHP_ASYNC_API
+	intern->socket_type  = 0; /* default socket type */
+	intern->non_blocking = 0; /* default is blocking */
+#endif
 	intern->error		 = 0;
 	intern->blocking	 = 1;
 	ZVAL_UNDEF(&intern->zstream);
@@ -269,6 +273,9 @@ static bool php_open_listen_sock(php_socket *sock, unsigned short port, int back
 	}
 
 	sock->type = PF_INET;
+#ifdef PHP_ASYNC_API
+	sock->socket_type = SOCK_STREAM;
+#endif
 
 	if (bind(sock->bsd_socket, (struct sockaddr *)&la, sizeof(la)) != 0) {
 		PHP_SOCKET_ERROR(sock, "unable to bind to given address", errno);
@@ -342,6 +349,10 @@ static bool php_accept_connect(php_socket *in_sock, php_socket *out_sock, struct
 	out_sock->error = 0;
 	out_sock->blocking = 1;
 	out_sock->type = la->sa_family;
+#ifdef PHP_ASYNC_API
+	// inherit the socket type from the listening socket
+	out_sock->socket_type = in_sock->socket_type;
+#endif
 
 	return 1;
 }
@@ -472,6 +483,10 @@ static int recv_async(php_socket *sock, void *buf, size_t maxlen, int flags)
 		return 0;
 	}
 
+	const bool no_wait_all = false == ((flags & MSG_WAITALL) != 0
+							&& (sock->socket_type == SOCK_STREAM || sock->socket_type == SOCK_SEQPACKET));
+	bool has_waited = false;
+
 	flags &= ~MSG_WAITALL;
 
 	while (total_read < maxlen) {
@@ -479,17 +494,27 @@ static int recv_async(php_socket *sock, void *buf, size_t maxlen, int flags)
 
 		if (bytes_received > 0) {
 			total_read += bytes_received;
-			return total_read;
+			
+			if (no_wait_all) {
+				return total_read;
+			}
 		} else if (bytes_received == 0) {
 			return total_read;
 		} else if (errno == EAGAIN || errno == EWOULDBLOCK) {
-
 			network_async_wait_socket(sock->bsd_socket, ASYNC_READABLE, 0);
 
 			if (UNEXPECTED(EG(exception) != NULL)) {
-				zend_clear_exception();
+				if (false == instanceof_function(EG(exception)->ce, zend_ce_cancellation_exception)) {
+					zend_clear_exception();
+				}
 				return (total_read > 0) ? total_read : -1;
 			}
+
+			if (no_wait_all && has_waited) {
+				return (total_read > 0) ? total_read : -1;
+			}
+
+			has_waited = true;
 		} else {
 			return -1;
 		}
@@ -507,7 +532,11 @@ static int send_async(php_socket *sock, const void *buf, size_t len, int flags)
 		return 0;
 	}
 
-	while (total_sent < len) {
+		const bool no_wait_all = false == ((flags & MSG_WAITALL) != 0
+								&& (sock->socket_type == SOCK_STREAM || sock->socket_type == SOCK_SEQPACKET));
+		bool has_waited = false;
+
+		while (total_sent < len) {
 #ifndef PHP_WIN32
 		const int bytes_sent = write(sock->bsd_socket, buffer + total_sent, (int)len - total_sent);
 #else
@@ -516,15 +545,28 @@ static int send_async(php_socket *sock, const void *buf, size_t len, int flags)
 
 		if (bytes_sent > 0) {
 			total_sent += bytes_sent;
+			
+			if (no_wait_all) {
+				return total_sent;
+			}
 		} else if (bytes_sent == 0) {
 			return total_sent;
 		} else if (errno == EAGAIN || errno == EWOULDBLOCK) {
 			network_async_wait_socket(sock->bsd_socket, ASYNC_WRITABLE, 0);
 
 			if (UNEXPECTED(EG(exception) != NULL)) {
-				zend_clear_exception();
+				if (false == instanceof_function(EG(exception)->ce, zend_ce_cancellation_exception)) {
+					zend_clear_exception();
+				}
 				return (total_sent > 0) ? total_sent : -1;
 			}
+
+			if (no_wait_all && has_waited) {
+				return (total_sent > 0) ? total_sent : -1;
+			}
+
+			has_waited = true;
+
 		} else {
 			return -1;
 		}
@@ -542,20 +584,39 @@ static int recvfrom_async(php_socket *sock, void *buf, size_t maxlen, int flags,
 		return 0;
 	}
 
+	const bool no_wait_all = false == ((flags & MSG_WAITALL) != 0
+							&& (sock->socket_type == SOCK_STREAM || sock->socket_type == SOCK_SEQPACKET));
+	bool has_waited = false;
+
 	while (total_read < maxlen) {
 		const int bytes_received = recvfrom(sock->bsd_socket, buffer + total_read, (int)maxlen - total_read, flags, src_addr, addrlen);
 
 		if (bytes_received > 0) {
 			total_read += bytes_received;
+			
+			if (no_wait_all) {
+				return total_read;
+			}
 		} else if (bytes_received == 0) {
 			return total_read;
 		} else if (errno == EAGAIN || errno == EWOULDBLOCK) {
 			network_async_wait_socket(sock->bsd_socket, ASYNC_READABLE, 0);
 
-			if (UNEXPECTED(EG(exception) != NULL)) {
-				zend_clear_exception();
+			if (UNEXPECTED(EG(exception))) {
+				if (false == instanceof_function(EG(exception)->ce, zend_ce_cancellation_exception)) {
+					zend_clear_exception();
+				}
+
 				return (total_read > 0) ? total_read : -1;
 			}
+
+			if (no_wait_all && has_waited) {
+				// If we already waited once, we can return the total read bytes
+				return (total_read > 0) ? total_read : -1;
+			}
+
+			has_waited = true;
+
 		} else {
 			return -1;
 		}
@@ -573,20 +634,38 @@ static int sendto_async(php_socket *sock, const void *buf, size_t len, int flags
 		return 0;
 	}
 
+	const bool no_wait_all = false == ((flags & MSG_WAITALL) != 0
+								&& (sock->socket_type == SOCK_STREAM || sock->socket_type == SOCK_SEQPACKET));
+
+	bool was_waited = false;
+
 	while (total_sent < len) {
 		const int bytes_sent = sendto(sock->bsd_socket, buffer + total_sent, (int)len - total_sent, flags, dest_addr, addrlen);
 
 		if (bytes_sent > 0) {
 			total_sent += bytes_sent;
+			
+			if (no_wait_all) {
+				return total_sent;
+			}
 		} else if (bytes_sent == 0) {
 			return total_sent;
 		} else if (errno == EAGAIN || errno == EWOULDBLOCK) {
 			network_async_wait_socket(sock->bsd_socket, ASYNC_WRITABLE, 0);
 
 			if (UNEXPECTED(EG(exception) != NULL)) {
-				zend_clear_exception();
+				if (false == instanceof_function(EG(exception)->ce, zend_ce_cancellation_exception)) {
+					zend_clear_exception();
+				}
 				return (total_sent > 0) ? total_sent : -1;
 			}
+
+			if (no_wait_all && was_waited) {
+				return (total_sent > 0) ? total_sent : -1;
+			}
+
+			was_waited = true;
+
 		} else {
 			return -1;
 		}
@@ -1467,6 +1546,9 @@ PHP_FUNCTION(socket_create)
 
 	php_sock->bsd_socket = socket(domain, type, protocol);
 	php_sock->type = domain;
+#ifdef PHP_ASYNC_API
+	php_sock->socket_type = type;
+#endif
 
 	if (IS_INVALID_SOCKET(php_sock)) {
 		SOCKETS_G(last_error) = errno;
@@ -2769,6 +2851,10 @@ PHP_FUNCTION(socket_create_pair)
 	php_sock[1]->bsd_socket = fds_array[1];
 	php_sock[0]->type		= domain;
 	php_sock[1]->type		= domain;
+#ifdef PHP_ASYNC_API
+	php_sock[0]->socket_type = (int)type;
+	php_sock[1]->socket_type = (int)type;
+#endif
 	php_sock[0]->error		= 0;
 	php_sock[1]->error		= 0;
 	php_sock[0]->blocking	= 1;
@@ -2912,6 +2998,18 @@ bool socket_import_file_descriptor(PHP_SOCKET socket, php_socket *retsock)
 		PHP_SOCKET_ERROR(retsock, "Unable to obtain socket family", errno);
 		return 0;
 	}
+
+#ifdef PHP_ASYNC_API
+	int			socket_type;
+	socklen_t	socket_type_len = sizeof(socket_type);
+
+	if (getsockopt(socket, SOL_SOCKET, SO_TYPE, (char *)&socket_type, &socket_type_len) == 0) {
+		retsock->type = socket_type;
+	} else {
+		PHP_SOCKET_ERROR(retsock, "Unable to obtain socket type", errno);
+		return 0;
+	}
+#endif
 
 	/* determine blocking mode */
 #ifndef PHP_WIN32
@@ -3237,6 +3335,10 @@ PHP_FUNCTION(socket_addrinfo_bind)
 
 	php_sock->bsd_socket = socket(ai->addrinfo.ai_family, ai->addrinfo.ai_socktype, ai->addrinfo.ai_protocol);
 	php_sock->type = ai->addrinfo.ai_family;
+#ifdef PHP_ASYNC_API
+	php_sock->socket_type = ai->addrinfo.ai_socktype;
+	php_sock->non_blocking = 0;
+#endif
 
 	if (IS_INVALID_SOCKET(php_sock)) {
 		SOCKETS_G(last_error) = errno;
@@ -3302,6 +3404,10 @@ PHP_FUNCTION(socket_addrinfo_connect)
 
 	php_sock->bsd_socket = socket(ai->addrinfo.ai_family, ai->addrinfo.ai_socktype, ai->addrinfo.ai_protocol);
 	php_sock->type = ai->addrinfo.ai_family;
+#ifdef PHP_ASYNC_API
+	php_sock->socket_type = ai->addrinfo.ai_socktype;
+	php_sock->non_blocking = 0;
+#endif
 
 	if (IS_INVALID_SOCKET(php_sock)) {
 		SOCKETS_G(last_error) = errno;
@@ -3509,6 +3615,10 @@ PHP_FUNCTION(socket_wsaprotocol_info_import)
 
 	php_sock->bsd_socket = sock;
 	php_sock->type = wi.iAddressFamily;
+#ifdef PHP_ASYNC_API
+	php_sock->socket_type = wi.iSocketType; /* SOCK_STREAM / SOCK_DGRAM / … */
+	php_sock->non_blocking = 0;
+#endif
 	php_sock->error = 0;
 	php_sock->blocking = 1;
 }

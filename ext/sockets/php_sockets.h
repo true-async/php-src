@@ -74,6 +74,11 @@ typedef struct {
 #ifdef PHP_ASYNC_API
 	/* Equals TRUE if the socket was transferred to a nonblocking mode */
 	bool 		non_blocking;
+	/*
+	 * socket type, e.g. SOCK_STREAM, SOCK_DGRAM
+	 * Needed to understand how to work with the buffer correctly.
+	 */
+	int         socket_type;
 #endif
 	zval		zstream;
 	zend_object std;
