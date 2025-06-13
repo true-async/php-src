@@ -314,3 +314,4 @@ tmp-php.ini
 # True Asynchronous extensions
 # ------------------------------------------------------------------------------
 /ext/async
+/ext/http_server
