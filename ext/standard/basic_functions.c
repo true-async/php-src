@@ -1184,7 +1184,7 @@ PHP_FUNCTION(usleep)
 		if (UNEXPECTED(EG(exception) != NULL)) {
 			RETURN_THROWS();
 		}
-		RETURN_LONG(0);
+		return;
 	}
 #endif
 
