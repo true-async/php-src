@@ -506,29 +506,6 @@ static void curl_async_multi_event_stop(zend_async_event_t *event)
 	if (UNEXPECTED(ZEND_ASYNC_EVENT_IS_CLOSED(event))) {
 		return; // Event is already closed, nothing to do
 	}
-
-	curl_async_multi_event_t *curl_event = (curl_async_multi_event_t *) event;
-	ZEND_ASYNC_EVENT_SET_CLOSED(event);
-
-	// Cleanup timer if it exists
-	if (curl_event->timer != NULL) {
-		zend_async_timer_event_t *timer_event = curl_event->timer;
-		curl_event->timer = NULL;
-		timer_event->base.stop(&timer_event->base);
-		timer_event->base.dispose(&timer_event->base);
-	}
-
-	// Cleanup all socket events in poll_list
-	zend_async_poll_event_t *socket_event;
-	ZEND_HASH_FOREACH_PTR(&curl_event->poll_list, socket_event) {
-		if (socket_event != NULL) {
-			socket_event->base.stop(&socket_event->base);
-			socket_event->base.dispose(&socket_event->base);
-		}
-	} ZEND_HASH_FOREACH_END();
-
-	// Clear the poll list
-	zend_hash_clean(&curl_event->poll_list);
 }
 
 static zend_string * curl_async_multi_event_info(zend_async_event_t *event)
@@ -590,8 +567,30 @@ static void curl_async_multi_event_dtor(zend_async_event_t *event)
 	}
 
 	curl_async_multi_event_t *curl_event = (curl_async_multi_event_t *) event;
+	ZEND_ASYNC_EVENT_SET_CLOSED(event);
 
+	// Cleanup timer if it exists
+	if (curl_event->timer != NULL) {
+		zend_async_timer_event_t *timer_event = curl_event->timer;
+		curl_event->timer = NULL;
+		timer_event->base.stop(&timer_event->base);
+		timer_event->base.dispose(&timer_event->base);
+	}
+
+	// Cleanup all socket events in poll_list
+	zend_async_poll_event_t *socket_event;
+	ZEND_HASH_FOREACH_PTR(&curl_event->poll_list, socket_event) {
+		if (socket_event != NULL) {
+			socket_event->base.stop(&socket_event->base);
+			socket_event->base.dispose(&socket_event->base);
+		}
+	} ZEND_HASH_FOREACH_END();
+
+	// Clear the poll list
+	zend_hash_clean(&curl_event->poll_list);
 	zend_hash_destroy(&curl_event->poll_list);
+
+	zend_async_callbacks_free(event);
 
 	efree(curl_event);
 }
@@ -613,14 +612,15 @@ static int multi_timer_cb(CURLM *multi, const long timeout_ms, void *user_p)
         return CURLM_INTERNAL_ERROR;
     }
 
-	if (timeout_ms < 0) {
-		if (async_event->timer != NULL) {
-			timer_event = async_event->timer;
-			async_event->timer = NULL;
-			timer_event->base.stop(&timer_event->base);
-			timer_event->base.dispose(&timer_event->base);
-		}
+	// Remove previous timer if it exists
+	if (async_event->timer != NULL) {
+		timer_event = async_event->timer;
+		async_event->timer = NULL;
+		timer_event->base.stop(&timer_event->base);
+		timer_event->base.dispose(&timer_event->base);
+	}
 
+	if (timeout_ms < 0) {
 		return 0;
 	}
 
@@ -835,6 +835,13 @@ CURLMcode curl_async_select(php_curlm * curl_m, int timeout_ms, int* numfds)
 	curl_async_multi_event_t *async_event = curl_m->async_event;
 	int result = CURLM_INTERNAL_ERROR;
 
+	if (ZEND_ASYNC_EVENT_IS_CLOSED(&async_event->base)) {
+		zend_throw_error(
+			ZEND_ASYNC_GET_CE(ZEND_ASYNC_EXCEPTION_DEFAULT), "Cannot select on a closed cURL multi event"
+		);
+		return CURLM_BAD_HANDLE;
+	}
+
 	zend_async_waker_new_with_timeout(coroutine, timeout_ms, NULL);
 
 	if (UNEXPECTED(EG(exception))) {
@@ -875,6 +882,8 @@ CURLMcode curl_async_select(php_curlm * curl_m, int timeout_ms, int* numfds)
 finally:
 	// Calculate the number of file descriptors that are ready
 	*numfds = async_event->poll_list.nNumUsed;
+
+	zend_async_waker_destroy(coroutine);
 
 	return result;
 }

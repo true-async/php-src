@@ -372,6 +372,12 @@ PHP_FUNCTION(curl_multi_close)
 
 	mh = Z_CURL_MULTI_P(z_mh);
 
+#ifdef PHP_ASYNC_API
+	if (mh->async_event) {
+		curl_async_dtor(mh);
+	}
+#endif
+
 	for (pz_ch = (zval *)zend_llist_get_first_ex(&mh->easyh, &pos); pz_ch;
 		pz_ch = (zval *)zend_llist_get_next_ex(&mh->easyh, &pos)) {
 		php_curl *ch = Z_CURL_P(pz_ch);
