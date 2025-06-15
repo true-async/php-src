@@ -245,6 +245,8 @@ static void curl_async_event_dtor(zend_async_event_t *event)
 		event->stop(event);
 	}
 
+	zend_async_callbacks_free(event);
+
 	curl_async_event_t *curl_event = (curl_async_event_t *) event;
 
 	efree(curl_event);
@@ -324,6 +326,24 @@ static int curl_socket_cb(CURL *curl, const curl_socket_t socket_fd, const int w
 		}
 
 		curl_multi_assign(curl_multi_handle, socket_fd, socket_event);
+	} else {
+		// Update existing socket event
+		zend_async_poll_event_t *socket_event = socket_poll;
+		socket_event->base.stop(&socket_event->base);
+
+		zend_ulong events = 0;
+
+		if (what & CURL_POLL_IN) {
+			events |= ASYNC_READABLE;
+		}
+
+		if (what & CURL_POLL_OUT) {
+			events |= ASYNC_WRITABLE;
+		}
+
+		socket_event->events = events;
+		ZEND_ASYNC_EVENT_CLR_CLOSED(&socket_event->base);
+		socket_event->base.start(&socket_event->base);
 	}
 
 	return 0;
@@ -740,13 +760,26 @@ static int multi_socket_cb(CURL *curl, const curl_socket_t socket_fd, const int 
 		}
 	} else {
 		// Update existing socket event
+		zend_ulong events = 0;
+
+		socket_event = zend_hash_index_find_ptr(&async_event->poll_list, socket_fd);
+		if (socket_event == NULL) {
+			return -1; // Should not happen, but just in case
+		}
+
+		socket_event->base.stop(&socket_event->base);
+
 		if (what & CURL_POLL_IN) {
-			socket_event->events |= ASYNC_READABLE;
+			events |= ASYNC_READABLE;
 		}
 
 		if (what & CURL_POLL_OUT) {
-			socket_event->events |= ASYNC_WRITABLE;
+			events |= ASYNC_WRITABLE;
 		}
+
+		socket_event->events = events;
+		ZEND_ASYNC_EVENT_CLR_CLOSED(&socket_event->base);
+		socket_event->base.start(&socket_event->base);
 	}
 
 	return 0;

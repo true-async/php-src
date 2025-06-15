@@ -2486,8 +2486,6 @@ PHP_FUNCTION(curl_exec)
 #else
 	error = curl_easy_perform(ch->cp);
 #endif
-
-	error = curl_easy_perform(ch->cp);
 	SAVE_CURL_ERROR(ch, error);
 
 	if (error != CURLE_OK) {
