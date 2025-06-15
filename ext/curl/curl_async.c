@@ -555,10 +555,10 @@ static curl_async_multi_event_t * curl_async_multi_event_ctor(php_curlm * curl_m
 	zend_hash_init(&curl_event->poll_list, 4, NULL, NULL, false);
 
 	// Set curl multi options
-	curl_multi_setopt(curl_event->curl_m, CURLMOPT_SOCKETDATA, curl_event);
-	curl_multi_setopt(curl_event->curl_m, CURLMOPT_TIMERDATA, curl_event);
-	curl_multi_setopt(curl_event->curl_m, CURLMOPT_SOCKETFUNCTION, multi_socket_cb);
-	curl_multi_setopt(curl_event->curl_m, CURLMOPT_TIMERFUNCTION, multi_timer_cb);
+	curl_multi_setopt(curl_m->multi, CURLMOPT_SOCKETDATA, curl_event);
+	curl_multi_setopt(curl_m->multi, CURLMOPT_TIMERDATA, curl_event);
+	curl_multi_setopt(curl_m->multi, CURLMOPT_SOCKETFUNCTION, multi_socket_cb);
+	curl_multi_setopt(curl_m->multi, CURLMOPT_TIMERFUNCTION, multi_timer_cb);
 
 	return curl_event;
 }
@@ -601,7 +601,7 @@ static void multi_timer_callback(
 )
 {
 	curl_multi_event_callback_t *async_event_callback = (curl_multi_event_callback_t *) callback;
-	curl_multi_socket_action(async_event_callback->curl_m_event->curl_m, CURL_SOCKET_TIMEOUT, 0, NULL);
+	curl_multi_socket_action(async_event_callback->curl_m_event->curl_m->multi, CURL_SOCKET_TIMEOUT, 0, NULL);
 }
 
 static int multi_timer_cb(CURLM *multi, const long timeout_ms, void *user_p)
@@ -617,6 +617,7 @@ static int multi_timer_cb(CURLM *multi, const long timeout_ms, void *user_p)
 		if (async_event->timer != NULL) {
 			timer_event = async_event->timer;
 			async_event->timer = NULL;
+			timer_event->base.stop(&timer_event->base);
 			timer_event->base.dispose(&timer_event->base);
 		}
 
@@ -679,7 +680,7 @@ static void curl_multi_poll_callback(
 		action |= CURL_CSELECT_ERR;
 	}
 
-	curl_multi_socket_action(poll_callback->curl_m_event->curl_m, socket_event->socket, action, NULL);
+	curl_multi_socket_action(poll_callback->curl_m_event->curl_m->multi, socket_event->socket, action, NULL);
 }
 
 static int multi_socket_cb(CURL *curl, const curl_socket_t socket_fd, const int what, void *user_p, void *data)
@@ -695,12 +696,17 @@ static int multi_socket_cb(CURL *curl, const curl_socket_t socket_fd, const int 
 			return 0;
 		}
 
-		if (zend_hash_index_find_ptr(&async_event->poll_list, socket_fd) == NULL) {
+		zend_async_poll_event_t * socket_event = zend_hash_index_find_ptr(&async_event->poll_list, socket_fd);
+
+		if (socket_event == NULL) {
             return 0;
         }
 
 		// Remove from poll list
 		zend_hash_index_del(&async_event->poll_list, socket_fd);
+		// Stop and dispose the socket event
+		socket_event->base.stop(&socket_event->base);
+		socket_event->base.dispose(&socket_event->base);
 
 		// Check if no more sockets to monitor
 		if (async_event->poll_list.nNumUsed == 0) {
