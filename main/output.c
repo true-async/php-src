@@ -31,6 +31,12 @@
 #include "zend_stack.h"
 #include "php_output.h"
 
+#ifdef PHP_ASYNC_API
+# include "Zend/zend_async_API.h"
+static void php_output_async_init(void);
+static uint32_t php_output_context_key = 0;
+#endif
+
 PHPAPI ZEND_DECLARE_MODULE_GLOBALS(output)
 
 const char php_output_default_handler_name[sizeof("default output handler")] = "default output handler";
@@ -70,6 +76,10 @@ static int php_output_stack_apply_status(void *h, void *z);
 static zend_result php_output_handler_compat_func(void **handler_context, php_output_context *output_context);
 static zend_result php_output_handler_default_func(void **handler_context, php_output_context *output_context);
 static zend_result php_output_handler_devnull_func(void **handler_context, php_output_context *output_context);
+
+#ifdef PHP_ASYNC_API
+static php_output_context_t *php_output_ensure_coroutine_context(zend_coroutine_t *coroutine);
+#endif
 /* }}} */
 
 /* {{{ static void php_output_init_globals(zend_output_globals *G)
@@ -102,24 +112,24 @@ static size_t (*php_output_direct)(const char *str, size_t str_len) = php_output
 static void php_output_header(void)
 {
 	if (!SG(headers_sent)) {
-		if (!OG(output_start_filename)) {
+		if (!ASYNC_OG(output_start_filename)) {
 			if (zend_is_compiling()) {
-				OG(output_start_filename) = zend_get_compiled_filename();
-				OG(output_start_lineno) = zend_get_compiled_lineno();
+				ASYNC_OG(output_start_filename) = zend_get_compiled_filename();
+				ASYNC_OG(output_start_lineno) = zend_get_compiled_lineno();
 			} else if (zend_is_executing()) {
-				OG(output_start_filename) = zend_get_executed_filename_ex();
-				OG(output_start_lineno) = zend_get_executed_lineno();
+				ASYNC_OG(output_start_filename) = zend_get_executed_filename_ex();
+				ASYNC_OG(output_start_lineno) = zend_get_executed_lineno();
 			}
-			if (OG(output_start_filename)) {
-				zend_string_addref(OG(output_start_filename));
+			if (ASYNC_OG(output_start_filename)) {
+				zend_string_addref(ASYNC_OG(output_start_filename));
 			}
 #if PHP_OUTPUT_DEBUG
 			fprintf(stderr, "!!! output started at: %s (%d)\n",
-				ZSTR_VAL(OG(output_start_filename)), OG(output_start_lineno));
+				ZSTR_VAL(ASYNC_OG(output_start_filename)), ASYNC_OG(output_start_lineno));
 #endif
 		}
 		if (!php_header()) {
-			OG(flags) |= PHP_OUTPUT_DISABLED;
+			ASYNC_OG(flags) |= PHP_OUTPUT_DISABLED;
 		}
 	}
 }
@@ -140,6 +150,11 @@ PHPAPI void php_output_startup(void)
 	zend_hash_init(&php_output_handler_conflicts, 8, NULL, NULL, 1);
 	zend_hash_init(&php_output_handler_reverse_conflicts, 8, NULL, reverse_conflict_dtor, 1);
 	php_output_direct = php_output_stdout;
+
+#ifdef PHP_ASYNC_API
+	/* Initialize async output context switching */
+	php_output_async_init();
+#endif
 }
 /* }}} */
 
@@ -164,8 +179,8 @@ PHPAPI int php_output_activate(void)
 	memset(&output_globals, 0, sizeof(zend_output_globals));
 #endif
 
-	zend_stack_init(&OG(handlers), sizeof(php_output_handler *));
-	OG(flags) |= PHP_OUTPUT_ACTIVATED;
+	zend_stack_init(&ASYNC_OG(handlers), sizeof(php_output_handler *));
+	ASYNC_OG(flags) |= PHP_OUTPUT_ACTIVATED;
 
 	return SUCCESS;
 }
@@ -177,26 +192,26 @@ PHPAPI void php_output_deactivate(void)
 {
 	php_output_handler **handler = NULL;
 
-	if ((OG(flags) & PHP_OUTPUT_ACTIVATED)) {
+	if ((ASYNC_OG(flags) & PHP_OUTPUT_ACTIVATED)) {
 		php_output_header();
 
-		OG(flags) ^= PHP_OUTPUT_ACTIVATED;
-		OG(active) = NULL;
-		OG(running) = NULL;
+		ASYNC_OG(flags) ^= PHP_OUTPUT_ACTIVATED;
+		ASYNC_OG(active) = NULL;
+		ASYNC_OG(running) = NULL;
 
 		/* release all output handlers */
-		if (OG(handlers).elements) {
-			while ((handler = zend_stack_top(&OG(handlers)))) {
+		if (ASYNC_OG(handlers).elements) {
+			while ((handler = zend_stack_top(&ASYNC_OG(handlers)))) {
 				php_output_handler_free(handler);
-				zend_stack_del_top(&OG(handlers));
+				zend_stack_del_top(&ASYNC_OG(handlers));
 			}
 		}
-		zend_stack_destroy(&OG(handlers));
+		zend_stack_destroy(&ASYNC_OG(handlers));
 	}
 
-	if (OG(output_start_filename)) {
-		zend_string_release(OG(output_start_filename));
-		OG(output_start_filename) = NULL;
+	if (ASYNC_OG(output_start_filename)) {
+		zend_string_release(ASYNC_OG(output_start_filename));
+		ASYNC_OG(output_start_filename) = NULL;
 	}
 }
 /* }}} */
@@ -205,7 +220,7 @@ PHPAPI void php_output_deactivate(void)
  * Used by SAPIs to disable output */
 PHPAPI void php_output_set_status(int status)
 {
-	OG(flags) = (OG(flags) & ~0xf) | (status & 0xf);
+	ASYNC_OG(flags) = (ASYNC_OG(flags) & ~0xf) | (status & 0xf);
 }
 /* }}} */
 
@@ -214,9 +229,9 @@ PHPAPI void php_output_set_status(int status)
 PHPAPI int php_output_get_status(void)
 {
 	return (
-		OG(flags)
-		|	(OG(active) ? PHP_OUTPUT_ACTIVE : 0)
-		|	(OG(running)? PHP_OUTPUT_LOCKED : 0)
+		ASYNC_OG(flags)
+		|	(ASYNC_OG(active) ? PHP_OUTPUT_ACTIVE : 0)
+		|	(ASYNC_OG(running)? PHP_OUTPUT_LOCKED : 0)
 	) & 0xff;
 }
 /* }}} */
@@ -225,7 +240,7 @@ PHPAPI int php_output_get_status(void)
  * Unbuffered write */
 PHPAPI size_t php_output_write_unbuffered(const char *str, size_t len)
 {
-	if (OG(flags) & PHP_OUTPUT_ACTIVATED) {
+	if (ASYNC_OG(flags) & PHP_OUTPUT_ACTIVATED) {
 		return sapi_module.ub_write(str, len);
 	}
 	return php_output_direct(str, len);
@@ -236,11 +251,11 @@ PHPAPI size_t php_output_write_unbuffered(const char *str, size_t len)
  * Buffered write */
 PHPAPI size_t php_output_write(const char *str, size_t len)
 {
-	if (OG(flags) & PHP_OUTPUT_ACTIVATED) {
+	if (ASYNC_OG(flags) & PHP_OUTPUT_ACTIVATED) {
 		php_output_op(PHP_OUTPUT_HANDLER_WRITE, str, len);
 		return len;
 	}
-	if (OG(flags) & PHP_OUTPUT_DISABLED) {
+	if (ASYNC_OG(flags) & PHP_OUTPUT_DISABLED) {
 		return 0;
 	}
 	return php_output_direct(str, len);
@@ -253,13 +268,13 @@ PHPAPI zend_result php_output_flush(void)
 {
 	php_output_context context;
 
-	if (OG(active) && (OG(active)->flags & PHP_OUTPUT_HANDLER_FLUSHABLE)) {
+	if (ASYNC_OG(active) && (ASYNC_OG(active)->flags & PHP_OUTPUT_HANDLER_FLUSHABLE)) {
 		php_output_context_init(&context, PHP_OUTPUT_HANDLER_FLUSH);
-		php_output_handler_op(OG(active), &context);
+		php_output_handler_op(ASYNC_OG(active), &context);
 		if (context.out.data && context.out.used) {
-			zend_stack_del_top(&OG(handlers));
+			zend_stack_del_top(&ASYNC_OG(handlers));
 			php_output_write(context.out.data, context.out.used);
-			zend_stack_push(&OG(handlers), &OG(active));
+			zend_stack_push(&ASYNC_OG(handlers), &ASYNC_OG(active));
 		}
 		php_output_context_dtor(&context);
 		return SUCCESS;
@@ -272,7 +287,7 @@ PHPAPI zend_result php_output_flush(void)
  * Flush all output buffers subsequently */
 PHPAPI void php_output_flush_all(void)
 {
-	if (OG(active)) {
+	if (ASYNC_OG(active)) {
 		php_output_op(PHP_OUTPUT_HANDLER_FLUSH, NULL, 0);
 	}
 }
@@ -284,9 +299,9 @@ PHPAPI zend_result php_output_clean(void)
 {
 	php_output_context context;
 
-	if (OG(active) && (OG(active)->flags & PHP_OUTPUT_HANDLER_CLEANABLE)) {
+	if (ASYNC_OG(active) && (ASYNC_OG(active)->flags & PHP_OUTPUT_HANDLER_CLEANABLE)) {
 		php_output_context_init(&context, PHP_OUTPUT_HANDLER_CLEAN);
-		php_output_handler_op(OG(active), &context);
+		php_output_handler_op(ASYNC_OG(active), &context);
 		php_output_context_dtor(&context);
 		return SUCCESS;
 	}
@@ -300,9 +315,9 @@ PHPAPI void php_output_clean_all(void)
 {
 	php_output_context context;
 
-	if (OG(active)) {
+	if (ASYNC_OG(active)) {
 		php_output_context_init(&context, PHP_OUTPUT_HANDLER_CLEAN);
-		zend_stack_apply_with_argument(&OG(handlers), ZEND_STACK_APPLY_TOPDOWN, php_output_stack_apply_clean, &context);
+		zend_stack_apply_with_argument(&ASYNC_OG(handlers), ZEND_STACK_APPLY_TOPDOWN, php_output_stack_apply_clean, &context);
 	}
 }
 
@@ -321,7 +336,7 @@ PHPAPI zend_result php_output_end(void)
  * Finalizes all output handlers and ends output buffering without regard whether a handler is removable */
 PHPAPI void php_output_end_all(void)
 {
-	while (OG(active) && php_output_stack_pop(PHP_OUTPUT_POP_FORCE));
+	while (ASYNC_OG(active) && php_output_stack_pop(PHP_OUTPUT_POP_FORCE));
 }
 /* }}} */
 
@@ -340,7 +355,7 @@ PHPAPI zend_result php_output_discard(void)
  * Discard all output handlers and buffers without regard whether a handler is removable */
 PHPAPI void php_output_discard_all(void)
 {
-	while (OG(active)) {
+	while (ASYNC_OG(active)) {
 		php_output_stack_pop(PHP_OUTPUT_POP_DISCARD|PHP_OUTPUT_POP_FORCE);
 	}
 }
@@ -350,7 +365,7 @@ PHPAPI void php_output_discard_all(void)
  * Get output buffering level, i.e. how many output handlers the stack contains */
 PHPAPI int php_output_get_level(void)
 {
-	return OG(active) ? zend_stack_count(&OG(handlers)) : 0;
+	return ASYNC_OG(active) ? zend_stack_count(&ASYNC_OG(handlers)) : 0;
 }
 /* }}} */
 
@@ -358,9 +373,9 @@ PHPAPI int php_output_get_level(void)
  * Get the contents of the active output handlers buffer */
 PHPAPI zend_result php_output_get_contents(zval *p)
 {
-	if (OG(active)) {
-		if (OG(active)->buffer.used) {
-			ZVAL_STRINGL(p, OG(active)->buffer.data, OG(active)->buffer.used);
+	if (ASYNC_OG(active)) {
+		if (ASYNC_OG(active)->buffer.used) {
+			ZVAL_STRINGL(p, ASYNC_OG(active)->buffer.data, ASYNC_OG(active)->buffer.used);
 		} else {
 			ZVAL_EMPTY_STRING(p);
 		}
@@ -375,8 +390,8 @@ PHPAPI zend_result php_output_get_contents(zval *p)
  * Get the length of the active output handlers buffer */
 PHPAPI zend_result php_output_get_length(zval *p)
 {
-	if (OG(active)) {
-		ZVAL_LONG(p, OG(active)->buffer.used);
+	if (ASYNC_OG(active)) {
+		ZVAL_LONG(p, ASYNC_OG(active)->buffer.used);
 		return SUCCESS;
 	} else {
 		ZVAL_NULL(p);
@@ -389,7 +404,7 @@ PHPAPI zend_result php_output_get_length(zval *p)
  * Get active output handler */
 PHPAPI php_output_handler* php_output_get_active_handler(void)
 {
-	return OG(active);
+	return ASYNC_OG(active);
 }
 /* }}} */
 
@@ -549,9 +564,18 @@ PHPAPI zend_result php_output_handler_start(php_output_handler *handler)
 			}
 		} ZEND_HASH_FOREACH_END();
 	}
+#ifdef PHP_ASYNC_API
+	/* Handle coroutine context */
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+	if (coroutine) {
+		/* Ensure coroutine has its own output context */
+		php_output_ensure_coroutine_context(coroutine);
+	}
+#endif
+	
 	/* zend_stack_push returns stack level */
-	handler->level = zend_stack_push(&OG(handlers), &handler);
-	OG(active) = handler;
+	handler->level = zend_stack_push(&ASYNC_OG(handlers), &handler);
+	ASYNC_OG(active) = handler;
 	return SUCCESS;
 }
 /* }}} */
@@ -564,7 +588,7 @@ PHPAPI bool php_output_handler_started(const char *name, size_t name_len)
 	int i, count = php_output_get_level();
 
 	if (count) {
-		handlers = (php_output_handler **) zend_stack_base(&OG(handlers));
+		handlers = (php_output_handler **) zend_stack_base(&ASYNC_OG(handlers));
 
 		for (i = 0; i < count; ++i) {
 			if (zend_string_equals_cstr(handlers[i]->name, name, name_len)) {
@@ -668,22 +692,22 @@ PHPAPI zend_result php_output_handler_alias_register(const char *name, size_t na
  * Output handler hook for output handler functions to check/modify the current handlers abilities */
 PHPAPI zend_result php_output_handler_hook(php_output_handler_hook_t type, void *arg)
 {
-	if (OG(running)) {
+	if (ASYNC_OG(running)) {
 		switch (type) {
 			case PHP_OUTPUT_HANDLER_HOOK_GET_OPAQ:
-				*(void ***) arg = &OG(running)->opaq;
+				*(void ***) arg = &ASYNC_OG(running)->opaq;
 				return SUCCESS;
 			case PHP_OUTPUT_HANDLER_HOOK_GET_FLAGS:
-				*(int *) arg = OG(running)->flags;
+				*(int *) arg = ASYNC_OG(running)->flags;
 				return SUCCESS;
 			case PHP_OUTPUT_HANDLER_HOOK_GET_LEVEL:
-				*(int *) arg = OG(running)->level;
+				*(int *) arg = ASYNC_OG(running)->level;
 				return SUCCESS;
 			case PHP_OUTPUT_HANDLER_HOOK_IMMUTABLE:
-				OG(running)->flags &= ~(PHP_OUTPUT_HANDLER_REMOVABLE|PHP_OUTPUT_HANDLER_CLEANABLE);
+				ASYNC_OG(running)->flags &= ~(PHP_OUTPUT_HANDLER_REMOVABLE|PHP_OUTPUT_HANDLER_CLEANABLE);
 				return SUCCESS;
 			case PHP_OUTPUT_HANDLER_HOOK_DISABLE:
-				OG(running)->flags |= PHP_OUTPUT_HANDLER_DISABLED;
+				ASYNC_OG(running)->flags |= PHP_OUTPUT_HANDLER_DISABLED;
 				return SUCCESS;
 			default:
 				break;
@@ -731,9 +755,9 @@ PHPAPI void php_output_handler_free(php_output_handler **h)
 PHPAPI void php_output_set_implicit_flush(int flush)
 {
 	if (flush) {
-		OG(flags) |= PHP_OUTPUT_IMPLICITFLUSH;
+		ASYNC_OG(flags) |= PHP_OUTPUT_IMPLICITFLUSH;
 	} else {
-		OG(flags) &= ~PHP_OUTPUT_IMPLICITFLUSH;
+		ASYNC_OG(flags) &= ~PHP_OUTPUT_IMPLICITFLUSH;
 	}
 }
 /* }}} */
@@ -742,7 +766,7 @@ PHPAPI void php_output_set_implicit_flush(int flush)
  * Get the file name where output has started */
 PHPAPI const char *php_output_get_start_filename(void)
 {
-	return OG(output_start_filename) ? ZSTR_VAL(OG(output_start_filename)) : NULL;
+	return ASYNC_OG(output_start_filename) ? ZSTR_VAL(ASYNC_OG(output_start_filename)) : NULL;
 }
 /* }}} */
 
@@ -750,7 +774,7 @@ PHPAPI const char *php_output_get_start_filename(void)
  * Get the line number where output has started */
 PHPAPI int php_output_get_start_lineno(void)
 {
-	return OG(output_start_lineno);
+	return ASYNC_OG(output_start_lineno);
 }
 /* }}} */
 
@@ -759,7 +783,7 @@ PHPAPI int php_output_get_start_lineno(void)
 static inline bool php_output_lock_error(int op)
 {
 	/* if there's no ob active, ob has been stopped */
-	if (op && OG(active) && OG(running)) {
+	if (op && ASYNC_OG(active) && ASYNC_OG(running)) {
 		/* fatal error */
 		php_output_deactivate();
 		php_error_docref("ref.outcontrol", E_ERROR, "Cannot use output buffering in output buffering display handlers");
@@ -873,7 +897,7 @@ static inline php_output_handler *php_output_handler_init(zend_string *name, siz
 static inline bool php_output_handler_append(php_output_handler *handler, const php_output_buffer *buf)
 {
 	if (buf->used) {
-		OG(flags) |= PHP_OUTPUT_WRITTEN;
+		ASYNC_OG(flags) |= PHP_OUTPUT_WRITTEN;
 		/* store it away */
 		if ((handler->buffer.size - handler->buffer.used) <= buf->used) {
 			size_t grow_int = PHP_OUTPUT_HANDLER_INITBUF_SIZE(handler->size);
@@ -889,7 +913,7 @@ static inline bool php_output_handler_append(php_output_handler *handler, const 
 		/* chunked buffering */
 		if (handler->size && (handler->buffer.used >= handler->size)) {
 			/* store away errors and/or any intermediate output */
-			return OG(running) ? true : false;
+			return ASYNC_OG(running) ? true : false;
 		}
 	}
 	return true;
@@ -944,7 +968,7 @@ static inline php_output_handler_status_t php_output_handler_op(php_output_handl
 			context->op |= PHP_OUTPUT_HANDLER_START;
 		}
 
-		OG(running) = handler;
+		ASYNC_OG(running) = handler;
 		if (handler->flags & PHP_OUTPUT_HANDLER_USER) {
 			zval ob_args[2];
 			zval retval;
@@ -997,7 +1021,7 @@ static inline php_output_handler_status_t php_output_handler_op(php_output_handl
 			}
 		}
 		handler->flags |= PHP_OUTPUT_HANDLER_STARTED;
-		OG(running) = NULL;
+		ASYNC_OG(running) = NULL;
 	}
 
 	switch (status) {
@@ -1049,16 +1073,16 @@ static inline void php_output_op(int op, const char *str, size_t len)
 
 	/*
 	 * broken up for better performance:
-	 *  - apply op to the one active handler; note that OG(active) might be popped off the stack on a flush
+	 *  - apply op to the one active handler; note that ASYNC_OG(active) might be popped off the stack on a flush
 	 *  - or apply op to the handler stack
 	 */
-	if (OG(active) && (obh_cnt = zend_stack_count(&OG(handlers)))) {
+	if (ASYNC_OG(active) && (obh_cnt = zend_stack_count(&ASYNC_OG(handlers)))) {
 		context.in.data = (char *) str;
 		context.in.used = len;
 
 		if (obh_cnt > 1) {
-			zend_stack_apply_with_argument(&OG(handlers), ZEND_STACK_APPLY_TOPDOWN, php_output_stack_apply_op, &context);
-		} else if ((active = zend_stack_top(&OG(handlers))) && (!((*active)->flags & PHP_OUTPUT_HANDLER_DISABLED))) {
+			zend_stack_apply_with_argument(&ASYNC_OG(handlers), ZEND_STACK_APPLY_TOPDOWN, php_output_stack_apply_op, &context);
+		} else if ((active = zend_stack_top(&ASYNC_OG(handlers))) && (!((*active)->flags & PHP_OUTPUT_HANDLER_DISABLED))) {
 			php_output_handler_op(*active, &context);
 		} else {
 			php_output_context_pass(&context);
@@ -1071,17 +1095,17 @@ static inline void php_output_op(int op, const char *str, size_t len)
 	if (context.out.data && context.out.used) {
 		php_output_header();
 
-		if (!(OG(flags) & PHP_OUTPUT_DISABLED)) {
+		if (!(ASYNC_OG(flags) & PHP_OUTPUT_DISABLED)) {
 #if PHP_OUTPUT_DEBUG
 			fprintf(stderr, "::: sapi_write('%s', %zu)\n", context.out.data, context.out.used);
 #endif
 			sapi_module.ub_write(context.out.data, context.out.used);
 
-			if (OG(flags) & PHP_OUTPUT_IMPLICITFLUSH) {
+			if (ASYNC_OG(flags) & PHP_OUTPUT_IMPLICITFLUSH) {
 				sapi_flush();
 			}
 
-			OG(flags) |= PHP_OUTPUT_SENT;
+			ASYNC_OG(flags) |= PHP_OUTPUT_SENT;
 		}
 	}
 	php_output_context_dtor(&context);
@@ -1198,7 +1222,7 @@ static inline zval *php_output_handler_status(php_output_handler *handler, zval 
 static int php_output_stack_pop(int flags)
 {
 	php_output_context context;
-	php_output_handler **current, *orphan = OG(active);
+	php_output_handler **current, *orphan = ASYNC_OG(active);
 
 	if (!orphan) {
 		if (!(flags & PHP_OUTPUT_POP_SILENT)) {
@@ -1227,11 +1251,11 @@ static int php_output_stack_pop(int flags)
 		}
 
 		/* pop it off the stack */
-		zend_stack_del_top(&OG(handlers));
-		if ((current = zend_stack_top(&OG(handlers)))) {
-			OG(active) = *current;
+		zend_stack_del_top(&ASYNC_OG(handlers));
+		if ((current = zend_stack_top(&ASYNC_OG(handlers)))) {
+			ASYNC_OG(active) = *current;
 		} else {
-			OG(active) = NULL;
+			ASYNC_OG(active) = NULL;
 		}
 
 		/* pass output along */
@@ -1325,13 +1349,13 @@ PHP_FUNCTION(ob_flush)
 		RETURN_THROWS();
 	}
 
-	if (!OG(active)) {
+	if (!ASYNC_OG(active)) {
 		php_error_docref("ref.outcontrol", E_NOTICE, "Failed to flush buffer. No buffer to flush");
 		RETURN_FALSE;
 	}
 
 	if (SUCCESS != php_output_flush()) {
-		php_error_docref("ref.outcontrol", E_NOTICE, "Failed to flush buffer of %s (%d)", ZSTR_VAL(OG(active)->name), OG(active)->level);
+		php_error_docref("ref.outcontrol", E_NOTICE, "Failed to flush buffer of %s (%d)", ZSTR_VAL(ASYNC_OG(active)->name), ASYNC_OG(active)->level);
 		RETURN_FALSE;
 	}
 	RETURN_TRUE;
@@ -1345,13 +1369,13 @@ PHP_FUNCTION(ob_clean)
 		RETURN_THROWS();
 	}
 
-	if (!OG(active)) {
+	if (!ASYNC_OG(active)) {
 		php_error_docref("ref.outcontrol", E_NOTICE, "Failed to delete buffer. No buffer to delete");
 		RETURN_FALSE;
 	}
 
 	if (SUCCESS != php_output_clean()) {
-		php_error_docref("ref.outcontrol", E_NOTICE, "Failed to delete buffer of %s (%d)", ZSTR_VAL(OG(active)->name), OG(active)->level);
+		php_error_docref("ref.outcontrol", E_NOTICE, "Failed to delete buffer of %s (%d)", ZSTR_VAL(ASYNC_OG(active)->name), ASYNC_OG(active)->level);
 		RETURN_FALSE;
 	}
 	RETURN_TRUE;
@@ -1365,7 +1389,7 @@ PHP_FUNCTION(ob_end_flush)
 		RETURN_THROWS();
 	}
 
-	if (!OG(active)) {
+	if (!ASYNC_OG(active)) {
 		php_error_docref("ref.outcontrol", E_NOTICE, "Failed to delete and flush buffer. No buffer to delete or flush");
 		RETURN_FALSE;
 	}
@@ -1381,7 +1405,7 @@ PHP_FUNCTION(ob_end_clean)
 		RETURN_THROWS();
 	}
 
-	if (!OG(active)) {
+	if (!ASYNC_OG(active)) {
 		php_error_docref("ref.outcontrol", E_NOTICE, "Failed to delete buffer. No buffer to delete");
 		RETURN_FALSE;
 	}
@@ -1403,7 +1427,7 @@ PHP_FUNCTION(ob_get_flush)
 	}
 
 	if (SUCCESS != php_output_end()) {
-		php_error_docref("ref.outcontrol", E_NOTICE, "Failed to delete buffer of %s (%d)", ZSTR_VAL(OG(active)->name), OG(active)->level);
+		php_error_docref("ref.outcontrol", E_NOTICE, "Failed to delete buffer of %s (%d)", ZSTR_VAL(ASYNC_OG(active)->name), ASYNC_OG(active)->level);
 	}
 }
 /* }}} */
@@ -1415,7 +1439,7 @@ PHP_FUNCTION(ob_get_clean)
 		RETURN_THROWS();
 	}
 
-	if(!OG(active)) {
+	if(!ASYNC_OG(active)) {
 		RETURN_FALSE;
 	}
 
@@ -1425,7 +1449,7 @@ PHP_FUNCTION(ob_get_clean)
 	}
 
 	if (SUCCESS != php_output_discard()) {
-		php_error_docref("ref.outcontrol", E_NOTICE, "Failed to delete buffer of %s (%d)", ZSTR_VAL(OG(active)->name), OG(active)->level);
+		php_error_docref("ref.outcontrol", E_NOTICE, "Failed to delete buffer of %s (%d)", ZSTR_VAL(ASYNC_OG(active)->name), ASYNC_OG(active)->level);
 	}
 }
 /* }}} */
@@ -1476,11 +1500,11 @@ PHP_FUNCTION(ob_list_handlers)
 
 	array_init(return_value);
 
-	if (!OG(active)) {
+	if (!ASYNC_OG(active)) {
 		return;
 	}
 
-	zend_stack_apply_with_argument(&OG(handlers), ZEND_STACK_APPLY_BOTTOMUP, php_output_stack_apply_list, return_value);
+	zend_stack_apply_with_argument(&ASYNC_OG(handlers), ZEND_STACK_APPLY_BOTTOMUP, php_output_stack_apply_list, return_value);
 }
 /* }}} */
 
@@ -1493,16 +1517,16 @@ PHP_FUNCTION(ob_get_status)
 		RETURN_THROWS();
 	}
 
-	if (!OG(active)) {
+	if (!ASYNC_OG(active)) {
 		array_init(return_value);
 		return;
 	}
 
 	if (full_status) {
 		array_init(return_value);
-		zend_stack_apply_with_argument(&OG(handlers), ZEND_STACK_APPLY_BOTTOMUP, php_output_stack_apply_status, return_value);
+		zend_stack_apply_with_argument(&ASYNC_OG(handlers), ZEND_STACK_APPLY_BOTTOMUP, php_output_stack_apply_status, return_value);
 	} else {
-		php_output_handler_status(OG(active), return_value);
+		php_output_handler_status(ASYNC_OG(active), return_value);
 	}
 }
 /* }}} */
@@ -1552,3 +1576,143 @@ PHP_FUNCTION(output_add_rewrite_var)
 	}
 }
 /* }}} */
+
+#ifdef PHP_ASYNC_API
+/* {{{ Output buffer context switch handler for async operations */
+
+static void php_output_coroutine_cleanup_callback(
+	zend_async_event_t *event, zend_async_event_callback_t *callback, void *result, zend_object *exception
+);
+
+/* Main coroutine start handler */
+static void php_output_main_coroutine_start_handler(zend_coroutine_t *coroutine, bool is_enter, bool is_finishing)
+{
+	if (false == is_enter || OG(handlers).elements == 0) {
+		return;
+	}
+
+	php_output_context_t *ctx = ecalloc(1, sizeof(php_output_context_t));
+	php_output_init_async_context(ctx);
+
+	/* Copy handlers from global to coroutine context */
+	php_output_handler **src_handlers = (php_output_handler **)zend_stack_base(&OG(handlers));
+	int handler_count = zend_stack_count(&OG(handlers));
+
+	for (int i = 0; i < handler_count; i++) {
+		php_output_handler *handler = src_handlers[i];
+		/* Create a reference to the same handler in coroutine context */
+		zend_stack_push(&ctx->handlers, &handler);
+	}
+
+	/* Set active handler */
+	if (OG(active)) {
+		ctx->active = OG(active);
+	}
+
+	/* Store context in coroutine */
+	zval ctx_zval;
+	ZVAL_PTR(&ctx_zval, ctx);
+	ZEND_ASYNC_INTERNAL_CONTEXT_SET(coroutine, php_output_context_key, &ctx_zval);
+
+	/* Clean OG(handlers) to avoid conflicts */
+	zend_stack_destroy(&OG(handlers));
+	zend_stack_init(&OG(handlers), sizeof(php_output_handler *));
+	OG(active) = NULL;
+	OG(running) = NULL;
+	OG(flags) &= ~(PHP_OUTPUT_ACTIVATED);
+
+	/* Add cleanup callback to coroutine finish event */
+	zend_coroutine_event_callback_t *cleanup_callback =
+		zend_async_coroutine_callback_new(coroutine, php_output_coroutine_cleanup_callback, 0);
+	coroutine->event.add_callback(&coroutine->event, &cleanup_callback->base);
+}
+
+/* Coroutine cleanup callback */
+static void php_output_coroutine_cleanup_callback(
+	zend_async_event_t *event, zend_async_event_callback_t *callback, void *result, zend_object *exception
+) {
+	zend_coroutine_t *coroutine = ((zend_coroutine_event_callback_t*)callback)->coroutine;
+	
+	zval *ctx_zval = ZEND_ASYNC_INTERNAL_CONTEXT_FIND(coroutine, php_output_context_key);
+	if (ctx_zval && Z_TYPE_P(ctx_zval) == IS_PTR) {
+		php_output_context_t *ctx = (php_output_context_t*)Z_PTR_P(ctx_zval);
+		php_output_free_async_context(ctx);
+		efree(ctx);
+		ZEND_ASYNC_INTERNAL_CONTEXT_UNSET(coroutine, php_output_context_key);
+	}
+}
+
+/* Initialize output context key and register global main coroutine handler */
+static void php_output_async_init(void)
+{
+	if (php_output_context_key == 0) {
+		php_output_context_key = ZEND_ASYNC_INTERNAL_CONTEXT_KEY_ALLOC("php_output_context");
+		ZEND_ASYNC_ADD_MAIN_COROUTINE_START_HANDLER(php_output_main_coroutine_start_handler);
+	}
+}
+
+/* {{{ void php_output_init_async_context(php_output_context_t *ctx)
+ * Initialize async output context */
+void php_output_init_async_context(php_output_context_t *ctx)
+{
+	memset(ctx, 0, sizeof(php_output_context_t));
+	zend_stack_init(&ctx->handlers, sizeof(php_output_handler *));
+	ctx->flags |= PHP_OUTPUT_ACTIVATED;
+}
+/* }}} */
+
+/* {{{ php_output_context_t *php_output_ensure_coroutine_context(zend_coroutine_t *coroutine)
+ * Ensure coroutine has output context, create if needed */
+static php_output_context_t *php_output_ensure_coroutine_context(zend_coroutine_t *coroutine)
+{
+	zval *ctx_zval = ZEND_ASYNC_INTERNAL_CONTEXT_FIND(coroutine, php_output_context_key);
+	if (ctx_zval && Z_TYPE_P(ctx_zval) == IS_PTR) {
+		return (php_output_context_t*)Z_PTR_P(ctx_zval);
+	}
+	
+	/* Create new context for coroutine */
+	php_output_context_t *ctx = ecalloc(1, sizeof(php_output_context_t));
+	php_output_init_async_context(ctx);
+	
+	/* Store context in coroutine */
+	zval new_ctx_zval;
+	ZVAL_PTR(&new_ctx_zval, ctx);
+	ZEND_ASYNC_INTERNAL_CONTEXT_SET(coroutine, php_output_context_key, &new_ctx_zval);
+	
+	/* Add cleanup callback to coroutine finish event */
+	zend_coroutine_event_callback_t *cleanup_callback = 
+		zend_async_coroutine_callback_new(coroutine, php_output_coroutine_cleanup_callback, 0);
+	coroutine->event.add_callback(&coroutine->event, &cleanup_callback->base);
+	
+	return ctx;
+}
+/* }}} */
+
+/* {{{ void php_output_free_async_context(php_output_context_t *ctx)
+ * Free async output context */
+void php_output_free_async_context(php_output_context_t *ctx)
+{
+	php_output_handler **handler = NULL;
+
+	if ((ctx->flags & PHP_OUTPUT_ACTIVATED)) {
+		ctx->flags ^= PHP_OUTPUT_ACTIVATED;
+		ctx->active = NULL;
+		ctx->running = NULL;
+
+		/* release all output handlers */
+		if (ctx->handlers.elements) {
+			while ((handler = zend_stack_top(&ctx->handlers))) {
+				php_output_handler_free(handler);
+				zend_stack_del_top(&ctx->handlers);
+			}
+		}
+		zend_stack_destroy(&ctx->handlers);
+	}
+
+	if (ctx->output_start_filename) {
+		zend_string_release(ctx->output_start_filename);
+		ctx->output_start_filename = NULL;
+	}
+}
+/* }}} */
+#endif /* PHP_ASYNC_API */

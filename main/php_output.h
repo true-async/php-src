@@ -135,6 +135,17 @@ typedef struct _php_output_handler {
 	} func;
 } php_output_handler;
 
+#ifdef PHP_ASYNC_API
+typedef struct _php_output_context_s {
+	zend_stack handlers;
+	php_output_handler *active;
+	php_output_handler *running;
+	zend_string *output_start_filename;
+	int output_start_lineno;
+	int flags;
+} php_output_context_t;
+#endif
+
 ZEND_BEGIN_MODULE_GLOBALS(output)
 	zend_stack handlers;
 	php_output_handler *active;
@@ -151,6 +162,32 @@ PHPAPI ZEND_EXTERN_MODULE_GLOBALS(output)
 # define OG(v) ZEND_TSRMG(output_globals_id, zend_output_globals *, v)
 #else
 # define OG(v) (output_globals.v)
+#endif
+
+#ifdef PHP_ASYNC_API
+#include "Zend/zend_async_API.h"
+/* Async-aware output context accessor */
+# define ASYNC_OG(v) ((php_output_get_async_context())->v)
+
+extern uint32_t php_output_context_key;
+
+static inline php_output_context_t* php_output_get_async_context(void) {
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+	if (coroutine && php_output_context_key) {
+		zval *ctx_zval = ZEND_ASYNC_INTERNAL_CONTEXT_FIND(coroutine, php_output_context_key);
+		if (ctx_zval && Z_TYPE_P(ctx_zval) == IS_PTR) {
+			return (php_output_context_t*)Z_PTR_P(ctx_zval);
+		}
+	}
+	/* Fallback to global context - structures are identical */
+	return (php_output_context_t *) &OG(handlers);
+}
+
+void php_output_init_async_context(php_output_context_t *ctx);
+void php_output_free_async_context(php_output_context_t *ctx);
+#else
+/* When async API is not available, ASYNC_OG is just an alias to OG */
+# define ASYNC_OG(v) OG(v)
 #endif
 
 /* convenience macros */
