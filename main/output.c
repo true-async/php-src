@@ -1585,10 +1585,10 @@ static void php_output_coroutine_cleanup_callback(
 );
 
 /* Main coroutine start handler */
-static void php_output_main_coroutine_start_handler(zend_coroutine_t *coroutine, bool is_enter, bool is_finishing)
+static bool php_output_main_coroutine_start_handler(zend_coroutine_t *coroutine, bool is_enter, bool is_finishing)
 {
 	if (false == is_enter || OG(handlers).elements == 0) {
-		return;
+		return false;  /* Remove handler - no work to do */
 	}
 
 	php_output_context_t *ctx = ecalloc(1, sizeof(php_output_context_t));
@@ -1625,6 +1625,8 @@ static void php_output_main_coroutine_start_handler(zend_coroutine_t *coroutine,
 	zend_coroutine_event_callback_t *cleanup_callback =
 		zend_async_coroutine_callback_new(coroutine, php_output_coroutine_cleanup_callback, 0);
 	coroutine->event.add_callback(&coroutine->event, &cleanup_callback->base);
+	
+	return false;  /* Remove handler - initialization is complete */
 }
 
 /* Coroutine cleanup callback */
