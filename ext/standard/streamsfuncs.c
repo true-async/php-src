@@ -30,17 +30,6 @@
 #ifndef PHP_WIN32
 #ifdef PHP_ASYNC_API
 #include <network_async.h>
-zend_always_inline int _php_select(php_socket_t max_fd, fd_set *rfds, fd_set *wfds, fd_set *efds, struct timeval *tv)
-{
-	if(ZEND_ASYNC_IS_ACTIVE) {
-		return php_select_async(m, r, w, e, t);
-	} else {
-		return select(m, r, w, e, t);
-	}
-}
-#define php_select(m, r, w, e, t) _php_select(m, r, w, e, t)
-#else
-#define php_select(m, r, w, e, t)	select(m, r, w, e, t)
 #endif
 typedef unsigned long long php_timeout_ull;
 #else
@@ -849,7 +838,19 @@ PHP_FUNCTION(stream_select)
 		}
 	}
 
+#ifdef PHP_WIN32
 	retval = php_select(max_fd+1, &rfds, &wfds, &efds, tv_p);
+#else
+#ifdef PHP_ASYNC_API
+	if(ZEND_ASYNC_IS_ACTIVE) {
+		retval = php_select_async(max_fd+1, &rfds, &wfds, &efds, tv_p);
+	} else {
+		retval = select(max_fd+1, &rfds, &wfds, &efds, tv_p);
+	}
+#else
+	retval = select(max_fd+1, &rfds, &wfds, &efds, tv_p);
+#endif
+#endif
 
 	if (retval == -1) {
 		php_error_docref(NULL, E_WARNING, "Unable to select [%d]: %s (max_fd=" PHP_SOCKET_FMT ")",

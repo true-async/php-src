@@ -34,7 +34,7 @@
 #ifdef PHP_ASYNC_API
 # include "Zend/zend_async_API.h"
 static void php_output_async_init(void);
-static uint32_t php_output_context_key = 0;
+uint32_t php_output_context_key = 0;
 #endif
 
 PHPAPI ZEND_DECLARE_MODULE_GLOBALS(output)

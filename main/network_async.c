@@ -573,7 +573,7 @@ ZEND_API int php_select_async(php_socket_t max_fd, fd_set *rfds, fd_set *wfds, f
 #ifdef PHP_WIN32
 		zend_async_poll_event_t * poll_event = ZEND_ASYNC_NEW_SOCKET_EVENT(i, events);
 #else
-		zend_async_poll_event_t * poll_event = ZEND_ASYNC_NEW_POLL_EVENT(i, NULL, events);
+		zend_async_poll_event_t * poll_event = ZEND_ASYNC_NEW_POLL_EVENT(i, 0, events);
 #endif
 
 		if (UNEXPECTED(EG(exception) != NULL)) {
