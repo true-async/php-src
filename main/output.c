@@ -1619,7 +1619,7 @@ static bool php_output_main_coroutine_start_handler(zend_coroutine_t *coroutine,
 	zend_stack_init(&OG(handlers), sizeof(php_output_handler *));
 	OG(active) = NULL;
 	OG(running) = NULL;
-	OG(flags) &= ~(PHP_OUTPUT_ACTIVATED);
+	//OG(flags) &= ~(PHP_OUTPUT_ACTIVATED);
 
 	/* Add cleanup callback to coroutine finish event */
 	zend_coroutine_event_callback_t *cleanup_callback =
