@@ -299,7 +299,7 @@ static bool php_accept_connect(php_socket *in_sock, php_socket *out_sock, struct
 		if (in_sock->blocking && ZEND_ASYNC_IS_ACTIVE && network_async_ensure_socket_nonblocking(in_sock->bsd_socket)) {
 			out_sock->bsd_socket = accept(in_sock->bsd_socket, la, la_len);
 
-			while (out_sock->bsd_socket == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+			while (out_sock->bsd_socket == -1 && IS_EAGAIN_OR_EWOULDBLOCK(errno)) {
 				network_async_wait_socket(in_sock->bsd_socket, ASYNC_READABLE, 0);
 
 				if (EG(exception) != NULL) {
@@ -425,7 +425,7 @@ static int php_read(php_socket *sock, void *buf, size_t maxlen, int flags)
 
 #ifdef PHP_ASYNC_API
 
-zend_always_inline bool ensure_socket_nonblocking(php_socket * socket)
+static bool ensure_socket_nonblocking(php_socket * socket)
 {
 	if (socket->non_blocking) {
 		return true;
@@ -459,7 +459,7 @@ static int php_read_async(php_socket *sock, void *buf, size_t maxlen, int flags)
 			total_read++;
 		} else if (bytes_received == 0) {
 			return total_read;
-		} else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+		} else if (IS_EAGAIN_OR_EWOULDBLOCK(errno)) {
 			network_async_wait_socket(sock->bsd_socket, ASYNC_READABLE, 0);
 
 			if (UNEXPECTED(EG(exception) != NULL)) {
@@ -500,7 +500,7 @@ static int recv_async(php_socket *sock, void *buf, size_t maxlen, int flags)
 			}
 		} else if (bytes_received == 0) {
 			return total_read;
-		} else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+		} else if (IS_EAGAIN_OR_EWOULDBLOCK(errno)) {
 			network_async_wait_socket(sock->bsd_socket, ASYNC_READABLE, 0);
 
 			if (UNEXPECTED(EG(exception) != NULL)) {
@@ -551,7 +551,7 @@ static int send_async(php_socket *sock, const void *buf, size_t len, int flags)
 			}
 		} else if (bytes_sent == 0) {
 			return total_sent;
-		} else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+		} else if (IS_EAGAIN_OR_EWOULDBLOCK(errno)) {
 			network_async_wait_socket(sock->bsd_socket, ASYNC_WRITABLE, 0);
 
 			if (UNEXPECTED(EG(exception) != NULL)) {
@@ -599,7 +599,7 @@ static int recvfrom_async(php_socket *sock, void *buf, size_t maxlen, int flags,
 			}
 		} else if (bytes_received == 0) {
 			return total_read;
-		} else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+		} else if (IS_EAGAIN_OR_EWOULDBLOCK(errno)) {
 			network_async_wait_socket(sock->bsd_socket, ASYNC_READABLE, 0);
 
 			if (UNEXPECTED(EG(exception))) {
@@ -650,7 +650,7 @@ static int sendto_async(php_socket *sock, const void *buf, size_t len, int flags
 			}
 		} else if (bytes_sent == 0) {
 			return total_sent;
-		} else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+		} else if (IS_EAGAIN_OR_EWOULDBLOCK(errno)) {
 			network_async_wait_socket(sock->bsd_socket, ASYNC_WRITABLE, 0);
 
 			if (UNEXPECTED(EG(exception) != NULL)) {

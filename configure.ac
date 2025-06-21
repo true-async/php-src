@@ -1060,6 +1060,7 @@ PHP_ARG_ENABLE([experimental-async-api],,
 
 if test "$PHP_EXPERIMENTAL_ASYNC_API" = "yes"; then
   AC_DEFINE([PHP_ASYNC_API], 1, [Enable async API support])
+  PHP_ASYNC_API="yes"
 fi
 
 dnl Extension configuration.

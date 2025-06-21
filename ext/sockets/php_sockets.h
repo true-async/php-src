@@ -33,6 +33,16 @@
 # define IS_INVALID_SOCKET(a) (a->bsd_socket < 0)
 #endif
 
+#ifdef PHP_ASYNC_API
+/* Helper macro to avoid compiler warnings about equal expressions */
+#ifdef PHP_WIN32
+# define IS_EAGAIN_OR_EWOULDBLOCK(err) ((err) == EAGAIN || (err) == EWOULDBLOCK)
+#else
+# define IS_EAGAIN_OR_EWOULDBLOCK(err) ((err) == EAGAIN)
+# define INVALID_SOCKET (-1)
+#endif
+#endif
+
 #define PHP_SOCKETS_VERSION PHP_VERSION
 
 extern zend_module_entry sockets_module_entry;
