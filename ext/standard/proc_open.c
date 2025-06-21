@@ -252,7 +252,7 @@ static pid_t waitpid_cached(php_process_handle *proc, int *wait_status, int opti
 	pid_t wait_pid;
 
 #ifdef PHP_ASYNC_API
-	if (ZEND_ASYNC_IS_ACTIVE) {
+	if (ZEND_ASYNC_IS_ACTIVE && false == (options & WNOHANG)) {
 		wait_pid = async_waitpid(proc->child, wait_status, options);
 	} else {
 		wait_pid = waitpid(proc->child, wait_status, options);
