@@ -278,12 +278,6 @@ static void curl_poll_callback(
 
 static int curl_socket_cb(CURL *curl, const curl_socket_t socket_fd, const int what, void *user_p, void *socket_poll)
 {
-	const curl_async_event_t * curl_event = zend_hash_index_find_ptr(curl_multi_event_list, (zend_ulong) curl);
-
-	if (curl_event == NULL) {
-		return 0;
-	}
-
 	if (what == CURL_POLL_REMOVE) {
 		if (socket_poll != NULL) {
 			zend_async_poll_event_t *socket_event = socket_poll;
