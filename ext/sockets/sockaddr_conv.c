@@ -15,6 +15,11 @@
 extern zend_result php_string_to_if_index(const char *val, unsigned *out);
 
 #ifdef HAVE_IPV6
+#ifdef PHP_ASYNC_API
+# define FREEADDRINFO(addrinfo) is_async ? ZEND_ASYNC_FREEADDRINFO(addrinfo) : freeaddrinfo(addrinfo)
+#else
+# define FREEADDRINFO(addrinfo) freeaddrinfo(addrinfo)
+#endif
 /* Sets addr by hostname, or by ip in string form (AF_INET6) */
 int php_set_inet6_addr(struct sockaddr_in6 *sin6, zend_string *string, php_socket *php_sock) /* {{{ */
 {
@@ -78,12 +83,12 @@ int php_set_inet6_addr(struct sockaddr_in6 *sin6, zend_string *string, php_socke
 		}
 		if (addrinfo->ai_family != PF_INET6 || addrinfo->ai_addrlen != sizeof(struct sockaddr_in6)) {
 			php_error_docref(NULL, E_WARNING, "Host lookup failed: Non AF_INET6 domain returned on AF_INET6 socket");
-			is_async ? ZEND_ASYNC_FREEADDRINFO(addrinfo) : freeaddrinfo(addrinfo);
+			FREEADDRINFO(addrinfo);
 			return 0;
 		}
 
 		memcpy(&(sin6->sin6_addr.s6_addr), ((struct sockaddr_in6*)(addrinfo->ai_addr))->sin6_addr.s6_addr, sizeof(struct in6_addr));
-		is_async ? ZEND_ASYNC_FREEADDRINFO(addrinfo) : freeaddrinfo(addrinfo);
+		FREEADDRINFO(addrinfo);
 
 #else
 		/* No IPv6 specific hostname resolution is available on this system? */
