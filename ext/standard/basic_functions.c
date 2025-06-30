@@ -1114,6 +1114,15 @@ static zend_long sleep_async(zend_long ms, zend_long nanoseconds)
 		return -1;
 	}
 
+	if (ms == 0 && nanoseconds == 0) {
+		ZEND_ASYNC_ENQUEUE_COROUTINE(ZEND_ASYNC_CURRENT_COROUTINE);
+		ZEND_ASYNC_SUSPEND();
+		if (UNEXPECTED(EG(exception) != NULL)) {
+			return -1;
+		}
+		return 0;
+	}
+
 	if (nanoseconds == 0) {
 		zend_async_waker_new_with_timeout(coroutine, ms, NULL);
 	} else {
