@@ -132,6 +132,11 @@ typedef struct {
 	struct {
 		int no;
 	} err;
+#ifdef PHP_ASYNC_API
+	// A pointer to an event that can be triggered when the Multi CURL finishes waiting for all handlers.
+	// This is used to wake up the coroutine that is waiting for the multi handle to complete.
+	void *async_event;
+#endif
 	zend_object std;
 } php_curlm;
 

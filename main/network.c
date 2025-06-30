@@ -61,6 +61,10 @@
 
 #include "php_network.h"
 
+#ifdef PHP_ASYNC_API
+#include "network_async.h"
+#endif
+
 #if defined(PHP_WIN32) || defined(__riscos__)
 #undef AF_UNIX
 #endif
@@ -162,6 +166,13 @@ PHPAPI int php_network_getaddresses(const char *host, int socktype, struct socka
 	if (host == NULL) {
 		return 0;
 	}
+
+#ifdef PHP_ASYNC_API
+	if (ZEND_ASYNC_IS_ACTIVE) {
+		return php_network_getaddresses_async(host, socktype, sal, error_string);
+	}
+#endif
+
 #ifdef HAVE_GETADDRINFO
 	memset(&hints, '\0', sizeof(hints));
 
@@ -1205,6 +1216,12 @@ PHPAPI void _php_emit_fd_setsize_warning(int max_fd)
 
 PHPAPI int php_poll2(php_pollfd *ufds, unsigned int nfds, int timeout)
 {
+#ifdef PHP_ASYNC_API
+	if(UNEXPECTED(ZEND_ASYNC_IS_ACTIVE)) {
+		return php_poll2_async(ufds, nfds, timeout);
+	}
+#endif
+
 	fd_set rset, wset, eset;
 	php_socket_t max_fd = SOCK_ERR; /* effectively unused on Windows */
 	unsigned int i;
@@ -1348,6 +1365,11 @@ static struct hostent * gethostname_re (const char *host,struct hostent *hostbuf
 #endif
 
 PHPAPI struct hostent*	php_network_gethostbyname(const char *name) {
+#ifdef PHP_ASYNC_API
+	if (ZEND_ASYNC_IS_ACTIVE) {
+		return php_network_gethostbyname_async(name);
+	}
+#endif
 #if !defined(HAVE_GETHOSTBYNAME_R)
 	return gethostbyname(name);
 #else

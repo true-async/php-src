@@ -35,6 +35,12 @@
 #include <fcntl.h>
 #endif
 
+#ifdef PHP_ASYNC_API
+#include "Zend/zend_async_API.h"
+static zend_long async_wait_process(zend_process_t process_h, const zend_ulong timeout);
+static pid_t async_waitpid(pid_t pid, int *status, int options);
+#endif
+
 #ifdef HAVE_POSIX_SPAWN_FILE_ACTIONS_ADDCHDIR_NP
 /* Only defined on glibc >= 2.29, FreeBSD CURRENT, musl >= 1.1.24,
  * MacOS Catalina or later..
@@ -243,7 +249,17 @@ static pid_t waitpid_cached(php_process_handle *proc, int *wait_status, int opti
 		return proc->child;
 	}
 
-	pid_t wait_pid = waitpid(proc->child, wait_status, options);
+	pid_t wait_pid;
+
+#ifdef PHP_ASYNC_API
+	if (ZEND_ASYNC_IS_ACTIVE && false == (options & WNOHANG)) {
+		wait_pid = async_waitpid(proc->child, wait_status, options);
+	} else {
+		wait_pid = waitpid(proc->child, wait_status, options);
+	}
+#else
+	wait_pid = waitpid(proc->child, wait_status, options);
+#endif
 
 	/* The "exit" status is the final status of the process.
 	 * If we were to cache the status unconditionally,
@@ -286,9 +302,23 @@ static void proc_open_rsrc_dtor(zend_resource *rsrc)
 	 * But if we're freeing the resource because of GC, don't wait. */
 #ifdef PHP_WIN32
 	if (FG(pclose_wait)) {
+#ifdef PHP_ASYNC_API
+		if (ZEND_ASYNC_IS_ACTIVE) {
+			wstatus = async_wait_process(proc->childHandle, 0);
+		} else {
+			WaitForSingleObject(proc->childHandle, INFINITE);
+		}
+#else
 		WaitForSingleObject(proc->childHandle, INFINITE);
+#endif
 	}
+#ifdef PHP_ASYNC_API
+	if (!ZEND_ASYNC_IS_ACTIVE) {
+		GetExitCodeProcess(proc->childHandle, &wstatus);
+	}
+#else
 	GetExitCodeProcess(proc->childHandle, &wstatus);
+#endif
 	if (wstatus == STILL_ACTIVE) {
 		FG(pclose_ret) = -1;
 	} else {
@@ -1570,3 +1600,74 @@ exit_fail:
 /* }}} */
 
 #endif /* PHP_CAN_SUPPORT_PROC_OPEN */
+
+#ifdef PHP_ASYNC_API
+static zend_long async_wait_process(zend_process_t process_h, const zend_ulong timeout)
+{
+#ifdef PHP_WIN32
+	DWORD exitCode;
+	if (GetExitCodeProcess(process_h, &exitCode) && exitCode != STILL_ACTIVE) {
+		return exitCode;
+	}
+#else
+	int status = 0;
+
+	if (waitpid(process_h, &status, WNOHANG) > 0) {
+		return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+	}
+#endif
+
+	zend_async_process_event_t *event = ZEND_ASYNC_NEW_PROCESS_EVENT(process_h);
+	if (UNEXPECTED(event == NULL)) {
+		return -1;
+	}
+
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+	if (UNEXPECTED(coroutine == NULL)) {
+		ZEND_ASYNC_EVENT_RELEASE(&event->base);
+		return -1;
+	}
+
+	zend_async_waker_t *waker = timeout > 0 
+		? zend_async_waker_new_with_timeout(coroutine, timeout, NULL)
+		: zend_async_waker_new(coroutine);
+
+	if (UNEXPECTED(waker == NULL)) {
+		ZEND_ASYNC_EVENT_RELEASE(&event->base);
+		return -1;
+	}
+
+	zend_coroutine_event_callback_t *callback = zend_async_coroutine_callback_new(
+		coroutine, zend_async_waker_callback_resolve, 0
+	);
+
+	if (UNEXPECTED(callback == NULL)) {
+		zend_async_waker_destroy(coroutine);
+		ZEND_ASYNC_EVENT_RELEASE(&event->base);
+		return -1;
+	}
+
+	zend_async_resume_when(coroutine, &event->base, true, zend_async_waker_callback_resolve, callback);
+
+	ZEND_ASYNC_SUSPEND();
+
+	zend_long exit_code = event->exit_code;
+
+	return exit_code;
+}
+
+#ifndef PHP_WIN32
+static pid_t async_waitpid(pid_t pid, int *status, int options)
+{
+	zend_long process_status = async_wait_process((zend_process_t) pid, 0);
+
+	*status = (int) process_status;
+
+	if (EG(exception) != NULL) {
+		return -1;
+	}
+
+	return pid;
+}
+#endif
+#endif
