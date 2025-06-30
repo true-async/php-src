@@ -1,8 +1,7 @@
 version: 2.1
 
 jobs:
-  arm:
-    resource_class: arm.medium
+  build-php:
     docker:
       - image: cimg/base:current-22.04
       - image: mysql:8.3
@@ -24,13 +23,14 @@ jobs:
       PDO_MYSQL_TEST_PASS: ''
       PDO_MYSQL_TEST_USER: root
       PDO_PGSQL_TEST_DSN: 'pgsql:host=127.0.0.1 port=5432 dbname=test user=postgres password=postgres'
+
     steps:
       - checkout
+
       - run:
-          name: Install system dependencies (including true async + libuv)
+          name: Install build dependencies
           command: |
-            export DEBIAN_FRONTEND=noninteractive
-            sudo apt-get update -y
+            sudo apt-get update
             sudo apt-get install -y \
               gcc \
               g++ \
@@ -150,8 +150,7 @@ jobs:
               --with-config-file-path=/etc \
               --with-config-file-scan-dir=/etc/php.d \
               --with-pdo-firebird \
-              --enable-experimental-async-api \     # <-- PHP true async API support
-              --enable-async \                      # <-- PHP true async extension
+              --enable-async \
               --disable-phpdbg
       - run:
           name: make
@@ -186,6 +185,7 @@ jobs:
               --repeat 2
 
 workflows:
-  push-workflow:
+  version: 2
+  build:
     jobs:
-      - arm
+      - build-php
