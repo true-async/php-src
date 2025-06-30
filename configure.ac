@@ -1675,7 +1675,7 @@ PHP_ADD_SOURCES([main], m4_normalize([
   ]),
   [-DZEND_ENABLE_STATIC_TSRMLS_CACHE=1])
 
-if test "$PHP_EXPERIMENTAL_ASYNC_API" = "yes"; then
+if test "$PHP_ASYNC_API" = "yes"; then
 PHP_ADD_SOURCES([main], m4_normalize([network_async.c]),
   [-DZEND_ENABLE_STATIC_TSRMLS_CACHE=1])
 fi
