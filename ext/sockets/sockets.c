@@ -3262,13 +3262,12 @@ PHP_FUNCTION(socket_addrinfo_lookup)
 #ifdef PHP_ASYNC_API
 	bool is_async = ZEND_ASYNC_IS_ACTIVE;
 
-	if (is_async) {
-		php_network_getaddrinfo_async(ZSTR_VAL(hostname), service, &hints, &result);
-
+	if (is_async && php_network_getaddrinfo_async(ZSTR_VAL(hostname), service, &hints, &result) != 0) {
 		if (EG(exception)) {
 			zend_clear_exception();
-			RETURN_FALSE;
 		}
+
+		RETURN_FALSE;
 
 	} else if (getaddrinfo(ZSTR_VAL(hostname), service, &hints, &result) != 0) {
 		RETURN_FALSE;
