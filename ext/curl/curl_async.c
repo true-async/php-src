@@ -196,7 +196,8 @@ static void curl_async_event_start(zend_async_event_t *event)
 	}
 
 	curl_multi_add_handle(curl_multi_handle, curl_event->curl);
-	curl_multi_socket_action(curl_multi_handle, CURL_SOCKET_TIMEOUT, 0, NULL);
+	int running_handles = 0;
+	curl_multi_socket_action(curl_multi_handle, CURL_SOCKET_TIMEOUT, 0, &running_handles);
 
 	if (UNEXPECTED(EG(exception) != NULL)) {
 		event->stop(event);
@@ -278,7 +279,8 @@ static void curl_poll_callback(
 		action |= CURL_CSELECT_ERR;
 	}
 
-	curl_multi_socket_action(curl_multi_handle, poll_event->socket, action, NULL);
+	int running_handles = 0;
+	curl_multi_socket_action(curl_multi_handle, poll_event->socket, action, &running_handles);
 	process_curl_completed_handles();
 }
 
@@ -357,7 +359,8 @@ static void timer_callback(
 	zend_async_event_t *event, zend_async_event_callback_t *callback, void * result, zend_object *exception
 )
 {
-	curl_multi_socket_action(curl_multi_handle, CURL_SOCKET_TIMEOUT, 0, NULL);
+	int running_handles = 0;
+	curl_multi_socket_action(curl_multi_handle, CURL_SOCKET_TIMEOUT, 0, &running_handles);
 	process_curl_completed_handles();
 }
 
@@ -608,7 +611,10 @@ static void multi_timer_callback(
 )
 {
 	curl_multi_event_callback_t *async_event_callback = (curl_multi_event_callback_t *) callback;
-	curl_multi_socket_action(async_event_callback->curl_m_event->curl_m->multi, CURL_SOCKET_TIMEOUT, 0, NULL);
+	int running_handles = 0;
+	curl_multi_socket_action(
+		async_event_callback->curl_m_event->curl_m->multi, CURL_SOCKET_TIMEOUT, 0, &running_handles
+	);
 }
 
 static int multi_timer_cb(CURLM *multi, const long timeout_ms, void *user_p)
@@ -688,7 +694,10 @@ static void curl_multi_poll_callback(
 		action |= CURL_CSELECT_ERR;
 	}
 
-	curl_multi_socket_action(poll_callback->curl_m_event->curl_m->multi, socket_event->socket, action, NULL);
+	int running_handles = 0;
+	curl_multi_socket_action(
+		poll_callback->curl_m_event->curl_m->multi, socket_event->socket, action, &running_handles
+	);
 }
 
 static int multi_socket_cb(CURL *curl, const curl_socket_t socket_fd, const int what, void *user_p, void *data)
@@ -816,7 +825,8 @@ CURLMcode curl_async_multi_perform(php_curlm * curl_m, int *running_handles)
 		return CURLM_INTERNAL_ERROR;
 	}
 
-	curl_multi_socket_action(curl_m->multi, CURL_SOCKET_TIMEOUT, 0, NULL);
+	int running_handles_internal = 0;
+	curl_multi_socket_action(curl_m->multi, CURL_SOCKET_TIMEOUT, 0, &running_handles_internal);
 
 	const curl_async_multi_event_t *async_event = curl_m->async_event;
 
@@ -870,7 +880,8 @@ CURLMcode curl_async_select(php_curlm * curl_m, int timeout_ms, int* numfds)
 	}
 
 	// Initiate execution of the transfer
-	curl_multi_socket_action(multi_handle, CURL_SOCKET_TIMEOUT, 0, NULL);
+	int running_handles = 0;
+	curl_multi_socket_action(multi_handle, CURL_SOCKET_TIMEOUT, 0, &running_handles);
 
 	// Suspend coroutine until events are ready
 	ZEND_ASYNC_SUSPEND();
