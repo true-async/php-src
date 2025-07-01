@@ -187,7 +187,7 @@ static void curl_async_event_start(zend_async_event_t *event)
 	}
 
 	if (curl_multi_handle == NULL) {
-		curl_multi_handle = curl_multi_init();
+		curl_async_setup();
 		if (curl_multi_handle == NULL) {
 			zend_throw_exception_ex(zend_ce_error, 0, "Failed to initialize cURL multi handle");
 			event->stop(event);
