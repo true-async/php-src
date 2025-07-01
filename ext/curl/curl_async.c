@@ -143,6 +143,12 @@ void curl_async_shutdown(void)
 	}
 
 	if (curl_multi_handle != NULL) {
+		// Pre-cleanup. Bug in CURL prior to 8.14.
+		curl_multi_setopt(curl_multi_handle, CURLMOPT_SOCKETFUNCTION, NULL);
+		curl_multi_setopt(curl_multi_handle, CURLMOPT_TIMERFUNCTION,  NULL);
+		curl_multi_setopt(curl_multi_handle, CURLMOPT_SOCKETDATA,     NULL);
+		curl_multi_setopt(curl_multi_handle, CURLMOPT_TIMERDATA,      NULL);
+
 		curl_multi_cleanup(curl_multi_handle);
 		curl_multi_handle = NULL;
 	}
@@ -278,6 +284,10 @@ static void curl_poll_callback(
 
 static int curl_socket_cb(CURL *curl, const curl_socket_t socket_fd, const int what, void *user_p, void *socket_poll)
 {
+	if (UNEXPECTED(curl_multi_handle == NULL)) {
+		return CURLM_OK;
+	}
+
 	if (what == CURL_POLL_REMOVE) {
 		if (socket_poll != NULL) {
 			zend_async_poll_event_t *socket_event = socket_poll;
@@ -353,6 +363,10 @@ static void timer_callback(
 
 static int curl_timer_cb(CURLM *multi, const long timeout_ms, void *user_p)
 {
+	if (UNEXPECTED(curl_multi_handle == NULL)) {
+		return CURLM_OK;
+	}
+
 	if (timeout_ms < 0) {
 		// Cancel timer - in new API this is handled automatically by waker cleanup
 		if (timer != NULL) {
