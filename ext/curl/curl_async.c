@@ -223,7 +223,6 @@ static void curl_async_event_stop(zend_async_event_t *event)
 
 static zend_string * curl_async_event_info(zend_async_event_t *event)
 {
-	curl_async_event_t *curl_event = (curl_async_event_t *) event;
 	return zend_string_init("CURL Async Event", sizeof("CURL Async Event") - 1, 0);
 }
 
@@ -521,7 +520,6 @@ static void curl_async_multi_event_stop(zend_async_event_t *event)
 
 static zend_string * curl_async_multi_event_info(zend_async_event_t *event)
 {
-	curl_async_multi_event_t *curl_event = (curl_async_multi_event_t *) event;
 	return zend_string_init("CURL Multi Async Event", sizeof("CURL Multi Async Event") - 1, 0);
 }
 
