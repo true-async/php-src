@@ -311,7 +311,7 @@ static bool shutdown_destructors_context_switch_handler(
 		return false;
 	}
 
-	zend_coroutine_t *shutdown_coroutine = ZEND_ASYNC_SPAWN_WITH_SCOPE_EX(ZEND_ASYNC_MAIN_SCOPE, 1);
+	zend_coroutine_t *shutdown_coroutine = ZEND_ASYNC_SPAWN_WITH_SCOPE_EX(ZEND_ASYNC_MAIN_SCOPE, ZEND_COROUTINE_HI_PRIORITY);
 	shutdown_coroutine->internal_entry = shutdown_destructors_async;
 	shutdown_coroutine->extended_dispose = shutdown_destructors_coroutine_dtor;
 
