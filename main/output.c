@@ -961,7 +961,7 @@ static inline php_output_handler_status_t php_output_handler_op(php_output_handl
 	/* php_output_lock_error() doesn't fail for PHP_OUTPUT_HANDLER_WRITE but
 	 * anything that gets written will silently be discarded, remember that we
 	 * tried to write so a deprecation warning can be emitted at the end. */
-	if (context->op == PHP_OUTPUT_HANDLER_WRITE && OG(active) && OG(running)) {
+	if (context->op == PHP_OUTPUT_HANDLER_WRITE && ASYNC_OG(active) && ASYNC_OG(running)) {
 		handler->flags |= PHP_OUTPUT_HANDLER_PRODUCED_OUTPUT;
 	}
 
@@ -1030,7 +1030,7 @@ static inline php_output_handler_status_t php_output_handler_op(php_output_handl
 					still_have_handler = false;
 					int handler_count = php_output_get_level();
 					if (handler_count) {
-						php_output_handler **handlers = (php_output_handler **) zend_stack_base(&OG(handlers));
+						php_output_handler **handlers = (php_output_handler **) zend_stack_base(&ASYNC_OG(handlers));
 						for (int handler_num = 0; handler_num < handler_count; ++handler_num) {
 							php_output_handler *curr_handler = handlers[handler_num];
 							if (curr_handler == handler) {
@@ -1084,7 +1084,7 @@ static inline php_output_handler_status_t php_output_handler_op(php_output_handl
 		if (still_have_handler) {
 			handler->flags |= PHP_OUTPUT_HANDLER_STARTED;
 		}
-		OG(running) = NULL;
+		ASYNC_OG(running) = NULL;
 	}
 
 	if (!still_have_handler) {
@@ -1321,7 +1321,7 @@ static int php_output_stack_pop(int flags)
 		bool still_have_handler = false;
 		int handler_count = php_output_get_level();
 		if (handler_count) {
-			php_output_handler **handlers = (php_output_handler **) zend_stack_base(&OG(handlers));
+			php_output_handler **handlers = (php_output_handler **) zend_stack_base(&ASYNC_OG(handlers));
 			for (int handler_num = 0; handler_num < handler_count; ++handler_num) {
 				php_output_handler *curr_handler = handlers[handler_num];
 				if (curr_handler == orphan) {
