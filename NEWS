@@ -1,6 +1,16 @@
 PHP                                                                        NEWS
 |||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
-?? ??? ????, PHP 8.5.0alpha1
+?? ??? ????, PHP 8.5.0alpha2
+
+- Standard:
+  . Optimized pack(). (nielsdos, divinity76)
+
+- URI:
+  . Return the singleton UrlValidationErrorType instances from Uri\WhatWg\Url
+    instead of creating new objects that are different from the singleton.
+    (timwolla)
+
+03 Jul 2025, PHP 8.5.0alpha1
 
 - BCMath:
   . Simplify `bc_divide()` code. (SakiTakamachi)

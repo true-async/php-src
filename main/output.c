@@ -572,7 +572,7 @@ PHPAPI zend_result php_output_handler_start(php_output_handler *handler)
 		php_output_ensure_coroutine_context(coroutine);
 	}
 #endif
-	
+
 	/* zend_stack_push returns stack level */
 	handler->level = zend_stack_push(&ASYNC_OG(handlers), &handler);
 	ASYNC_OG(active) = handler;
@@ -958,6 +958,14 @@ static inline php_output_handler_status_t php_output_handler_op(php_output_handl
 		return PHP_OUTPUT_HANDLER_FAILURE;
 	}
 
+	/* php_output_lock_error() doesn't fail for PHP_OUTPUT_HANDLER_WRITE but
+	 * anything that gets written will silently be discarded, remember that we
+	 * tried to write so a deprecation warning can be emitted at the end. */
+	if (context->op == PHP_OUTPUT_HANDLER_WRITE && OG(active) && OG(running)) {
+		handler->flags |= PHP_OUTPUT_HANDLER_PRODUCED_OUTPUT;
+	}
+
+	bool still_have_handler = true;
 	/* storable? */
 	if (php_output_handler_append(handler, &context->in) && !context->op) {
 		context->op = original_op;
@@ -972,6 +980,7 @@ static inline php_output_handler_status_t php_output_handler_op(php_output_handl
 		if (handler->flags & PHP_OUTPUT_HANDLER_USER) {
 			zval ob_args[2];
 			zval retval;
+			ZVAL_UNDEF(&retval);
 
 			/* ob_data */
 			ZVAL_STRINGL(&ob_args[0], handler->buffer.data, handler->buffer.used);
@@ -983,17 +992,69 @@ static inline php_output_handler_status_t php_output_handler_op(php_output_handl
 			handler->func.user->fci.params = ob_args;
 			handler->func.user->fci.retval = &retval;
 
-#define PHP_OUTPUT_USER_SUCCESS(retval) ((Z_TYPE(retval) != IS_UNDEF) && !(Z_TYPE(retval) == IS_FALSE))
-			if (SUCCESS == zend_call_function(&handler->func.user->fci, &handler->func.user->fcc) && PHP_OUTPUT_USER_SUCCESS(retval)) {
-				/* user handler may have returned TRUE */
-				status = PHP_OUTPUT_HANDLER_NO_DATA;
-				if (Z_TYPE(retval) != IS_FALSE && Z_TYPE(retval) != IS_TRUE) {
-					convert_to_string(&retval);
-					if (Z_STRLEN(retval)) {
-						context->out.data = estrndup(Z_STRVAL(retval), Z_STRLEN(retval));
-						context->out.used = Z_STRLEN(retval);
-						context->out.free = 1;
-						status = PHP_OUTPUT_HANDLER_SUCCESS;
+			if (SUCCESS == zend_call_function(&handler->func.user->fci, &handler->func.user->fcc) && Z_TYPE(retval) != IS_UNDEF) {
+				if (Z_TYPE(retval) != IS_STRING || handler->flags & PHP_OUTPUT_HANDLER_PRODUCED_OUTPUT) {
+					// Make sure that we don't get lost in the current output buffer
+					// by disabling it
+					handler->flags |= PHP_OUTPUT_HANDLER_DISABLED;
+					// Make sure we keep a reference to the handler name in
+					// case
+					// * The handler produced output *and* returned a non-string
+					// * The first deprecation message causes the handler to
+					// be removed
+					zend_string *handler_name = handler->name;
+					zend_string_addref(handler_name);
+					if (handler->flags & PHP_OUTPUT_HANDLER_PRODUCED_OUTPUT) {
+						// The handler might not always produce output
+						handler->flags &= ~PHP_OUTPUT_HANDLER_PRODUCED_OUTPUT;
+						php_error_docref(
+							NULL,
+							E_DEPRECATED,
+							"Producing output from user output handler %s is deprecated",
+							ZSTR_VAL(handler_name)
+						);
+					}
+					if (Z_TYPE(retval) != IS_STRING) {
+						php_error_docref(
+							NULL,
+							E_DEPRECATED,
+							"Returning a non-string result from user output handler %s is deprecated",
+							ZSTR_VAL(handler_name)
+						);
+					}
+					zend_string_release(handler_name);
+
+					// Check if the handler is still in the list of handlers to
+					// determine if the PHP_OUTPUT_HANDLER_DISABLED flag can
+					// be removed
+					still_have_handler = false;
+					int handler_count = php_output_get_level();
+					if (handler_count) {
+						php_output_handler **handlers = (php_output_handler **) zend_stack_base(&OG(handlers));
+						for (int handler_num = 0; handler_num < handler_count; ++handler_num) {
+							php_output_handler *curr_handler = handlers[handler_num];
+							if (curr_handler == handler) {
+								handler->flags &= (~PHP_OUTPUT_HANDLER_DISABLED);
+								still_have_handler = true;
+								break;
+							}
+						}
+					}
+				}
+				if (Z_TYPE(retval) == IS_FALSE) {
+					/* call failed, pass internal buffer along */
+					status = PHP_OUTPUT_HANDLER_FAILURE;
+				} else {
+					/* user handler may have returned TRUE */
+					status = PHP_OUTPUT_HANDLER_NO_DATA;
+					if (Z_TYPE(retval) != IS_FALSE && Z_TYPE(retval) != IS_TRUE) {
+						convert_to_string(&retval);
+						if (Z_STRLEN(retval)) {
+							context->out.data = estrndup(Z_STRVAL(retval), Z_STRLEN(retval));
+							context->out.used = Z_STRLEN(retval);
+							context->out.free = 1;
+							status = PHP_OUTPUT_HANDLER_SUCCESS;
+						}
 					}
 				}
 			} else {
@@ -1020,8 +1081,15 @@ static inline php_output_handler_status_t php_output_handler_op(php_output_handl
 				status = PHP_OUTPUT_HANDLER_FAILURE;
 			}
 		}
-		handler->flags |= PHP_OUTPUT_HANDLER_STARTED;
-		ASYNC_OG(running) = NULL;
+		if (still_have_handler) {
+			handler->flags |= PHP_OUTPUT_HANDLER_STARTED;
+		}
+		OG(running) = NULL;
+	}
+
+	if (!still_have_handler) {
+		// Handler and context will have both already been freed
+		return status;
 	}
 
 	switch (status) {
@@ -1249,6 +1317,19 @@ static int php_output_stack_pop(int flags)
 			}
 			php_output_handler_op(orphan, &context);
 		}
+		// If it isn't still in the stack, cannot free it
+		bool still_have_handler = false;
+		int handler_count = php_output_get_level();
+		if (handler_count) {
+			php_output_handler **handlers = (php_output_handler **) zend_stack_base(&OG(handlers));
+			for (int handler_num = 0; handler_num < handler_count; ++handler_num) {
+				php_output_handler *curr_handler = handlers[handler_num];
+				if (curr_handler == orphan) {
+					still_have_handler = true;
+					break;
+				}
+			}
+		}
 
 		/* pop it off the stack */
 		zend_stack_del_top(&ASYNC_OG(handlers));
@@ -1264,7 +1345,9 @@ static int php_output_stack_pop(int flags)
 		}
 
 		/* destroy the handler (after write!) */
-		php_output_handler_free(&orphan);
+		if (still_have_handler) {
+			php_output_handler_free(&orphan);
+		}
 		php_output_context_dtor(&context);
 
 		return 1;
@@ -1625,7 +1708,7 @@ static bool php_output_main_coroutine_start_handler(zend_coroutine_t *coroutine,
 	zend_coroutine_event_callback_t *cleanup_callback =
 		zend_async_coroutine_callback_new(coroutine, php_output_coroutine_cleanup_callback, 0);
 	coroutine->event.add_callback(&coroutine->event, &cleanup_callback->base);
-	
+
 	return false;  /* Remove handler - initialization is complete */
 }
 
@@ -1634,7 +1717,7 @@ static void php_output_coroutine_cleanup_callback(
 	zend_async_event_t *event, zend_async_event_callback_t *callback, void *result, zend_object *exception
 ) {
 	zend_coroutine_t *coroutine = ((zend_coroutine_event_callback_t*)callback)->coroutine;
-	
+
 	zval *ctx_zval = ZEND_ASYNC_INTERNAL_CONTEXT_FIND(coroutine, php_output_context_key);
 	if (ctx_zval && Z_TYPE_P(ctx_zval) == IS_PTR) {
 		php_output_context_t *ctx = (php_output_context_t*)Z_PTR_P(ctx_zval);
@@ -1671,21 +1754,21 @@ static php_output_context_t *php_output_ensure_coroutine_context(zend_coroutine_
 	if (ctx_zval && Z_TYPE_P(ctx_zval) == IS_PTR) {
 		return (php_output_context_t*)Z_PTR_P(ctx_zval);
 	}
-	
+
 	/* Create new context for coroutine */
 	php_output_context_t *ctx = ecalloc(1, sizeof(php_output_context_t));
 	php_output_init_async_context(ctx);
-	
+
 	/* Store context in coroutine */
 	zval new_ctx_zval;
 	ZVAL_PTR(&new_ctx_zval, ctx);
 	ZEND_ASYNC_INTERNAL_CONTEXT_SET(coroutine, php_output_context_key, &new_ctx_zval);
-	
+
 	/* Add cleanup callback to coroutine finish event */
-	zend_coroutine_event_callback_t *cleanup_callback = 
+	zend_coroutine_event_callback_t *cleanup_callback =
 		zend_async_coroutine_callback_new(coroutine, php_output_coroutine_cleanup_callback, 0);
 	coroutine->event.add_callback(&coroutine->event, &cleanup_callback->base);
-	
+
 	return ctx;
 }
 /* }}} */
