@@ -19,9 +19,9 @@
 #include "zend_fibers.h"
 #include "zend_globals.h"
 
-#define ZEND_ASYNC_API "TrueAsync API v0.3.0"
+#define ZEND_ASYNC_API "TrueAsync API v0.4.0"
 #define ZEND_ASYNC_API_VERSION_MAJOR 0
-#define ZEND_ASYNC_API_VERSION_MINOR 3
+#define ZEND_ASYNC_API_VERSION_MINOR 4
 #define ZEND_ASYNC_API_VERSION_PATCH 0
 
 #define ZEND_ASYNC_API_VERSION_NUMBER \
@@ -119,6 +119,16 @@ typedef enum
  * zend_coroutine_t is a Basic data structure that represents a coroutine in the Zend Engine.
  */
 typedef struct _zend_coroutine_s zend_coroutine_t;
+
+/**
+ * zend_future_t is a data structure that represents a future result container.
+ */
+typedef struct _zend_future_s zend_future_t;
+
+/**
+ * zend_async_channel_t is a data structure that represents a communication channel.
+ */
+typedef struct _zend_async_channel_s zend_async_channel_t;
 typedef struct _zend_async_context_s zend_async_context_t;
 typedef struct _zend_async_waker_s zend_async_waker_t;
 typedef struct _zend_async_microtask_s zend_async_microtask_t;
@@ -126,6 +136,13 @@ typedef struct _zend_async_scope_s zend_async_scope_t;
 typedef struct _zend_async_iterator_s zend_async_iterator_t;
 typedef struct _zend_fcall_s zend_fcall_t;
 typedef void (*zend_coroutine_entry_t)(void);
+
+/* Future resolve function type */
+typedef void (*zend_future_resolve_t)(zend_future_t *future, zval *value, zend_object *exception, bool transfer_error);
+
+/* Channel method function types */
+typedef bool (*zend_channel_send_t)(zend_async_channel_t *channel, zval *value);
+typedef bool (*zend_channel_receive_t)(zend_async_channel_t *channel, zval *result);
 
 /* Coroutine Switch Handlers */
 typedef struct _zend_coroutine_switch_handler_s zend_coroutine_switch_handler_t;
@@ -203,6 +220,8 @@ typedef zend_array* (*zend_async_get_coroutines_t)(void);
 typedef void (*zend_async_add_microtask_t)(zend_async_microtask_t *microtask);
 typedef zend_array* (*zend_async_get_awaiting_info_t)(zend_coroutine_t * coroutine);
 typedef zend_class_entry* (*zend_async_get_class_ce_t)(zend_async_class type);
+typedef zend_future_t* (*zend_async_future_create_t)(bool thread_safe, size_t extra_size);
+typedef zend_async_channel_t* (*zend_async_channel_create_t)(size_t buffer_size, bool resizable, bool thread_safe, size_t extra_size);
 
 typedef void (*zend_async_reactor_startup_t)(void);
 typedef void (*zend_async_reactor_shutdown_t)(void);
@@ -964,6 +983,41 @@ struct _zend_coroutine_s {
 };
 
 /**
+ * zend_future_t structure represents a future result container.
+ * It inherits from zend_async_event_t to participate in the event system.
+ */
+struct _zend_future_s {
+	zend_async_event_t event;               /* Event inheritance (first member) */
+	zval result;                            /* Result value (UNDEF = pending) */
+	zend_object *exception;                 /* Exception object (NULL = no error) */
+	
+	/* Debug information */
+	zend_string *filename;                  /* Creation file */
+	uint32_t lineno;                        /* Creation line */
+	zend_string *resolved_filename;         /* Resolution file */
+	uint32_t resolved_lineno;               /* Resolution line */
+
+	/* Resolution method */
+	zend_future_resolve_t resolve;
+};
+
+/**
+ * zend_async_channel_t structure represents a communication channel.
+ * It inherits from zend_async_event_t to participate in the event system.
+ */
+struct _zend_async_channel_s {
+	zend_async_event_t event;               /* Event inheritance (first member) */
+	
+	/* Debug information */
+	zend_string *filename;                  /* Creation file */
+	uint32_t lineno;                        /* Creation line */
+	
+	/* Channel-specific method pointers */
+	zend_channel_send_t send;               /* Send method */
+	zend_channel_receive_t receive;         /* Receive method */
+};
+
+/**
  * The macro evaluates to TRUE if the coroutine is in a waiting state —
  * either waiting for events or waiting in the execution queue.
  */
@@ -1177,6 +1231,8 @@ ZEND_API extern zend_async_get_coroutines_t zend_async_get_coroutines_fn;
 ZEND_API extern zend_async_add_microtask_t zend_async_add_microtask_fn;
 ZEND_API extern zend_async_get_awaiting_info_t zend_async_get_awaiting_info_fn;
 ZEND_API extern zend_async_get_class_ce_t zend_async_get_class_ce_fn;
+ZEND_API extern zend_async_future_create_t zend_async_future_create_fn;
+ZEND_API extern zend_async_channel_create_t zend_async_channel_create_fn;
 
 /* Iterator API */
 ZEND_API extern zend_async_new_iterator_t zend_async_new_iterator_fn;
@@ -1360,6 +1416,14 @@ ZEND_API void zend_async_add_main_coroutine_start_handler(
 );
 
 ZEND_API void zend_async_call_main_coroutine_start_handlers(zend_coroutine_t *main_coroutine);
+
+/* Future API Functions */
+#define ZEND_ASYNC_NEW_FUTURE(thread_safe) zend_async_future_create_fn(thread_safe, 0)
+#define ZEND_ASYNC_NEW_FUTURE_EX(thread_safe, extra_size) zend_async_future_create_fn(thread_safe, extra_size)
+
+/* Channel API Functions */
+#define ZEND_ASYNC_NEW_CHANNEL(buffer_size, resizable, thread_safe) zend_async_channel_create_fn(buffer_size, resizable, thread_safe, 0)
+#define ZEND_ASYNC_NEW_CHANNEL_EX(buffer_size, resizable, thread_safe, extra_size) zend_async_channel_create_fn(buffer_size, resizable, thread_safe, extra_size)
 
 END_EXTERN_C()
 
