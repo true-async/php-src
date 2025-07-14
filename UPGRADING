@@ -45,6 +45,12 @@ PHP 8.5 UPGRADE NOTES
     change, but should more closely match user expectations, demonstrated by
     GH-15753 and GH-16198.
 
+- DOM:
+  . Cloning a DOMNamedNodeMap, DOMNodeList, Dom\NamedNodeMap, Dom\NodeList,
+    Dom\HTMLCollection, and Dom\DtdNamedNodeMap now fails.
+    This never actually resulted in a working object,
+    so the impact should actually be zero.
+
 - FileInfo:
   . finfo_file() and finfo::file() now throws a ValueError instead of a
     TypeError when $filename contains nul bytes.
@@ -551,6 +557,11 @@ PHP 8.5 UPGRADE NOTES
     from being a multiple of loop iteration counts.
     It is recommended that this parameter is set to a prime number.
 
+- OpenSSL:
+  Added openssl.libctx to select the OpenSSL library context type. Either
+  custom libctx for each thread can be used or a single global (default)
+  libctx is used.
+
 ========================================
 12. Windows Support
 ========================================
@@ -598,6 +609,13 @@ PHP 8.5 UPGRADE NOTES
 - CLI/CGI:
   . The `-z` or `--zend-extension` option has been removed as it was
     non-functional. Use `-d zend_extension=<path>` instead.
+
+- PDO_ODBC
+  . The fetch behaviour for larger columns has been changed. Rather than
+    fetching 256 byte blocks, PDO_ODBC will try to fetch a larger block size;
+    currently, this is the page size minus string overhead. Drivers that
+    return SQL_NO_TOTAL in SQLGetData are also better handled as well.
+    This should improve compatibility and performance. See GH-10809, GH-10733.
 
 ========================================
 14. Performance Improvements
