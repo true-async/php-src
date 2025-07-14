@@ -1027,7 +1027,7 @@ ZEND_API int php_network_getaddresses_async(const char *host, int socktype, stru
 		} else {
 			php_error_docref(NULL, E_WARNING, "getaddrinfo for %s failed", host);
 		}
-		return -1;
+		return 0;
 	}
 
 	if (result == NULL) {
@@ -1039,7 +1039,7 @@ ZEND_API int php_network_getaddresses_async(const char *host, int socktype, stru
 		} else {
 			php_error_docref(NULL, E_WARNING, "no addresses found for %s", host);
 		}
-		return -1;
+		return 0;
 	}
 
 	/* Count the number of addresses */
