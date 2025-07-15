@@ -407,6 +407,10 @@ PHPAPI int php_network_connect_socket(php_socket_t sockfd,
 	while (true) {
 		n = php_pollfd_for(sockfd, events, timeout ? &working_timeout : NULL);
 		if (n < 0) {
+#ifdef PHP_ASYNC_API
+			// We need to update the error information because we called some functions before this.
+			error = errno;
+#endif
 			if (errno == EINTR) {
 #ifdef HAVE_GETTIMEOFDAY
 				if (timeout) {
@@ -440,7 +444,6 @@ PHPAPI int php_network_connect_socket(php_socket_t sockfd,
 
 ok:
 	if (!asynchronous) {
-		error = errno;
 		/* back to blocking mode */
 		RESTORE_SOCKET_BLOCKING_MODE(sockfd, orig_flags);
 	}
