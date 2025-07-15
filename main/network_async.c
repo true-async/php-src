@@ -265,18 +265,20 @@ static zend_always_inline void handle_exception_and_errno(void)
 		zend_class_entry *default_ce = ZEND_ASYNC_GET_EXCEPTION_CE(ZEND_ASYNC_EXCEPTION_DEFAULT);
 		zend_class_entry *cancellation_ce = ZEND_ASYNC_GET_EXCEPTION_CE(ZEND_ASYNC_EXCEPTION_CANCELLATION);
 		zend_class_entry *timeout_ce = ZEND_ASYNC_GET_EXCEPTION_CE(ZEND_ASYNC_EXCEPTION_TIMEOUT);
+		zend_class_entry *io_ce = ZEND_ASYNC_GET_EXCEPTION_CE(ZEND_ASYNC_EXCEPTION_INPUT_OUTPUT);
 
 		if (instanceof_function(error->ce, cancellation_ce)) {
 			errno = ECANCELED;
 		} else if (error->ce == timeout_ce) {
 			errno = ETIMEDOUT;
 			should_throw = false;
-		} else if (instanceof_function(error->ce, default_ce)) {
-			errno = EINTR;
+		} else if (instanceof_function(error->ce, default_ce)
+			|| instanceof_function(error->ce, io_ce)) {
+			errno = EBADF;
 			should_throw = false;
 			as_warning = true;
 		} else {
-			errno = EINTR;
+			errno = EBADF;
 		}
 
 		if (false == should_throw) {
@@ -285,13 +287,13 @@ static zend_always_inline void handle_exception_and_errno(void)
 
 			if (as_warning) {
 				zend_exception_error(error, E_WARNING);
+			} else {
+				OBJ_RELEASE(error);
 			}
-
-			OBJ_RELEASE(error);
 		}
 
 	} else {
-		errno = EINTR;
+		errno = EBADF;
 	}
 }
 
@@ -665,6 +667,7 @@ static zend_always_inline void dns_handle_exception_and_errno(void)
 		zend_class_entry *cancellation_ce = ZEND_ASYNC_GET_EXCEPTION_CE(ZEND_ASYNC_EXCEPTION_CANCELLATION);
 		zend_class_entry *timeout_ce = ZEND_ASYNC_GET_EXCEPTION_CE(ZEND_ASYNC_EXCEPTION_TIMEOUT);
 		zend_class_entry *dns_ce = ZEND_ASYNC_GET_EXCEPTION_CE(ZEND_ASYNC_EXCEPTION_DNS);
+		zend_class_entry *io_ce = ZEND_ASYNC_GET_EXCEPTION_CE(ZEND_ASYNC_EXCEPTION_INPUT_OUTPUT);
 
 		if (instanceof_function(error->ce, cancellation_ce)) {
 			errno = ECANCELED;
@@ -672,14 +675,15 @@ static zend_always_inline void dns_handle_exception_and_errno(void)
 			errno = ETIMEDOUT;
 			should_throw = false;
 		} else if (error->ce == dns_ce) {
-			errno = EINTR;
+			errno = EBADF;
 			should_throw = false;
-		} else if (instanceof_function(error->ce, default_ce)) {
-			errno = EINTR;
+		} else if (instanceof_function(error->ce, default_ce)
+			|| instanceof_function(error->ce, io_ce)) {
+			errno = EBADF;
 			should_throw = false;
 			as_warning = true;
 		} else {
-			errno = EINTR;
+			errno = EBADF;
 		}
 
 		if (false == should_throw) {
@@ -694,7 +698,7 @@ static zend_always_inline void dns_handle_exception_and_errno(void)
 		}
 
 	} else {
-		errno = EINTR;
+		errno = EBADF;
 	}
 }
 
