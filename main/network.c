@@ -440,6 +440,7 @@ PHPAPI int php_network_connect_socket(php_socket_t sockfd,
 
 ok:
 	if (!asynchronous) {
+		error = errno;
 		/* back to blocking mode */
 		RESTORE_SOCKET_BLOCKING_MODE(sockfd, orig_flags);
 	}
