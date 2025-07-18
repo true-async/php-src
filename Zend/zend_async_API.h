@@ -139,6 +139,9 @@ typedef struct _zend_async_group_s zend_async_group_t;
 typedef struct _zend_fcall_s zend_fcall_t;
 typedef void (*zend_coroutine_entry_t)(void);
 
+/* The event loop additional handler function type */
+typedef void (*zend_async_ev_handler_fn)(bool no_wait);
+
 /* Channel method function types */
 typedef bool (*zend_channel_send_t)(zend_async_channel_t *channel, zval *value);
 typedef bool (*zend_channel_receive_t)(zend_async_channel_t *channel, zval *result);
@@ -1176,6 +1179,9 @@ typedef struct {
 	zend_coroutine_t *scheduler;
 	/* Exit exception object */
 	zend_object *exit_exception;
+	/* An array of additional handlers for the EventLoop that will be invoked by the reactor */
+	zend_async_ev_handler_fn ev_handlers[4];     /* Static array for event handlers */
+	int ev_handlers_count;                       /* Current number of handlers */
 } zend_async_globals_t;
 
 BEGIN_EXTERN_C()
@@ -1209,6 +1215,17 @@ END_EXTERN_C()
 #define ZEND_ASYNC_CURRENT_SCOPE (ZEND_ASYNC_G(coroutine) ? ZEND_ASYNC_G(coroutine)->scope : NULL)
 #define ZEND_ASYNC_MAIN_SCOPE ZEND_ASYNC_G(main_scope)
 #define ZEND_ASYNC_SCHEDULER ZEND_ASYNC_G(scheduler)
+
+#define ZEND_ASYNC_EV_HANDLER_REGISTER(handler) zend_async_ev_handler_register(handler)
+#define ZEND_ASYNC_EV_HANDLER_UNREGISTER(handler) zend_async_ev_handler_unregister(handler)
+
+/* Call all registered event loop handlers */
+#define ZEND_ASYNC_EV_HANDLERS_CALL(no_wait) do { \
+    int _count = ZEND_ASYNC_G(ev_handlers_count); \
+    for (int _i = 0; _i < _count; _i++) { \
+        ZEND_ASYNC_G(ev_handlers)[_i](no_wait); \
+    } \
+} while (0)
 
 #define ZEND_ASYNC_INCREASE_EVENT_COUNT  if (ZEND_ASYNC_G(active_event_count) < UINT_MAX) { \
 		ZEND_ASYNC_G(active_event_count)++; \
@@ -1244,6 +1261,10 @@ void zend_async_init(void);
 void zend_async_api_shutdown(void);
 void zend_async_globals_ctor(void);
 void zend_async_globals_dtor(void);
+
+/* LibUv event loop handlers API */
+ZEND_API bool zend_async_ev_handler_register(zend_async_ev_handler_fn handler);
+ZEND_API bool zend_async_ev_handler_unregister(zend_async_ev_handler_fn handler);
 
 ZEND_API const char * zend_async_get_api_version(void);
 ZEND_API int zend_async_get_api_version_number(void);

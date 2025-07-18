@@ -1602,3 +1602,54 @@ static void zend_async_main_handlers_shutdown(void)
 		vector->in_execution = false;
 	}
 }
+
+ZEND_API bool zend_async_ev_handler_register(const zend_async_ev_handler_fn handler)
+{
+	if (UNEXPECTED(!ZEND_ASYNC_IS_READY)) {
+		zend_throw_error(NULL, "True Async is no longer in the Ready state");
+		return false;
+	}
+	
+	if (UNEXPECTED(handler == NULL)) {
+		return false;
+	}
+	
+	/* Check if handler already exists */
+	for (int i = 0; i < ZEND_ASYNC_G(ev_handlers_count); i++) {
+		if (ZEND_ASYNC_G(ev_handlers)[i] == handler) {
+			return false; /* Already registered */
+		}
+	}
+	
+	/* Check if we have space */
+	if (ZEND_ASYNC_G(ev_handlers_count) >= 4) {
+		zend_throw_error(NULL, "Too many event handlers registered, maximum is 4");
+		return false;
+	}
+	
+	/* Add handler */
+	ZEND_ASYNC_G(ev_handlers)[ZEND_ASYNC_G(ev_handlers_count)] = handler;
+	ZEND_ASYNC_G(ev_handlers_count)++;
+	
+	return true;
+}
+
+ZEND_API bool zend_async_ev_handler_unregister(const zend_async_ev_handler_fn handler)
+{
+	if (UNEXPECTED(handler == NULL)) {
+		return false;
+	}
+	
+	for (int i = 0; i < ZEND_ASYNC_G(ev_handlers_count); i++) {
+		if (ZEND_ASYNC_G(ev_handlers)[i] == handler) {
+			/* Shift remaining handlers */
+			for (int j = i; j < ZEND_ASYNC_G(ev_handlers_count) - 1; j++) {
+				ZEND_ASYNC_G(ev_handlers)[j] = ZEND_ASYNC_G(ev_handlers)[j + 1];
+			}
+			ZEND_ASYNC_G(ev_handlers_count)--;
+			return true;
+		}
+	}
+	
+	return false;
+}
