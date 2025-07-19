@@ -85,10 +85,7 @@
 #include "rfc1867.h"
 
 #include "main_arginfo.h"
-
-#ifdef PHP_ASYNC_API
 #include "zend_async_API.h"
-#endif
 /* }}} */
 
 PHPAPI int (*php_register_internal_extensions_func)(void) = php_register_internal_extensions;
@@ -146,9 +143,7 @@ PHPAPI char *php_get_version(sapi_module_struct *sapi_module)
 #ifdef HAVE_GCOV
 		" GCOV"
 #endif
-#ifdef PHP_ASYNC_API
 		" " ZEND_ASYNC_API
-#endif
 	);
 	smart_string_appends(&version_info, "Copyright (c) The PHP Group\n");
 	if (php_build_provider()) {
@@ -1935,9 +1930,7 @@ void php_request_shutdown(void *dummy)
 		zend_call_destructors();
 	} zend_end_try();
 
-#ifdef PHP_ASYNC_API
 	ZEND_ASYNC_RUN_SCHEDULER_AFTER_MAIN();
-#endif
 
 	/* 3. Flush all output buffers */
 	zend_try {
@@ -2189,9 +2182,8 @@ zend_result php_module_startup(sapi_module_struct *sf, zend_module_entry *additi
 	php_startup_ticks();
 #endif
 	gc_globals_ctor();
-#ifdef PHP_ASYNC_API
 	zend_async_globals_ctor();
-#endif
+	zend_async_init_internal_context_api();
 
 	zend_observer_startup();
 #if ZEND_DEBUG
@@ -2517,9 +2509,7 @@ void php_module_shutdown(void)
 
 	module_initialized = false;
 
-#ifdef PHP_ASYNC_API
 	zend_async_api_shutdown();
-#endif
 
 #ifndef ZTS
 	core_globals_dtor(&core_globals);
@@ -2616,10 +2606,9 @@ PHPAPI bool php_execute_script_ex(zend_file_handle *primary_file, zval *retval)
 		if (append_file_p && result) {
 			result = zend_execute_script(ZEND_REQUIRE, NULL, append_file_p) == SUCCESS;
 		}
-		#ifdef PHP_ASYNC_API
-			ZEND_ASYNC_RUN_SCHEDULER_AFTER_MAIN();
-			ZEND_ASYNC_INITIALIZE;
-		#endif
+
+		ZEND_ASYNC_RUN_SCHEDULER_AFTER_MAIN();
+		ZEND_ASYNC_INITIALIZE;
 	} zend_catch {
 		result = false;
 	} zend_end_try();
@@ -2791,10 +2780,8 @@ PHPAPI void php_reserve_tsrm_memory(void)
 		TSRM_ALIGNED_SIZE(zend_mm_globals_size()) +
 		TSRM_ALIGNED_SIZE(zend_gc_globals_size()) +
 		TSRM_ALIGNED_SIZE(sizeof(php_core_globals)) +
-		TSRM_ALIGNED_SIZE(sizeof(sapi_globals_struct))
-#ifdef PHP_ASYNC_API
-		+ TSRM_ALIGNED_SIZE(sizeof(zend_async_globals_t))
-#endif
+		TSRM_ALIGNED_SIZE(sizeof(sapi_globals_struct)) +
+		TSRM_ALIGNED_SIZE(sizeof(zend_async_globals_t))
 	);
 }
 /* }}} */

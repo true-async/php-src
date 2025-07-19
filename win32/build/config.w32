@@ -415,3 +415,4 @@ if (PHP_ASYNC_API == "yes") {
     ADD_SOURCES("Zend", "zend_async_API.c");
     ADD_SOURCES("main", "network_async.c");
 }
+ADD_SOURCES("Zend", "zend_async_API.c");
