@@ -50,9 +50,7 @@
 # include "win32/nice.h"
 #endif
 
-#ifdef PHP_ASYNC_API
 #include "Zend/zend_async_API.h"
-#endif
 
 static size_t cmd_max_len;
 
@@ -126,18 +124,13 @@ PHPAPI int php_exec(int type, const char *cmd, zval *array, zval *return_value)
 #endif
 
 #ifdef PHP_WIN32
-	#ifdef PHP_ASYNC_API
-		if (ZEND_ASYNC_IS_ACTIVE) {
+	if (ZEND_ASYNC_IS_ACTIVE) {
 	        return ZEND_ASYNC_EXEC(type, cmd, array, return_value, NULL, NULL, NULL, 0);
 	    } else {
 		    fp = VCWD_POPEN(cmd, "rb");
 	    }
-	#else
-		fp = VCWD_POPEN(cmd, "rb");
-	#endif
 #else
-	#ifdef PHP_ASYNC
-		if (ZEND_ASYNC_IS_ACTIVE) {
+	if (ZEND_ASYNC_IS_ACTIVE) {
 			#if PHP_SIGCHILD
 			if (sig_handler) {
 				signal(SIGCHLD, sig_handler);
@@ -147,9 +140,6 @@ PHPAPI int php_exec(int type, const char *cmd, zval *array, zval *return_value)
 		} else {
 			fp = VCWD_POPEN(cmd, "r");
 		}
-	#else
-		fp = VCWD_POPEN(cmd, "r");
-	#endif
 #endif
 	if (!fp) {
 		php_error_docref(NULL, E_WARNING, "Unable to fork [%s]", cmd);
@@ -542,7 +532,6 @@ PHP_FUNCTION(shell_exec)
 		RETURN_THROWS();
 	}
 
-#ifdef PHP_ASYNC_API
 	if (ZEND_ASYNC_IS_ACTIVE) {
 		ZEND_ASYNC_EXEC(
 			ZEND_ASYNC_EXEC_MODE_SHELL_EXEC,
@@ -556,7 +545,6 @@ PHP_FUNCTION(shell_exec)
 		);
 		return;
 	}
-#endif
 
 #ifdef PHP_WIN32
 	if ((in=VCWD_POPEN(command, "rt"))==NULL) {

@@ -18,9 +18,7 @@
 #include "php_network.h"
 #include "win32/time.h"
 
-#ifdef PHP_ASYNC_API
 #include "network_async.h"
-#endif
 
 /* Win32 select() will only work with sockets, so we roll our own implementation here.
  * - If you supply only sockets, this simply passes through to winsock select().
@@ -97,12 +95,10 @@ PHPAPI int php_select(php_socket_t max_fd, fd_set *rfds, fd_set *wfds, fd_set *e
 
 	if (n_handles == 0) {
 		/* plain sockets only - let winsock handle the whole thing */
-#ifdef PHP_ASYNC_API
 		// For win32 we support only sockets in this function
 		if (ZEND_ASYNC_IS_ACTIVE) {
 			return php_select_async(max_fd, rfds, wfds, efds, tv);
 		}
-#endif
 		return select(-1, rfds, wfds, efds, tv);
 	}
 

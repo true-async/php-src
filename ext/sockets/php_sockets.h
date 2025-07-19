@@ -33,14 +33,12 @@
 # define IS_INVALID_SOCKET(a) (a->bsd_socket < 0)
 #endif
 
-#ifdef PHP_ASYNC_API
 /* Helper macro to avoid compiler warnings about equal expressions */
 #ifdef PHP_WIN32
 # define IS_EAGAIN_OR_EWOULDBLOCK(err) ((err) == EAGAIN || (err) == EWOULDBLOCK)
 #else
 # define IS_EAGAIN_OR_EWOULDBLOCK(err) ((err) == EAGAIN)
 # define INVALID_SOCKET (-1)
-#endif
 #endif
 
 #define PHP_SOCKETS_VERSION PHP_VERSION
@@ -81,7 +79,6 @@ typedef struct {
 	int			type;
 	int			error;
 	int			blocking;
-#ifdef PHP_ASYNC_API
 	/* Equals TRUE if the socket was transferred to a nonblocking mode */
 	bool 		non_blocking;
 	/*
@@ -89,7 +86,6 @@ typedef struct {
 	 * Needed to understand how to work with the buffer correctly.
 	 */
 	int         socket_type;
-#endif
 	zval		zstream;
 	zend_object std;
 } php_socket;

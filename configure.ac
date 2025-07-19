@@ -1660,10 +1660,8 @@ PHP_ADD_SOURCES([main], m4_normalize([
   ]),
   [-DZEND_ENABLE_STATIC_TSRMLS_CACHE=1])
 
-if test "$PHP_ASYNC_API" = "yes"; then
 PHP_ADD_SOURCES([main], m4_normalize([network_async.c]),
   [-DZEND_ENABLE_STATIC_TSRMLS_CACHE=1])
-fi
 
 if printf "#if __ELF__\nelf\n#endif\n" | $CC -E - | grep elf > /dev/null; then
   PHP_ADD_SOURCES([main], [debug_gdb_scripts.c])

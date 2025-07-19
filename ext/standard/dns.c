@@ -66,9 +66,7 @@ extern void __res_ndestroy(res_state statp);
 #define HOST_NAME_MAX 255
 #endif
 
-#ifdef PHP_ASYNC_API
 #include "network_async.h"
-#endif
 #include "php_dns.h"
 
 /* type compat */
@@ -156,15 +154,11 @@ PHP_FUNCTION(gethostbyaddr)
 		Z_PARAM_PATH(addr, addr_len)
 	ZEND_PARSE_PARAMETERS_END();
 
-#ifdef PHP_ASYNC_API
 	if (ZEND_ASYNC_IS_ACTIVE) {
 		hostname = php_network_gethostbyaddr_async(addr);
 	} else {
 		hostname = php_gethostbyaddr(addr);
 	}
-#else
-	hostname = php_gethostbyaddr(addr);
-#endif
 
 
 

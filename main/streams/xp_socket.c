@@ -27,9 +27,7 @@
 #include <sys/un.h>
 #endif
 
-#ifdef PHP_ASYNC_API
 #include "network_async.h"
-#endif
 
 #ifndef MSG_DONTWAIT
 # define MSG_DONTWAIT 0
@@ -73,7 +71,6 @@ static ssize_t php_sockop_write(php_stream *stream, const char *buf, size_t coun
 	else
 		ptimeout = &sock->timeout;
 
-#ifdef PHP_ASYNC_API
 	if (ZEND_ASYNC_IS_ACTIVE && sock->is_blocked) {
 		network_async_set_socket_blocking(sock->socket, false);
 		if (UNEXPECTED(EG(exception) != NULL)) {
@@ -81,7 +78,6 @@ static ssize_t php_sockop_write(php_stream *stream, const char *buf, size_t coun
 			return -1;
 		}
 	}
-#endif
 retry:
 	didwrite = send(sock->socket, buf, XP_SOCK_BUF_SIZE(count), (sock->is_blocked && ptimeout) ? MSG_DONTWAIT : 0);
 
@@ -130,7 +126,6 @@ retry:
 		php_stream_notify_progress_increment(PHP_STREAM_CONTEXT(stream), didwrite, 0);
 	}
 
-#ifdef PHP_ASYNC_API
 	if (ZEND_ASYNC_IS_ACTIVE && sock->is_blocked) {
 		network_async_set_socket_blocking(sock->socket, true);
 		if (UNEXPECTED(EG(exception) != NULL)) {
@@ -138,7 +133,6 @@ retry:
 			return -1;
 		}
 	}
-#endif
 
 	return didwrite;
 }

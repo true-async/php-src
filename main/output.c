@@ -31,11 +31,9 @@
 #include "zend_stack.h"
 #include "php_output.h"
 
-#ifdef PHP_ASYNC_API
 # include "Zend/zend_async_API.h"
 static void php_output_async_init(void);
 uint32_t php_output_context_key = 0;
-#endif
 
 PHPAPI ZEND_DECLARE_MODULE_GLOBALS(output)
 
@@ -77,9 +75,7 @@ static zend_result php_output_handler_compat_func(void **handler_context, php_ou
 static zend_result php_output_handler_default_func(void **handler_context, php_output_context *output_context);
 static zend_result php_output_handler_devnull_func(void **handler_context, php_output_context *output_context);
 
-#ifdef PHP_ASYNC_API
 static php_output_context_t *php_output_ensure_coroutine_context(zend_coroutine_t *coroutine);
-#endif
 /* }}} */
 
 /* {{{ static void php_output_init_globals(zend_output_globals *G)
@@ -151,10 +147,8 @@ PHPAPI void php_output_startup(void)
 	zend_hash_init(&php_output_handler_reverse_conflicts, 8, NULL, reverse_conflict_dtor, 1);
 	php_output_direct = php_output_stdout;
 
-#ifdef PHP_ASYNC_API
 	/* Initialize async output context switching */
 	php_output_async_init();
-#endif
 }
 /* }}} */
 
@@ -564,14 +558,12 @@ PHPAPI zend_result php_output_handler_start(php_output_handler *handler)
 			}
 		} ZEND_HASH_FOREACH_END();
 	}
-#ifdef PHP_ASYNC_API
 	/* Handle coroutine context */
 	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 	if (coroutine) {
 		/* Ensure coroutine has its own output context */
 		php_output_ensure_coroutine_context(coroutine);
 	}
-#endif
 
 	/* zend_stack_push returns stack level */
 	handler->level = zend_stack_push(&ASYNC_OG(handlers), &handler);
@@ -1660,7 +1652,6 @@ PHP_FUNCTION(output_add_rewrite_var)
 }
 /* }}} */
 
-#ifdef PHP_ASYNC_API
 /* {{{ Output buffer context switch handler for async operations */
 
 static void php_output_coroutine_cleanup_callback(
@@ -1800,4 +1791,3 @@ void php_output_free_async_context(php_output_context_t *ctx)
 	}
 }
 /* }}} */
-#endif /* PHP_ASYNC_API */

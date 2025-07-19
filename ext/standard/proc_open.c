@@ -35,11 +35,9 @@
 #include <fcntl.h>
 #endif
 
-#ifdef PHP_ASYNC_API
 #include "Zend/zend_async_API.h"
 static zend_long async_wait_process(zend_process_t process_h, const zend_ulong timeout);
 static pid_t async_waitpid(pid_t pid, int *status, int options);
-#endif
 
 #ifdef HAVE_POSIX_SPAWN_FILE_ACTIONS_ADDCHDIR_NP
 /* Only defined on glibc >= 2.29, FreeBSD CURRENT, musl >= 1.1.24,
@@ -251,15 +249,11 @@ static pid_t waitpid_cached(php_process_handle *proc, int *wait_status, int opti
 
 	pid_t wait_pid;
 
-#ifdef PHP_ASYNC_API
 	if (ZEND_ASYNC_IS_ACTIVE && false == (options & WNOHANG)) {
 		wait_pid = async_waitpid(proc->child, wait_status, options);
 	} else {
 		wait_pid = waitpid(proc->child, wait_status, options);
 	}
-#else
-	wait_pid = waitpid(proc->child, wait_status, options);
-#endif
 
 	/* The "exit" status is the final status of the process.
 	 * If we were to cache the status unconditionally,
@@ -302,23 +296,15 @@ static void proc_open_rsrc_dtor(zend_resource *rsrc)
 	 * But if we're freeing the resource because of GC, don't wait. */
 #ifdef PHP_WIN32
 	if (FG(pclose_wait)) {
-#ifdef PHP_ASYNC_API
 		if (ZEND_ASYNC_IS_ACTIVE) {
 			wstatus = async_wait_process(proc->childHandle, 0);
 		} else {
 			WaitForSingleObject(proc->childHandle, INFINITE);
 		}
-#else
-		WaitForSingleObject(proc->childHandle, INFINITE);
-#endif
 	}
-#ifdef PHP_ASYNC_API
 	if (!ZEND_ASYNC_IS_ACTIVE) {
 		GetExitCodeProcess(proc->childHandle, &wstatus);
 	}
-#else
-	GetExitCodeProcess(proc->childHandle, &wstatus);
-#endif
 	if (wstatus == STILL_ACTIVE) {
 		FG(pclose_ret) = -1;
 	} else {
@@ -1601,7 +1587,6 @@ exit_fail:
 
 #endif /* PHP_CAN_SUPPORT_PROC_OPEN */
 
-#ifdef PHP_ASYNC_API
 static zend_long async_wait_process(zend_process_t process_h, const zend_ulong timeout)
 {
 #ifdef PHP_WIN32
@@ -1669,5 +1654,4 @@ static pid_t async_waitpid(pid_t pid, int *status, int options)
 
 	return pid;
 }
-#endif
 #endif
