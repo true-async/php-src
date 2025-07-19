@@ -136,7 +136,6 @@ typedef struct _php_output_handler {
 	} func;
 } php_output_handler;
 
-#ifdef PHP_ASYNC_API
 typedef struct _php_output_context_s {
 	zend_stack handlers;
 	php_output_handler *active;
@@ -145,7 +144,6 @@ typedef struct _php_output_context_s {
 	int output_start_lineno;
 	int flags;
 } php_output_context_t;
-#endif
 
 ZEND_BEGIN_MODULE_GLOBALS(output)
 	zend_stack handlers;
@@ -165,7 +163,6 @@ PHPAPI ZEND_EXTERN_MODULE_GLOBALS(output)
 # define OG(v) (output_globals.v)
 #endif
 
-#ifdef PHP_ASYNC_API
 #include "Zend/zend_async_API.h"
 /* Async-aware output context accessor */
 # define ASYNC_OG(v) ((php_output_get_async_context())->v)
@@ -186,10 +183,6 @@ static inline php_output_context_t* php_output_get_async_context(void) {
 
 void php_output_init_async_context(php_output_context_t *ctx);
 void php_output_free_async_context(php_output_context_t *ctx);
-#else
-/* When async API is not available, ASYNC_OG is just an alias to OG */
-# define ASYNC_OG(v) OG(v)
-#endif
 
 /* convenience macros */
 #define PHPWRITE(str, str_len)		php_output_write((str), (str_len))

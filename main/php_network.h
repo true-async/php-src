@@ -30,9 +30,7 @@
 #define shutdown(s,n)	/* nothing */
 #endif
 
-#ifdef PHP_ASYNC_API
 #include <Zend/zend_async_API.h>
-#endif
 
 #ifdef PHP_WIN32
 # ifdef EWOULDBLOCK
@@ -161,7 +159,6 @@ PHPAPI int php_poll2(php_pollfd *ufds, unsigned int nfds, int timeout);
 #define PHP_POLLREADABLE	(POLLIN|POLLERR|POLLHUP)
 
 #ifndef PHP_USE_POLL_2_EMULATION
-#ifdef PHP_ASYNC_API
 ZEND_API extern int php_poll2_async(php_pollfd *ufds, unsigned int nfds, const int timeout);
 
 static zend_always_inline int _php_poll2_async(php_pollfd *ufds, unsigned int nfds, int timeout)
@@ -173,9 +170,6 @@ static zend_always_inline int _php_poll2_async(php_pollfd *ufds, unsigned int nf
 	}
 }
 # define php_poll2(ufds, nfds, timeout)		_php_poll2_async(ufds, nfds, timeout)
-#else
-# define php_poll2(ufds, nfds, timeout)		poll(ufds, nfds, timeout)
-#endif
 #endif
 
 /* timeval-to-timeout (for poll(2)) */

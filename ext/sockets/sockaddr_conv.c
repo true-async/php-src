@@ -1,9 +1,7 @@
 #include <php.h>
 #include <php_network.h>
 #include "php_sockets.h"
-#ifdef PHP_ASYNC_API
 #include "main/network_async.h"
-#endif
 
 #ifdef PHP_WIN32
 #include "windows_common.h"
@@ -15,11 +13,7 @@
 extern zend_result php_string_to_if_index(const char *val, unsigned *out);
 
 #ifdef HAVE_IPV6
-#ifdef PHP_ASYNC_API
 # define FREEADDRINFO(addrinfo) is_async ? ZEND_ASYNC_FREEADDRINFO(addrinfo) : freeaddrinfo(addrinfo)
-#else
-# define FREEADDRINFO(addrinfo) freeaddrinfo(addrinfo)
-#endif
 /* Sets addr by hostname, or by ip in string form (AF_INET6) */
 int php_set_inet6_addr(struct sockaddr_in6 *sin6, zend_string *string, php_socket *php_sock) /* {{{ */
 {
@@ -42,7 +36,6 @@ int php_set_inet6_addr(struct sockaddr_in6 *sin6, zend_string *string, php_socke
 #else
 		hints.ai_flags = AI_ADDRCONFIG;
 #endif
-#ifdef PHP_ASYNC_API
 		bool is_async = ZEND_ASYNC_IS_ACTIVE;
 
 		if (is_async) {
@@ -62,16 +55,6 @@ int php_set_inet6_addr(struct sockaddr_in6 *sin6, zend_string *string, php_socke
 #endif
 			return 0;
 		}
-#else
-		if (getaddrinfo(ZSTR_VAL(string), NULL, &hints, &addrinfo) != 0) {
-#ifdef PHP_WIN32
-			PHP_SOCKET_ERROR(php_sock, "Host lookup failed", WSAGetLastError());
-#else
-			PHP_SOCKET_ERROR(php_sock, "Host lookup failed", (-10000 - h_errno));
-#endif
-			return 0;
-		}
-#endif
 
 		if (!addrinfo) {
 #ifdef PHP_WIN32

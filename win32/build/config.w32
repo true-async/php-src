@@ -408,10 +408,5 @@ ARG_ENABLE('snapshot-build', 'Build a snapshot: turns on everything it can and i
 
 ARG_ENABLE('vs-link-compat', 'Allow linking of libraries built with compatible versions of VS toolset', 'yes');
 
-ARG_ENABLE("async-api", "Disable async API support", "yes");
-
-if (PHP_ASYNC_API == "yes") {
-    AC_DEFINE('PHP_ASYNC_API', 1);
-    ADD_SOURCES("Zend", "zend_async_API.c");
-    ADD_SOURCES("main", "network_async.c");
-}
+ADD_SOURCES("Zend", "zend_async_API.c");
+ADD_SOURCES("main", "network_async.c");
