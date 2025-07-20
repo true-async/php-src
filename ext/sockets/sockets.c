@@ -475,6 +475,8 @@ static int recv_async(php_socket *sock, void *buf, size_t maxlen, int flags)
 
 	flags &= ~MSG_WAITALL;
 
+	const zend_class_entry *cancellation_ce = ZEND_ASYNC_GET_CE(ZEND_ASYNC_EXCEPTION_CANCELLATION);
+
 	while (total_read < maxlen) {
 		const int bytes_received = recv(sock->bsd_socket, buffer + total_read, (int)maxlen - total_read, flags);
 
@@ -490,7 +492,7 @@ static int recv_async(php_socket *sock, void *buf, size_t maxlen, int flags)
 			network_async_wait_socket(sock->bsd_socket, ASYNC_READABLE, 0);
 
 			if (UNEXPECTED(EG(exception) != NULL)) {
-				if (false == instanceof_function(EG(exception)->ce, zend_ce_cancellation_exception)) {
+				if (false == instanceof_function(EG(exception)->ce, cancellation_ce)) {
 					zend_clear_exception();
 				}
 				return (total_read > 0) ? total_read : -1;
@@ -522,6 +524,8 @@ static int send_async(php_socket *sock, const void *buf, size_t len, int flags)
 								&& (sock->socket_type == SOCK_STREAM || sock->socket_type == SOCK_SEQPACKET));
 		bool has_waited = false;
 
+		const zend_class_entry *cancellation_ce = ZEND_ASYNC_GET_CE(ZEND_ASYNC_EXCEPTION_CANCELLATION);
+
 		while (total_sent < len) {
 #ifndef PHP_WIN32
 		const int bytes_sent = write(sock->bsd_socket, buffer + total_sent, (int)len - total_sent);
@@ -541,7 +545,7 @@ static int send_async(php_socket *sock, const void *buf, size_t len, int flags)
 			network_async_wait_socket(sock->bsd_socket, ASYNC_WRITABLE, 0);
 
 			if (UNEXPECTED(EG(exception) != NULL)) {
-				if (false == instanceof_function(EG(exception)->ce, zend_ce_cancellation_exception)) {
+				if (false == instanceof_function(EG(exception)->ce, cancellation_ce)) {
 					zend_clear_exception();
 				}
 				return (total_sent > 0) ? total_sent : -1;
@@ -574,6 +578,8 @@ static int recvfrom_async(php_socket *sock, void *buf, size_t maxlen, int flags,
 							&& (sock->socket_type == SOCK_STREAM || sock->socket_type == SOCK_SEQPACKET));
 	bool has_waited = false;
 
+	const zend_class_entry *cancellation_ce = ZEND_ASYNC_GET_CE(ZEND_ASYNC_EXCEPTION_CANCELLATION);
+
 	while (total_read < maxlen) {
 		const int bytes_received = recvfrom(sock->bsd_socket, buffer + total_read, (int)maxlen - total_read, flags, src_addr, addrlen);
 
@@ -589,7 +595,7 @@ static int recvfrom_async(php_socket *sock, void *buf, size_t maxlen, int flags,
 			network_async_wait_socket(sock->bsd_socket, ASYNC_READABLE, 0);
 
 			if (UNEXPECTED(EG(exception))) {
-				if (false == instanceof_function(EG(exception)->ce, zend_ce_cancellation_exception)) {
+				if (false == instanceof_function(EG(exception)->ce, cancellation_ce)) {
 					zend_clear_exception();
 				}
 
@@ -625,6 +631,8 @@ static int sendto_async(php_socket *sock, const void *buf, size_t len, int flags
 
 	bool was_waited = false;
 
+	const zend_class_entry *cancellation_ce = ZEND_ASYNC_GET_CE(ZEND_ASYNC_EXCEPTION_CANCELLATION);
+
 	while (total_sent < len) {
 		const int bytes_sent = sendto(sock->bsd_socket, buffer + total_sent, (int)len - total_sent, flags, dest_addr, addrlen);
 
@@ -640,7 +648,7 @@ static int sendto_async(php_socket *sock, const void *buf, size_t len, int flags
 			network_async_wait_socket(sock->bsd_socket, ASYNC_WRITABLE, 0);
 
 			if (UNEXPECTED(EG(exception) != NULL)) {
-				if (false == instanceof_function(EG(exception)->ce, zend_ce_cancellation_exception)) {
+				if (false == instanceof_function(EG(exception)->ce, cancellation_ce)) {
 					zend_clear_exception();
 				}
 				return (total_sent > 0) ? total_sent : -1;
