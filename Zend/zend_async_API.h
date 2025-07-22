@@ -1406,11 +1406,26 @@ ZEND_API void coroutine_event_callback_dispose(
 		zend_async_event_callback_t *callback, zend_async_event_t *event);
 
 /* Waker API */
+
+/**
+ * Initializes the state of the Waker object.
+ * If the Waker object already exists, it will be destructed and then reset to its initial state.
+ *
+ * @param coroutine The coroutine to create the waker for.
+ * @return Pointer to the newly created waker object.
+ */
 ZEND_API zend_async_waker_t *zend_async_waker_new(zend_coroutine_t *coroutine);
 ZEND_API zend_async_waker_t *zend_async_waker_new_with_timeout(
 		zend_coroutine_t *coroutine, const zend_ulong timeout, zend_async_event_t *cancellation);
 ZEND_API bool zend_async_waker_apply_error(zend_async_waker_t *waker, zend_object *error,
 		bool transfer_error, bool override, bool for_cancellation);
+
+/**
+ * Destroys the waker for the given coroutine.
+ * Note: This function doesn't call efree.
+ *
+ * @param coroutine Coroutine to destroy the waker for.
+ */
 ZEND_API void zend_async_waker_destroy(zend_coroutine_t *coroutine);
 ZEND_API void zend_async_waker_add_triggered_event(
 		zend_coroutine_t *coroutine, zend_async_event_t *event);

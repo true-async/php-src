@@ -545,7 +545,7 @@ ZEND_API zend_async_waker_t *zend_async_waker_define(zend_coroutine_t *coroutine
 
 ZEND_API zend_async_waker_t *zend_async_waker_new(zend_coroutine_t *coroutine)
 {
-	if (coroutine == NULL) {
+	if (UNEXPECTED(coroutine == NULL)) {
 		coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 	}
 
@@ -554,20 +554,27 @@ ZEND_API zend_async_waker_t *zend_async_waker_new(zend_coroutine_t *coroutine)
 		return NULL;
 	}
 
-	if (UNEXPECTED(coroutine->waker != NULL)) {
-		zend_async_waker_destroy(coroutine);
+	zend_async_waker_t *waker = coroutine->waker;
+
+	// The code tries to minimize memory allocations, so if the Waker object exists, it is reused repeatedly.
+	// This approach has side effects for ZendHash, as these data structures can't optimize their size.
+
+	if (EXPECTED(waker != NULL)) {
+		if (waker->status != ZEND_ASYNC_WAKER_NO_STATUS) {
+			zend_async_waker_destroy(coroutine);
+		}
+	} else {
+		waker = ecalloc(1, sizeof(zend_async_waker_t));
+		coroutine->waker = waker;
 	}
 
-	zend_async_waker_t *waker = pecalloc(1, sizeof(zend_async_waker_t), 0);
-
+	waker->status = ZEND_ASYNC_WAKER_NO_STATUS;
 	waker->triggered_events = NULL;
 	waker->error = NULL;
 	waker->dtor = NULL;
 	ZVAL_UNDEF(&waker->result);
 
 	zend_hash_init(&waker->events, 2, NULL, waker_events_dtor, 0);
-
-	coroutine->waker = waker;
 
 	return waker;
 }
@@ -583,7 +590,7 @@ ZEND_API void zend_async_waker_destroy(zend_coroutine_t *coroutine)
 	}
 
 	zend_async_waker_t *waker = coroutine->waker;
-	coroutine->waker = NULL;
+	waker->status = ZEND_ASYNC_WAKER_NO_STATUS;
 
 	// default dtor
 	if (waker->error != NULL) {
@@ -605,7 +612,6 @@ ZEND_API void zend_async_waker_destroy(zend_coroutine_t *coroutine)
 
 	zval_ptr_dtor(&waker->result);
 	zend_hash_destroy(&waker->events);
-	efree(waker);
 }
 
 void coroutine_event_callback_dispose(
