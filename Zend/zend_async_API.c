@@ -496,23 +496,28 @@ static void waker_events_dtor(zval *item)
 {
 	zend_async_waker_trigger_t *trigger = Z_PTR_P(item);
 	zend_async_event_t *event = trigger->event;
+
+	// Ignore double destruction
+	if (event == NULL) {
+		return;
+	}
+
 	trigger->event = NULL;
 
-	if (event != NULL) {
-		// Remove all callbacks from the event
-		for (uint32_t i = 0; i < trigger->length; i++) {
-			if (trigger->data[i] != NULL) {
-				event->del_callback(event, trigger->data[i]);
-			}
+	// Remove all callbacks from the event
+	for (uint32_t i = 0; i < trigger->length; i++) {
+		if (trigger->data[i] != NULL) {
+			event->del_callback(event, trigger->data[i]);
 		}
-		//
-		// At this point, we explicitly stop the event because it is no longer being listened to by
-		// our handlers. However, this does not mean the object is destroyed—it may remain in memory
-		// if something still holds a reference to it.
-		//
-		event->stop(event);
-		ZEND_ASYNC_EVENT_RELEASE(event);
 	}
+
+	//
+	// At this point, we explicitly stop the event because it is no longer being listened to by
+	// our handlers. However, this does not mean the object is destroyed—it may remain in memory
+	// if something still holds a reference to it.
+	//
+	event->stop(event);
+	ZEND_ASYNC_EVENT_RELEASE(event);
 
 	// Free the entire trigger (includes flexible array member)
 	efree(trigger);

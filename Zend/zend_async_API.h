@@ -401,20 +401,20 @@ struct _zend_coroutine_event_callback_s {
 };
 
 struct _zend_async_waker_trigger_s {
-	uint32_t length; /* current number of callbacks          */
-	uint32_t capacity; /* allocated slots in the array         */
+	uint32_t length; /* current number of callbacks */
+	uint32_t capacity; /* allocated slots in the array */
 	zend_async_event_t *event;
-	zend_async_event_callback_t *data[1]; /* flexible array member                */
+	zend_async_event_callback_t *data[1]; /* flexible array member */
 };
 
 /* Dynamic array of async event callbacks with single iterator protection */
 typedef struct _zend_async_callbacks_vector_s {
-	uint32_t length; /* current number of callbacks          */
-	uint32_t capacity; /* allocated slots in the array         */
+	uint32_t length; /* current number of callbacks */
+	uint32_t capacity; /* allocated slots in the array */
 	zend_async_event_callback_t **data; /* dynamically allocated callback array */
 
 	/* Single iterator tracking - NULL means no active iteration */
-	uint32_t *current_iterator; /* pointer to active iterator index     */
+	uint32_t *current_iterator; /* pointer to active iterator index */
 } zend_async_callbacks_vector_t;
 
 /**
