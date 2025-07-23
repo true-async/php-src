@@ -920,7 +920,12 @@ typedef enum {
 #define ZEND_ASYNC_WAKER_IN_QUEUE(waker) \
 	(waker != NULL \
 			&& ((waker)->status == ZEND_ASYNC_WAKER_QUEUED \
-					|| waker->status == ZEND_ASYNC_WAKER_IGNORED))
+					|| (waker)->status == ZEND_ASYNC_WAKER_IGNORED))
+
+#define ZEND_ASYNC_WAKER_NOT_IN_QUEUE(waker) \
+	(waker == NULL \
+			|| ((waker)->status != ZEND_ASYNC_WAKER_QUEUED \
+					&& (waker)->status != ZEND_ASYNC_WAKER_IGNORED))
 
 struct _zend_async_waker_s {
 	/* The waker status. */
