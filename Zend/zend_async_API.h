@@ -1425,6 +1425,7 @@ ZEND_API zend_async_waker_t *zend_async_waker_new_with_timeout(
 ZEND_API bool zend_async_waker_apply_error(zend_async_waker_t *waker, zend_object *error,
 		bool transfer_error, bool override, bool for_cancellation);
 
+ZEND_API void zend_async_waker_clean(zend_coroutine_t *coroutine);
 /**
  * Destroys the waker for the given coroutine.
  * Note: This function doesn't call efree.

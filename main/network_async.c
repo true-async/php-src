@@ -147,7 +147,7 @@ void network_async_wait_socket(php_socket_t socket, const zend_ulong events, con
 	ZEND_ASYNC_SUSPEND();
 
 cleanup:
-	zend_async_waker_destroy(coroutine);
+	zend_async_waker_clean(coroutine);
 }
 ///////////////////////////////////////////////////////////////
 /// Poll2 Emulation for Async Context
@@ -409,7 +409,7 @@ error:
 	handle_exception_and_errno();
 
 cleanup:
-	zend_async_waker_destroy(coroutine);
+	zend_async_waker_clean(coroutine);
 	return result;
 }
 
@@ -635,7 +635,7 @@ error:
 	handle_exception_and_errno();
 
 cleanup:
-	zend_async_waker_destroy(coroutine);
+	zend_async_waker_clean(coroutine);
 	return result;
 }
 
@@ -804,13 +804,13 @@ ZEND_API int php_network_getaddrinfo_async(const char *node, const char *service
 	IF_EXCEPTION_GOTO_ERROR;
 
 	if (Z_TYPE(coroutine->waker->result) == IS_TRUE) {
-		zend_async_waker_destroy(coroutine);
+		zend_async_waker_clean(coroutine);
 		return 0;
 	}
 
 error:
 	dns_handle_exception_and_errno();
-	zend_async_waker_destroy(coroutine);
+	zend_async_waker_clean(coroutine);
 	return -1;
 }
 
@@ -991,12 +991,12 @@ ZEND_API zend_string* php_network_gethostbyaddr_async(const char *ip)
 	}
 
 	if (Z_TYPE(coroutine->waker->result) == IS_TRUE) {
-		zend_async_waker_destroy(coroutine);
+		zend_async_waker_clean(coroutine);
 		return hostname_result;
 	}
 
 error:
-	zend_async_waker_destroy(coroutine);
+	zend_async_waker_clean(coroutine);
 	dns_handle_exception_and_errno();
 	return NULL;
 }

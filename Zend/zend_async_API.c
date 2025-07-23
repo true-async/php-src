@@ -561,7 +561,7 @@ ZEND_API zend_async_waker_t *zend_async_waker_new(zend_coroutine_t *coroutine)
 
 	if (EXPECTED(waker != NULL)) {
 		if (waker->status != ZEND_ASYNC_WAKER_NO_STATUS) {
-			zend_async_waker_destroy(coroutine);
+			zend_async_waker_clean(coroutine);
 		}
 	} else {
 		waker = ecalloc(1, sizeof(zend_async_waker_t));
@@ -579,6 +579,40 @@ ZEND_API zend_async_waker_t *zend_async_waker_new(zend_coroutine_t *coroutine)
 	return waker;
 }
 
+ZEND_API void zend_async_waker_clean(zend_coroutine_t *coroutine)
+{
+	if (UNEXPECTED(coroutine->waker == NULL)) {
+		return;
+	}
+
+	if (coroutine->waker->dtor != NULL) {
+		coroutine->waker->dtor(coroutine);
+		coroutine->waker->dtor = NULL;
+	}
+
+	zend_async_waker_t *waker = coroutine->waker;
+	waker->status = ZEND_ASYNC_WAKER_NO_STATUS;
+
+	// default dtor
+	if (waker->error != NULL) {
+		zend_object_release(waker->error);
+		waker->error = NULL;
+	}
+
+	if (waker->triggered_events != NULL) {
+		zend_hash_clean(waker->triggered_events);
+	}
+
+	if (waker->filename != NULL) {
+		zend_string_release(waker->filename);
+		waker->filename = NULL;
+		waker->lineno = 0;
+	}
+
+	zval_ptr_dtor(&waker->result);
+	zend_hash_clean(&waker->events);
+}
+
 ZEND_API void zend_async_waker_destroy(zend_coroutine_t *coroutine)
 {
 	if (UNEXPECTED(coroutine->waker == NULL)) {
@@ -587,6 +621,7 @@ ZEND_API void zend_async_waker_destroy(zend_coroutine_t *coroutine)
 
 	if (coroutine->waker->dtor != NULL) {
 		coroutine->waker->dtor(coroutine);
+		coroutine->waker->dtor = NULL;
 	}
 
 	zend_async_waker_t *waker = coroutine->waker;
