@@ -632,6 +632,13 @@ ZEND_API void zend_async_waker_destroy(zend_coroutine_t *coroutine)
 	zend_async_waker_t *waker = coroutine->waker;
 	waker->status = ZEND_ASYNC_WAKER_NO_STATUS;
 
+	// After this operation, the values of the Waker will no longer be valid,
+	// so we explicitly reset the reference
+	// to the Waker object to prevent accidental access from other places.
+	coroutine->waker = NULL;
+
+	waker->status = ZEND_ASYNC_WAKER_NO_STATUS;
+
 	// default dtor
 	if (waker->error != NULL) {
 		zend_object_release(waker->error);
