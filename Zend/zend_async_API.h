@@ -1416,6 +1416,13 @@ ZEND_API void coroutine_event_callback_dispose(
 /* Waker API */
 
 /**
+ * Retrieves the waker object associated with the given coroutine.
+ *
+ * @param coroutine The coroutine to get the waker for.
+ * @return The waker object associated with the coroutine.
+ */
+ZEND_API zend_async_waker_t *zend_async_waker_define(zend_coroutine_t *coroutine);
+/**
  * Initializes the state of the Waker object.
  * If the Waker object already exists, it will be destructed and then reset to its initial state.
  *
