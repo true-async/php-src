@@ -628,6 +628,7 @@ ZEND_API void zend_async_waker_clean(zend_coroutine_t *coroutine)
 	}
 
 	zval_ptr_dtor(&waker->result);
+	ZVAL_UNDEF(&waker->result);
 	zend_hash_clean(&waker->events);
 }
 
