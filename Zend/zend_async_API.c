@@ -496,23 +496,28 @@ static void waker_events_dtor(zval *item)
 {
 	zend_async_waker_trigger_t *trigger = Z_PTR_P(item);
 	zend_async_event_t *event = trigger->event;
+
+	// Ignore double destruction
+	if (event == NULL) {
+		return;
+	}
+
 	trigger->event = NULL;
 
-	if (event != NULL) {
-		// Remove all callbacks from the event
-		for (uint32_t i = 0; i < trigger->length; i++) {
-			if (trigger->data[i] != NULL) {
-				event->del_callback(event, trigger->data[i]);
-			}
+	// Remove all callbacks from the event
+	for (uint32_t i = 0; i < trigger->length; i++) {
+		if (trigger->data[i] != NULL) {
+			event->del_callback(event, trigger->data[i]);
 		}
-		//
-		// At this point, we explicitly stop the event because it is no longer being listened to by
-		// our handlers. However, this does not mean the object is destroyed—it may remain in memory
-		// if something still holds a reference to it.
-		//
-		event->stop(event);
-		ZEND_ASYNC_EVENT_RELEASE(event);
 	}
+
+	//
+	// At this point, we explicitly stop the event because it is no longer being listened to by
+	// our handlers. However, this does not mean the object is destroyed—it may remain in memory
+	// if something still holds a reference to it.
+	//
+	event->stop(event);
+	ZEND_ASYNC_EVENT_RELEASE(event);
 
 	// Free the entire trigger (includes flexible array member)
 	efree(trigger);
@@ -545,7 +550,7 @@ ZEND_API zend_async_waker_t *zend_async_waker_define(zend_coroutine_t *coroutine
 
 ZEND_API zend_async_waker_t *zend_async_waker_new(zend_coroutine_t *coroutine)
 {
-	if (coroutine == NULL) {
+	if (UNEXPECTED(coroutine == NULL)) {
 		coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 	}
 
@@ -554,22 +559,77 @@ ZEND_API zend_async_waker_t *zend_async_waker_new(zend_coroutine_t *coroutine)
 		return NULL;
 	}
 
-	if (UNEXPECTED(coroutine->waker != NULL)) {
-		zend_async_waker_destroy(coroutine);
+	zend_async_waker_t *waker = coroutine->waker;
+
+	// The code tries to minimize memory allocations, so if the Waker object exists, it is reused repeatedly.
+	// This approach has side effects for ZendHash, as these data structures can't optimize their size.
+
+	if (EXPECTED(waker != NULL)) {
+		if (waker->status != ZEND_ASYNC_WAKER_NO_STATUS) {
+			zend_async_waker_clean(coroutine);
+		}
+	} else {
+		// Allocate new Waker
+		waker = ecalloc(1, sizeof(zend_async_waker_t));
+		coroutine->waker = waker;
+		zend_async_waker_init(waker);
 	}
 
-	zend_async_waker_t *waker = pecalloc(1, sizeof(zend_async_waker_t), 0);
+	return waker;
+}
 
+/**
+ * The function initializes the Waker object before use.
+ * @param waker Waker object
+ */
+ZEND_API void zend_async_waker_init(zend_async_waker_t *waker)
+{
+	waker->status = ZEND_ASYNC_WAKER_NO_STATUS;
 	waker->triggered_events = NULL;
 	waker->error = NULL;
 	waker->dtor = NULL;
 	ZVAL_UNDEF(&waker->result);
-
 	zend_hash_init(&waker->events, 2, NULL, waker_events_dtor, 0);
+}
 
-	coroutine->waker = waker;
+/**
+ * The function cleans the Waker object for reuse.
+ * It does not free the memory, but resets the values to their initial state.
+ * @param coroutine Coroutine object
+ */
+ZEND_API void zend_async_waker_clean(zend_coroutine_t *coroutine)
+{
+	if (UNEXPECTED(coroutine->waker == NULL)) {
+		return;
+	}
 
-	return waker;
+	if (coroutine->waker->dtor != NULL) {
+		coroutine->waker->dtor(coroutine);
+		coroutine->waker->dtor = NULL;
+	}
+
+	zend_async_waker_t *waker = coroutine->waker;
+	waker->status = ZEND_ASYNC_WAKER_NO_STATUS;
+
+	// default dtor
+	if (waker->error != NULL) {
+		zend_object_release(waker->error);
+		waker->error = NULL;
+	}
+
+	if (waker->triggered_events != NULL) {
+		zend_hash_clean(waker->triggered_events);
+	}
+
+	if (waker->filename != NULL) {
+		zend_string_release(waker->filename);
+		waker->filename = NULL;
+		waker->lineno = 0;
+	}
+
+	zval_ptr_dtor(&waker->result);
+	ZVAL_UNDEF(&waker->result);
+	zend_hash_clean(&waker->events);
 }
 
 ZEND_API void zend_async_waker_destroy(zend_coroutine_t *coroutine)
@@ -580,10 +640,17 @@ ZEND_API void zend_async_waker_destroy(zend_coroutine_t *coroutine)
 
 	if (coroutine->waker->dtor != NULL) {
 		coroutine->waker->dtor(coroutine);
+		coroutine->waker->dtor = NULL;
 	}
 
 	zend_async_waker_t *waker = coroutine->waker;
+
+	// After this operation, the values of the Waker will no longer be valid,
+	// so we explicitly reset the reference
+	// to the Waker object to prevent accidental access from other places.
 	coroutine->waker = NULL;
+
+	waker->status = ZEND_ASYNC_WAKER_NO_STATUS;
 
 	// default dtor
 	if (waker->error != NULL) {
@@ -605,7 +672,6 @@ ZEND_API void zend_async_waker_destroy(zend_coroutine_t *coroutine)
 
 	zval_ptr_dtor(&waker->result);
 	zend_hash_destroy(&waker->events);
-	efree(waker);
 }
 
 void coroutine_event_callback_dispose(
@@ -630,8 +696,16 @@ void coroutine_event_callback_dispose(
 	if (EXPECTED(coroutine != NULL)) {
 		zend_async_waker_t *waker = coroutine->waker;
 
+		if (event == NULL) {
+			event = ((zend_coroutine_event_callback_t *) callback)->event;
+		}
+
 		if (event != NULL && waker != NULL) {
+			// remove reference to event in callback to avoid double free
+			((zend_coroutine_event_callback_t *) callback)->event = NULL;
+
 			// Find the trigger for this event
+			// @todo zend_rotr3
 			zval *trigger_zval = zend_hash_index_find(&waker->events, (zend_ulong) event);
 
 			if (trigger_zval != NULL) {
@@ -720,12 +794,18 @@ ZEND_API void zend_async_resume_when(zend_coroutine_t *coroutine, zend_async_eve
 		event_callback->base.ref_count = 1;
 		event_callback->base.callback = callback;
 		event_callback->base.dispose = coroutine_event_callback_dispose;
+		event_callback->event = event;
 		locally_allocated_callback = true;
 	}
 
 	// Set up the default dispose function if not set
 	if (event_callback->base.dispose == NULL) {
 		event_callback->base.dispose = coroutine_event_callback_dispose;
+	}
+
+	// Link the event to the callback if not already set
+	if (event_callback->event == NULL) {
+		event_callback->event = event;
 	}
 
 	if (event_callback->base.ref_count == 0) {

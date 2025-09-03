@@ -1137,7 +1137,7 @@ static zend_long sleep_async(zend_long ms, zend_long nanoseconds)
 	}
 
 	ZEND_ASYNC_SUSPEND();
-	zend_async_waker_destroy(coroutine);
+	zend_async_waker_clean(coroutine);
 	return 0;
 }
 

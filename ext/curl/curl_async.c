@@ -435,7 +435,7 @@ CURLcode curl_async_perform(CURL* curl)
 	curl_async_event_t *curl_event = curl_async_event_ctor(curl);
 
 	if (UNEXPECTED(EG(exception))) {
-		zend_async_waker_destroy(coroutine);
+		zend_async_waker_clean(coroutine);
 		return CURLE_FAILED_INIT;
 	}
 
@@ -448,7 +448,7 @@ CURLcode curl_async_perform(CURL* curl)
 	);
 
 	if (UNEXPECTED(EG(exception))) {
-		zend_async_waker_destroy(coroutine);
+		zend_async_waker_clean(coroutine);
 		return CURLE_FAILED_INIT;
 	}
 
@@ -457,7 +457,7 @@ CURLcode curl_async_perform(CURL* curl)
 
 	// Check for exception
 	if (EG(exception)) {
-		zend_async_waker_destroy(coroutine);
+		zend_async_waker_clean(coroutine);
 		return CURLE_ABORTED_BY_CALLBACK;
 	}
 
@@ -467,7 +467,7 @@ CURLcode curl_async_perform(CURL* curl)
 		result = (CURLcode) Z_LVAL(coroutine->waker->result);
 	}
 
-	zend_async_waker_destroy(coroutine);
+	zend_async_waker_clean(coroutine);
 	return result;
 }
 
@@ -900,7 +900,7 @@ finally:
 	// Calculate the number of file descriptors that are ready
 	*numfds = async_event->poll_list.nNumUsed;
 
-	zend_async_waker_destroy(coroutine);
+	zend_async_waker_clean(coroutine);
 
 	return result;
 }

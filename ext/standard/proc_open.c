@@ -1627,7 +1627,7 @@ static zend_long async_wait_process(zend_process_t process_h, const zend_ulong t
 	);
 
 	if (UNEXPECTED(callback == NULL)) {
-		zend_async_waker_destroy(coroutine);
+		zend_async_waker_clean(coroutine);
 		ZEND_ASYNC_EVENT_RELEASE(&event->base);
 		return -1;
 	}
