@@ -397,7 +397,10 @@ struct _zend_async_event_callback_s {
 
 struct _zend_coroutine_event_callback_s {
 	zend_async_event_callback_t base;
+	// linked coroutine that will be resumed when the event is triggered
 	zend_coroutine_t *coroutine;
+	// reference to the event that created this callback
+	zend_async_event_t *event;
 };
 
 struct _zend_async_waker_trigger_s {
@@ -1413,6 +1416,13 @@ ZEND_API void coroutine_event_callback_dispose(
 /* Waker API */
 
 /**
+ * Retrieves the waker object associated with the given coroutine.
+ *
+ * @param coroutine The coroutine to get the waker for.
+ * @return The waker object associated with the coroutine.
+ */
+ZEND_API zend_async_waker_t *zend_async_waker_define(zend_coroutine_t *coroutine);
+/**
  * Initializes the state of the Waker object.
  * If the Waker object already exists, it will be destructed and then reset to its initial state.
  *
@@ -1425,6 +1435,7 @@ ZEND_API zend_async_waker_t *zend_async_waker_new_with_timeout(
 ZEND_API bool zend_async_waker_apply_error(zend_async_waker_t *waker, zend_object *error,
 		bool transfer_error, bool override, bool for_cancellation);
 
+ZEND_API void zend_async_waker_init(zend_async_waker_t *waker);
 ZEND_API void zend_async_waker_clean(zend_coroutine_t *coroutine);
 /**
  * Destroys the waker for the given coroutine.
