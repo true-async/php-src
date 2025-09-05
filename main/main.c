@@ -2794,6 +2794,7 @@ PHPAPI void php_reserve_tsrm_memory(void)
 		TSRM_ALIGNED_SIZE(sizeof(sapi_globals_struct)) +
 		TSRM_ALIGNED_SIZE(sizeof(sapi_globals_struct)) +
 		TSRM_ALIGNED_SIZE(sizeof(zend_accel_globals)) +
+		TSRM_ALIGNED_SIZE(sizeof(sapi_globals_struct)) +
 #ifdef HAVE_JIT
 		TSRM_ALIGNED_SIZE(sizeof(zend_jit_globals)) +
 #endif

@@ -355,12 +355,10 @@ static zend_gc_globals gc_globals;
 # define GC_BENCH_PEAK(peak, counter)
 #endif
 
+static void zend_gc_collect_cycles_microtask(zend_async_microtask_t *task);
 
 #define GC_STACK_SEGMENT_SIZE (((4096 - ZEND_MM_OVERHEAD) / sizeof(void*)) - 2)
 
-typedef struct _gc_stack gc_stack;
-
-/* The stack used for graph traversal is stored as a linked list of segments */
 struct _gc_stack {
 	gc_stack        *prev;
 	gc_stack        *next;
