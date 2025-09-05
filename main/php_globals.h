@@ -72,6 +72,7 @@ struct _php_core_globals {
 	zend_long serialize_precision;
 
 	zend_long memory_limit;
+	zend_long max_memory_limit;
 	zend_long max_input_time;
 
 	char *error_log;
@@ -142,7 +143,6 @@ struct _php_core_globals {
 
 	char *php_sys_temp_dir;
 
-	char *disable_classes;
 	zend_long max_input_nesting_level;
 	zend_long max_input_vars;
 
