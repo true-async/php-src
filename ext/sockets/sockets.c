@@ -289,6 +289,20 @@ static bool php_open_listen_sock(php_socket *sock, unsigned short port, int back
 
 static bool php_accept_connect(php_socket *in_sock, php_socket *out_sock, struct sockaddr *la, socklen_t *la_len) /* {{{ */
 {
+#if defined(HAVE_ACCEPT4)
+	int flags = SOCK_CLOEXEC;
+	if (!in_sock->blocking) {
+		flags |= SOCK_NONBLOCK;
+	}
+
+	out_sock->bsd_socket = accept4(in_sock->bsd_socket, la, la_len, flags);
+
+	if (IS_INVALID_SOCKET(out_sock)) {
+		PHP_SOCKET_ERROR(out_sock, "unable to accept incoming connection", errno);
+		return 0;
+	}
+#else
+	out_sock->bsd_socket = accept(in_sock->bsd_socket, la, la_len);
 	if (in_sock->blocking && ZEND_ASYNC_IS_ACTIVE && network_async_ensure_socket_nonblocking(in_sock->bsd_socket)) {
 		out_sock->bsd_socket = accept(in_sock->bsd_socket, la, la_len);
 
@@ -316,7 +330,7 @@ static bool php_accept_connect(php_socket *in_sock, php_socket *out_sock, struct
 
 #if !defined(PHP_WIN32)
 	/**
-	 * accept4 could had been used but not all platforms support it (e.g. Haiku, solaris < 11.4, ...)
+	 * for fewer and fewer platforms not supporting accept4 syscall we use fcntl instead,
 	 * win32, not having any concept of child process, has no need to address it.
 	 */
 	int mode;
@@ -334,6 +348,7 @@ static bool php_accept_connect(php_socket *in_sock, php_socket *out_sock, struct
 			return 0;
 		}
 	}
+#endif
 #endif
 
 	out_sock->error = 0;
@@ -482,7 +497,7 @@ static int recv_async(php_socket *sock, void *buf, size_t maxlen, int flags)
 
 		if (bytes_received > 0) {
 			total_read += bytes_received;
-			
+
 			if (no_wait_all) {
 				return total_read;
 			}
@@ -535,7 +550,7 @@ static int send_async(php_socket *sock, const void *buf, size_t len, int flags)
 
 		if (bytes_sent > 0) {
 			total_sent += bytes_sent;
-			
+
 			if (no_wait_all) {
 				return total_sent;
 			}
@@ -585,7 +600,7 @@ static int recvfrom_async(php_socket *sock, void *buf, size_t maxlen, int flags,
 
 		if (bytes_received > 0) {
 			total_read += bytes_received;
-			
+
 			if (no_wait_all) {
 				return total_read;
 			}
@@ -638,7 +653,7 @@ static int sendto_async(php_socket *sock, const void *buf, size_t len, int flags
 
 		if (bytes_sent > 0) {
 			total_sent += bytes_sent;
-			
+
 			if (no_wait_all) {
 				return total_sent;
 			}
@@ -2969,7 +2984,7 @@ PHP_FUNCTION(socket_import_stream)
 	ZEND_PARSE_PARAMETERS_END();
 	php_stream_from_zval(stream, zstream);
 
-	if (php_stream_cast(stream, PHP_STREAM_AS_SOCKETD, (void**)&socket, 1)) {
+	if (php_stream_cast(stream, PHP_STREAM_AS_SOCKETD, (void**)&socket, 1) == FAILURE) {
 		/* error supposedly already shown */
 		RETURN_FALSE;
 	}

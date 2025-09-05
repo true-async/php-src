@@ -14,7 +14,6 @@ PHP 8.5 INTERNALS UPGRADE NOTES
 1. Internal API changes
 ========================
 
-- Core
   . PG(arg_separator).input and PG(arg_separator).output are now `zend_string*`
     instead of `char*`.
   . DL_LOAD now doesn't use RTLD_DEEPBIND deepbind anymore on platforms
@@ -28,8 +27,12 @@ PHP 8.5 INTERNALS UPGRADE NOTES
     extra layer of indirection can be removed. In other cases a zval can
     be heap-allocated and stored in the pointer as a minimal change to keep
     compatibility.
-
-- Zend
+  . The validator callbacks for internal attribute now return `zend_string *`
+    rather than `void`; instead of emitting an error when an attribute is
+    applied incorrectly, the error message should be returned as a zend_string
+    pointer. If the error will be delayed until runtime, it is stored in the
+    new `validation_error` field of the `zend_attribute` struct.
+    RFC: https://wiki.php.net/rfc/delayedtargetvalidation_attribute
   . Added zend_safe_assign_to_variable_noref() function to safely assign
     a value to a non-reference zval.
   . Added zval_ptr_safe_dtor() to safely destroy a zval when a destructor
@@ -71,6 +74,11 @@ PHP 8.5 INTERNALS UPGRADE NOTES
     * zend_register_string_constant()
     * zend_register_stringl_constant()
   . EG(fake_scope) now is a _const_ zend_class_entry*.
+  . zend_begin_record_errors() or EG(record_errors)=true cause errors to be
+    delayed. Before, errors would be recorded but not delayed.
+  . zend_mm_refresh_key_child() must be called on any zend_mm_heap inherited
+    from the parent process after a fork().
+  . HASH_KEY_IS_* constants have been moved in the zend_hash_key_type enum.
 
 ========================
 2. Build system changes
@@ -88,11 +96,12 @@ PHP 8.5 INTERNALS UPGRADE NOTES
     that appropriate build rules are created.
 
 - Unix build system changes
-  . libdir is properly set when --libdir (ex: /usr/lib64) and --with-libdir (ex lib64)
+  . libdir is properly set when --libdir (ex: /usr/lib64) and --with-libdir (ex: lib64)
     configure options are used to ${libdir}/php (ex: /usr/lib64/php)
   . PHP_ODBC_CFLAGS, PHP_ODBC_LFLAGS, PHP_ODBC_LIBS, PHP_ODBC_TYPE preprocessor
     macros defined by ext/odbc are now defined in php_config.h instead of the
     build-defs.h header.
+  . Autoconf macro AX_CHECK_COMPILE_FLAG updated to serial 11.
   . Autoconf macro PHP_AP_EXTRACT_VERSION has been removed.
   . Autoconf macro PHP_BUILD_THREAD_SAFE has been removed (set enable_zts
     manually).
@@ -109,36 +118,62 @@ PHP 8.5 INTERNALS UPGRADE NOTES
 3. Module changes
 ========================
 
-- ext/gd
+- Gd:
   . The gdImageScale*() and gdImageRotate*() helpers are now internal in the
     bundled libgd, like they have been in external libgd as of gd-2.1.1.
 
-- ext/json
+- Hash:
+  . Hash functions now use proper hash_spec_result enum for return values
+    instead of using SUCCESS and FAILURE.
+
+- JSON:
   . php_json_encode_serializable_object() now assumes `EG(active)`,
     if not a bailout is caused. Therefore a minor BC break exists if the
     `PHP_JSON_PARTIAL_OUTPUT_ON_ERROR` option is in use.
     However, this situation is highly unlikely.
 
-- ext/libxml
+- Libxml:
   . The refcount APIs now return an `unsigned int` instead of an `int`.
   . Removed php_libxml_xmlCheckUTF8(). Use xmlCheckUTF8() from libxml instead.
 
-- ext/pdo
+- PDO:
   . Added `php_pdo_stmt_valid_db_obj_handle()` to check if the database object
     is still valid. This is useful when a GC cycle is collected and the
     database object can be destroyed prior to destroying the statement.
 
-- ext/standard
+- Random:
+  . The handlers parameter of php_random_engine_common_init() has been
+    removed. Use the default_object_handlers field on the CE instead.
+
+- Standard:
   . Added php_url_decode_ex() and php_raw_url_decode_ex() that unlike their
     non-ex counterparts do not work in-place.
   . The php_std_date() function has been removed. Use php_format_date() with
     the "D, d M Y H:i:s \\G\\M\\T" format instead.
   . Added php_url_encode_to_smart_str() to encode a URL to a smart_str buffer.
+  . The functionality of getimagesize(), image_type_to_mime_type(),
+    and image_type_to_extension() is now extensible using the internal APIs
+    php_image_register_handler() and php_image_unregister_handler() in
+    php_image.h.
+  . ext/standard/php_smart_string.h and ext/standard/php_smart_string_public.h
+    were removed. Use the corresponding headers in Zend/ instead.
+
+- URI:
+  . Internal API for URI handling was added via the php_uri_*() functions.
 
 ========================
 4. OpCode changes
 ========================
 
+* New ZEND_DECLARE_ATTRIBUTED_CONST is used when a global constant is declared
+  with `const` and has attributes; this opcode is used *instead* of the
+  ZEND_DECLARE_CONST, and in addition to the name of the constant and the
+  value to use, has a ZEND_OP_DATA with a pointer to the compiled attributes.
+
 ========================
 5. SAPI changes
 ========================
+
+- SAPIs must now call php_child_init() after a fork. If php-src code was
+  executed in other threads than the one initiating the fork,
+  refresh_memory_manager() must be called in every such thread.

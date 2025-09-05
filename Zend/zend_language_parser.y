@@ -212,7 +212,7 @@ static YYSIZE_T zend_yytnamerr(char*, const char*);
 %token T_INC "'++'"
 %token T_DEC "'--'"
 %token T_INT_CAST    "'(int)'"
-%token T_DOUBLE_CAST "'(double)'"
+%token T_DOUBLE_CAST "'(float)'"
 %token T_STRING_CAST "'(string)'"
 %token T_ARRAY_CAST  "'(array)'"
 %token T_OBJECT_CAST "'(object)'"
@@ -713,15 +713,14 @@ switch_case_list:
 
 case_list:
 		%empty { $$ = zend_ast_create_list(0, ZEND_AST_SWITCH_LIST); }
-	|	case_list T_CASE expr case_separator inner_statement_list
+	|	case_list T_CASE expr ':' inner_statement_list
 			{ $$ = zend_ast_list_add($1, zend_ast_create(ZEND_AST_SWITCH_CASE, $3, $5)); }
-	|	case_list T_DEFAULT case_separator inner_statement_list
+	|	case_list T_CASE expr ';' inner_statement_list
+			{ $$ = zend_ast_list_add($1, zend_ast_create_ex(ZEND_AST_SWITCH_CASE, ZEND_ALT_CASE_SYNTAX, $3, $5)); }
+	|	case_list T_DEFAULT ':' inner_statement_list
 			{ $$ = zend_ast_list_add($1, zend_ast_create(ZEND_AST_SWITCH_CASE, NULL, $4)); }
-;
-
-case_separator:
-		':'
-	|	';'
+	|	case_list T_DEFAULT ';' inner_statement_list
+			{ $$ = zend_ast_list_add($1, zend_ast_create_ex(ZEND_AST_SWITCH_CASE, ZEND_ALT_CASE_SYNTAX, NULL, $4)); }
 ;
 
 
@@ -1349,6 +1348,7 @@ expr:
 	|	'(' expr ')' {
 			$$ = $2;
 			if ($$->kind == ZEND_AST_CONDITIONAL) $$->attr = ZEND_PARENTHESIZED_CONDITIONAL;
+			if ($$->kind == ZEND_AST_ARROW_FUNC) $$->attr = ZEND_PARENTHESIZED_ARROW_FUNC;
 		}
 	|	new_dereferenceable { $$ = $1; }
 	|	new_non_dereferenceable { $$ = $1; }
