@@ -302,7 +302,6 @@ static bool php_accept_connect(php_socket *in_sock, php_socket *out_sock, struct
 		return 0;
 	}
 #else
-	out_sock->bsd_socket = accept(in_sock->bsd_socket, la, la_len);
 	if (in_sock->blocking && ZEND_ASYNC_IS_ACTIVE && network_async_ensure_socket_nonblocking(in_sock->bsd_socket)) {
 		out_sock->bsd_socket = accept(in_sock->bsd_socket, la, la_len);
 
