@@ -2033,6 +2033,8 @@ static void zend_gc_collect_cycles_microtask_dtor(zend_async_microtask_t *task)
 	efree(task);
 }
 
+static void zend_gc_collect_cycles_microtask(zend_async_microtask_t *task);
+
 static void zend_gc_collect_cycles_coroutine(void)
 {
 	GC_TRACE("GC coroutine started");
