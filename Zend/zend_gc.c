@@ -267,14 +267,6 @@ typedef struct _gc_root_buffer {
 
 typedef struct _gc_stack gc_stack;
 
-#define GC_STACK_SEGMENT_SIZE (((4096 - ZEND_MM_OVERHEAD) / sizeof(void*)) - 2)
-
-struct _gc_stack {
-	gc_stack        *prev;
-	gc_stack        *next;
-	zend_refcounted *data[GC_STACK_SEGMENT_SIZE];
-};
-
 typedef enum {
 	GC_ASYNC_STATE_NONE = 0,
 	GC_ASYNC_STATE_INIT,		// initial state
@@ -363,12 +355,10 @@ static zend_gc_globals gc_globals;
 # define GC_BENCH_PEAK(peak, counter)
 #endif
 
+static void zend_gc_collect_cycles_microtask(zend_async_microtask_t *task);
 
 #define GC_STACK_SEGMENT_SIZE (((4096 - ZEND_MM_OVERHEAD) / sizeof(void*)) - 2)
 
-typedef struct _gc_stack gc_stack;
-
-/* The stack used for graph traversal is stored as a linked list of segments */
 struct _gc_stack {
 	gc_stack        *prev;
 	gc_stack        *next;
@@ -2027,8 +2017,6 @@ static zend_never_inline void gc_call_destructors_in_fiber(uint32_t end)
 }
 
 /* Perform a garbage collection run. The default implementation of gc_collect_cycles. */
-static void zend_gc_collect_cycles_microtask(zend_async_microtask_t *task);
-
 static void zend_gc_collect_cycles_microtask_dtor(zend_async_microtask_t *task)
 {
 	if (task->ref_count > 1) {
