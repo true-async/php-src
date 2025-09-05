@@ -32,12 +32,26 @@
 
 /**
  * Sets a socket to blocking (true) or non-blocking (false) mode.
+ * Optimized to avoid redundant fcntl() calls by tracking the actual socket state.
  *
  * @param socket
  * @param blocking
+ * @param sock_data
  */
-void network_async_set_socket_blocking(php_socket_t socket, bool blocking)
+void network_async_set_socket_blocking(php_socket_t socket, bool blocking, php_netstream_data_t *sock_data)
 {
+	// Optimization: avoid redundant system calls if the socket is already in the desired mode
+	if (sock_data != NULL) {
+		if (!blocking && sock_data->nonblocking_applied) {
+			// Already in non-blocking mode, skip system call
+			return;
+		}
+		if (blocking && !sock_data->nonblocking_applied) {
+			// Already in blocking mode, skip system call
+			return;
+		}
+	}
+
 #ifdef PHP_WIN32
 	u_long mode = blocking ? 0 : 1;
 
@@ -47,6 +61,7 @@ void network_async_set_socket_blocking(php_socket_t socket, bool blocking)
 			ZEND_ASYNC_EXCEPTION_DEFAULT,
 			"ioctlsocket(FIONBIO) failed (WSA error %d)", err
 		);
+		return;
 	}
 #else
 	int flags = fcntl(socket, F_GETFL, 0);
@@ -67,8 +82,14 @@ void network_async_set_socket_blocking(php_socket_t socket, bool blocking)
 			ZEND_ASYNC_EXCEPTION_DEFAULT,
 			"fcntl(F_SETFL) failed: %s", strerror(errno)
 		);
+		return;
 	}
 #endif
+
+	// Update the flag to reflect the actual socket state
+	if (sock_data != NULL) {
+		sock_data->nonblocking_applied = !blocking;
+	}
 }
 
 bool network_async_ensure_socket_nonblocking(php_socket_t socket)

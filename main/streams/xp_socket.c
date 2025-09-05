@@ -71,8 +71,8 @@ static ssize_t php_sockop_write(php_stream *stream, const char *buf, size_t coun
 	else
 		ptimeout = &sock->timeout;
 
-	if (ZEND_ASYNC_IS_ACTIVE && sock->is_blocked) {
-		network_async_set_socket_blocking(sock->socket, false);
+	if (ZEND_ASYNC_IS_ACTIVE && sock->is_blocked && !sock->nonblocking_applied) {
+		network_async_set_socket_blocking(sock->socket, false, sock);
 		if (UNEXPECTED(EG(exception) != NULL)) {
 			/* If we are in async context and an exception was thrown, we should not continue. */
 			return -1;
@@ -126,8 +126,8 @@ retry:
 		php_stream_notify_progress_increment(PHP_STREAM_CONTEXT(stream), didwrite, 0);
 	}
 
-	if (ZEND_ASYNC_IS_ACTIVE && sock->is_blocked) {
-		network_async_set_socket_blocking(sock->socket, true);
+	if (ZEND_ASYNC_IS_ACTIVE && sock->is_blocked && !sock->nonblocking_applied) {
+		network_async_set_socket_blocking(sock->socket, true, sock);
 		if (UNEXPECTED(EG(exception) != NULL)) {
 			/* If we are in async context and an exception was thrown, we should not continue. */
 			return -1;
@@ -982,6 +982,7 @@ PHPAPI php_stream *php_stream_generic_socket_factory(const char *proto, size_t p
 	sock->is_blocked = true;
 	sock->timeout.tv_sec = FG(default_socket_timeout);
 	sock->timeout.tv_usec = 0;
+	sock->nonblocking_applied = false;
 
 	/* we don't know the socket until we have determined if we are binding or
 	 * connecting */
