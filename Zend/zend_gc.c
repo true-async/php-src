@@ -267,14 +267,6 @@ typedef struct _gc_root_buffer {
 
 typedef struct _gc_stack gc_stack;
 
-#define GC_STACK_SEGMENT_SIZE (((4096 - ZEND_MM_OVERHEAD) / sizeof(void*)) - 2)
-
-struct _gc_stack {
-	gc_stack        *prev;
-	gc_stack        *next;
-	zend_refcounted *data[GC_STACK_SEGMENT_SIZE];
-};
-
 typedef enum {
 	GC_ASYNC_STATE_NONE = 0,
 	GC_ASYNC_STATE_INIT,		// initial state
@@ -2026,8 +2018,7 @@ static zend_never_inline void gc_call_destructors_in_fiber(uint32_t end)
 	}
 }
 
-static void zend_gc_collect_cycles_microtask(zend_async_microtask_t *task);
-
+/* Perform a garbage collection run. The default implementation of gc_collect_cycles. */
 static void zend_gc_collect_cycles_microtask_dtor(zend_async_microtask_t *task)
 {
 	if (task->ref_count > 1) {
