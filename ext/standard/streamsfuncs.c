@@ -22,13 +22,13 @@
 #include "php_ini.h"
 #include "streamsfuncs.h"
 #include "php_network.h"
+#include "network_async.h"
 #include "php_string.h"
 #ifdef HAVE_UNISTD_H
 #include <unistd.h>
 #endif
 
 #ifndef PHP_WIN32
-#include <network_async.h>
 typedef unsigned long long php_timeout_ull;
 #else
 #include "win32/select.h"
@@ -745,6 +745,18 @@ PHP_FUNCTION(stream_select)
 		Z_PARAM_LONG_OR_NULL(usec, usecnull)
 	ZEND_PARSE_PARAMETERS_END();
 
+	// Early async select path - avoid all fd_set processing
+	if(ZEND_ASYNC_IS_ACTIVE) {
+		struct timeval tv_async, *tv_p_async = NULL;
+		if (!secnull) {
+			tv_async.tv_sec = sec;
+			tv_async.tv_usec = usecnull ? 0 : usec;
+			tv_p_async = &tv_async;
+		}
+		retval = async_select(r_array, w_array, e_array, tv_p_async);
+		RETURN_LONG(retval >= 0 ? retval : 0);
+	}
+
 	FD_ZERO(&rfds);
 	FD_ZERO(&wfds);
 	FD_ZERO(&efds);
@@ -823,11 +835,7 @@ PHP_FUNCTION(stream_select)
 #ifdef PHP_WIN32
 	retval = php_select(max_fd+1, &rfds, &wfds, &efds, tv_p);
 #else
-	if(ZEND_ASYNC_IS_ACTIVE) {
-		retval = php_select_async(max_fd+1, &rfds, &wfds, &efds, tv_p);
-	} else {
-		retval = select(max_fd+1, &rfds, &wfds, &efds, tv_p);
-	}
+	retval = select(max_fd+1, &rfds, &wfds, &efds, tv_p);
 #endif
 
 	if (retval == -1) {

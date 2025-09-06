@@ -535,6 +535,20 @@ static int php_sockop_set_option(php_stream *stream, int option, int value, void
 				default:
 					break;
 			}
+
+		case PHP_STREAM_OPTION_ASYNC_EVENT_HANDLE:
+			if (!sock) {
+				return PHP_STREAM_OPTION_RETURN_NOTIMPL;
+			}
+			zend_async_poll_event_t **handle_ptr = (zend_async_poll_event_t **)ptrparam;
+			if (sock->event_handle == NULL) {
+				sock->event_handle = ZEND_ASYNC_NEW_SOCKET_EVENT(sock->socket, value);
+				if (UNEXPECTED(EG(exception) != NULL)) {
+					return PHP_STREAM_OPTION_RETURN_ERR;
+				}
+			}
+			*handle_ptr = sock->event_handle;
+			return PHP_STREAM_OPTION_RETURN_OK;
 	}
 
 	return PHP_STREAM_OPTION_RETURN_NOTIMPL;

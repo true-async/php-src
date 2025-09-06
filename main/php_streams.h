@@ -512,6 +512,10 @@ END_EXTERN_C()
 
 #define php_stream_sync_supported(stream)	(_php_stream_set_option((stream), PHP_STREAM_OPTION_SYNC_API, PHP_STREAM_SYNC_SUPPORTED, NULL) == PHP_STREAM_OPTION_RETURN_OK ? 1 : 0)
 
+/* Get or create async event handle for socket streams. 
+ * value = events mask, ptrparam = zend_async_poll_event_t** */
+#define PHP_STREAM_OPTION_ASYNC_EVENT_HANDLE	15
+
 
 #define PHP_STREAM_OPTION_RETURN_OK			 0 /* option set OK */
 #define PHP_STREAM_OPTION_RETURN_ERR		-1 /* problem setting option */

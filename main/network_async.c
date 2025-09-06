@@ -661,6 +661,277 @@ cleanup:
 }
 
 ///////////////////////////////////////////////////////////////
+/// Optimized Async Select for Stream Arrays
+///////////////////////////////////////////////////////////////
+
+typedef struct async_stream_callback_s {
+	zend_coroutine_event_callback_t callback;
+	zval *stream_elem;
+	php_socket_t fd;
+	short events;
+	bool ready;
+	int stream_type;  // 0=read, 1=write, 2=except
+	struct async_stream_callback_s *next;  // For linked list
+} async_stream_callback_t;
+
+// Global list of active callbacks for current select operation
+static async_stream_callback_t *active_callbacks = NULL;
+
+static void async_stream_callback_resolve(
+	zend_async_event_t *event, zend_async_event_callback_t *callback, void *result, zend_object *exception
+)
+{
+	zend_coroutine_t *coroutine = ((zend_coroutine_event_callback_t *)callback)->coroutine;
+
+	if (UNEXPECTED(exception != NULL)) {
+		ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(event);
+		ZEND_ASYNC_RESUME_WITH_ERROR(coroutine, exception, false);
+		return;
+	}
+
+	if (EXPECTED(coroutine->waker != NULL)) {
+		async_stream_callback_t *stream_callback = (async_stream_callback_t *)callback;
+		
+		// Mark this stream as ready
+		stream_callback->ready = true;
+		
+		// Increment total ready count in waker result
+		if (Z_TYPE(coroutine->waker->result) == IS_UNDEF) {
+			ZVAL_LONG(&coroutine->waker->result, 1);
+		} else {
+			Z_LVAL(coroutine->waker->result)++;
+		}
+	}
+
+	ZEND_ASYNC_RESUME(coroutine);
+}
+
+/**
+ * Optimized select() for PHP stream arrays using event reuse
+ */
+static zend_always_inline bool process_stream_array(zval *streams, async_poll_event events, zend_coroutine_t *coroutine, int *result) {
+
+	if (streams == NULL || Z_TYPE_P(streams) != IS_ARRAY) {
+		return true;
+	}
+
+	zval *elem;
+	php_stream *stream;
+	php_netstream_data_t *sock;
+	int count = 0;
+
+	ZEND_HASH_FOREACH_VAL(Z_ARR_P(streams), elem) {
+		ZVAL_DEREF(elem);
+		php_stream_from_zval_no_verify(stream, elem);
+		if (stream == NULL) continue;
+
+		// Try to get async event handle from socket streams first
+		zend_async_poll_event_t *event_handle = NULL;
+		int stream_result = php_stream_set_option(stream, PHP_STREAM_OPTION_ASYNC_EVENT_HANDLE, events, &event_handle);
+		
+		if (stream_result == PHP_STREAM_OPTION_RETURN_OK && event_handle != NULL) {
+			// Socket stream - use optimized path with event reuse
+			php_socket_t fd;
+			if (SUCCESS == php_stream_cast(stream, PHP_STREAM_AS_FD_FOR_SELECT | PHP_STREAM_CAST_INTERNAL, (void*)&fd, 1) && fd != -1) {
+				async_stream_callback_t *callback = ecalloc(1, sizeof(async_stream_callback_t));
+				callback->callback.coroutine = coroutine;
+				callback->callback.base.ref_count = 1;
+				callback->callback.base.callback = async_stream_callback_resolve;
+				callback->stream_elem = elem;
+				callback->fd = fd;
+				callback->events = events;
+				callback->ready = false;
+				callback->stream_type = events;  // Use actual event as type
+				
+				// Add to global list
+				callback->next = active_callbacks;
+				active_callbacks = callback;
+
+				zend_async_resume_when(
+					coroutine,
+					&event_handle->base,
+					true,
+					NULL,
+					&callback->callback
+				);
+				count++;
+			}
+		} else {
+			// Non-socket stream or socket stream that doesn't support event handle
+			// Use fallback with poll event
+			php_socket_t fd;
+			if (SUCCESS == php_stream_cast(stream, PHP_STREAM_AS_FD_FOR_SELECT | PHP_STREAM_CAST_INTERNAL, (void*)&fd, 1) && fd != -1) {
+				zend_async_poll_event_t *poll_event = ZEND_ASYNC_NEW_POLL_EVENT(fd, 0, events);
+				if (UNEXPECTED(EG(exception) != NULL)) {
+					errno = ENOMEM;
+					*result = -1;
+					return -1;
+				}
+
+				async_stream_callback_t *callback = ecalloc(1, sizeof(async_stream_callback_t));
+				callback->callback.coroutine = coroutine;
+				callback->callback.base.ref_count = 1;
+				callback->callback.base.callback = async_stream_callback_resolve;
+				callback->stream_elem = elem;
+				callback->fd = fd;
+				callback->events = events;
+				callback->ready = false;
+				callback->stream_type = events;  // Use actual event as type
+				
+				// Add to global list
+				callback->next = active_callbacks;
+				active_callbacks = callback;
+
+				zend_async_resume_when(
+					coroutine,
+					&poll_event->base,
+					true,
+					NULL,
+					&callback->callback
+				);
+				count++;
+			}
+		}
+	} ZEND_HASH_FOREACH_END();
+
+	return count;
+}
+
+/**
+ * Modify stream array to contain only ready streams (like stream_array_from_fd_set)
+ */
+static void modify_stream_array(zval *stream_array, HashTable *ready_streams) {
+	if (stream_array == NULL || Z_TYPE_P(stream_array) != IS_ARRAY) {
+		return;
+	}
+	
+	// Create new array with only ready streams
+	HashTable *ht = zend_new_array(zend_hash_num_elements(ready_streams));
+	
+	zval *elem;
+	zend_string *key;
+	zend_ulong num_ind;
+	
+	ZEND_HASH_FOREACH_KEY_VAL(ready_streams, num_ind, key, elem) {
+		zval *dest_elem;
+		if (!key) {
+			dest_elem = zend_hash_index_update(ht, num_ind, elem);
+		} else {
+			dest_elem = zend_hash_update(ht, key, elem);
+		}
+		zval_add_ref(dest_elem);
+	} ZEND_HASH_FOREACH_END();
+	
+	// Replace old array with new one
+	zval_ptr_dtor(stream_array);
+	ZVAL_ARR(stream_array, ht);
+}
+
+ZEND_API int async_select(zval *read_streams, zval *write_streams, zval *except_streams, struct timeval *tv)
+{
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+
+	if (coroutine == NULL) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	int result = 0;
+	
+	// Calculate timeout in milliseconds
+	zend_ulong timeout = 0;
+	if (tv != NULL) {
+		timeout = (zend_ulong)(tv->tv_sec * 1000 + tv->tv_usec / 1000);
+	}
+
+	zend_async_waker_new_with_timeout(coroutine, timeout, NULL);
+	IF_EXCEPTION_GOTO_ERROR;
+
+	// Initialize result counter
+	ZVAL_LONG(&coroutine->waker->result, 0);
+
+	// Process all stream arrays using the helper function
+	if (UNEXPECTED(!process_stream_array(read_streams, ASYNC_READABLE, coroutine, &result))) {
+		goto cleanup;
+	}
+	if (UNEXPECTED(!process_stream_array(write_streams, ASYNC_WRITABLE, coroutine, &result))) {
+		goto cleanup;
+	}
+	if (UNEXPECTED(!process_stream_array(except_streams, ASYNC_PRIORITIZED, coroutine, &result))) {
+		goto cleanup;
+	}
+
+	// Suspend until events occur or timeout
+	ZEND_ASYNC_SUSPEND();
+	IF_EXCEPTION_GOTO_ERROR;
+
+	// Get result count
+	result = Z_LVAL(coroutine->waker->result);
+	
+	// Collect ready streams and modify arrays
+	if (result > 0) {
+		HashTable ready_read_streams, ready_write_streams, ready_except_streams;
+		zend_hash_init(&ready_read_streams, 0, NULL, ZVAL_PTR_DTOR, 0);
+		zend_hash_init(&ready_write_streams, 0, NULL, ZVAL_PTR_DTOR, 0);
+		zend_hash_init(&ready_except_streams, 0, NULL, ZVAL_PTR_DTOR, 0);
+		
+		// Collect ready streams from callbacks
+		async_stream_callback_t *cb = active_callbacks;
+		while (cb != NULL) {
+			if (cb->ready) {
+				HashTable *target = NULL;
+				switch (cb->stream_type) {
+					case 0: target = &ready_read_streams; break;
+					case 1: target = &ready_write_streams; break;
+					case 2: target = &ready_except_streams; break;
+				}
+				if (target != NULL) {
+					// Find original key in source array to preserve it
+					zval *stream_elem = cb->stream_elem;
+					zval *dest_elem = zend_hash_next_index_insert(target, stream_elem);
+					if (dest_elem) {
+						zval_add_ref(dest_elem);
+					}
+				}
+			}
+			cb = cb->next;
+		}
+		
+		// Modify original arrays
+		if (read_streams != NULL && zend_hash_num_elements(&ready_read_streams) >= 0) {
+			modify_stream_array(read_streams, &ready_read_streams);
+		}
+		if (write_streams != NULL && zend_hash_num_elements(&ready_write_streams) >= 0) {
+			modify_stream_array(write_streams, &ready_write_streams);
+		}
+		if (except_streams != NULL && zend_hash_num_elements(&ready_except_streams) >= 0) {
+			modify_stream_array(except_streams, &ready_except_streams);
+		}
+		
+		// Cleanup ready stream tables
+		zend_hash_destroy(&ready_read_streams);
+		zend_hash_destroy(&ready_write_streams);
+		zend_hash_destroy(&ready_except_streams);
+	}
+
+	goto cleanup;
+
+error:
+	result = -1;
+	handle_exception_and_errno();
+
+cleanup:
+	// Clean up active callbacks list
+	while (active_callbacks != NULL) {
+		async_stream_callback_t *next = active_callbacks->next;
+		active_callbacks = next;
+	}
+	
+	zend_async_waker_clean(coroutine);
+	return result;
+}
+
+///////////////////////////////////////////////////////////////
 /// Select Emulation for Async Context END
 ///////////////////////////////////////////////////////////////
 
