@@ -1096,3 +1096,116 @@ ZEND_API int php_network_getaddresses_async(const char *host, int socktype, stru
 ///////////////////////////////////////////////////////////////
 /// DNS API Implementation END
 ///////////////////////////////////////////////////////////////
+
+///////////////////////////////////////////////////////////////
+/// Single Socket Async Await Implementation  
+///////////////////////////////////////////////////////////////
+
+typedef struct
+{
+	zend_coroutine_event_callback_t callback;
+} socket_await_callback_t;
+
+static void socket_await_callback_resolve(
+	zend_async_event_t *event, zend_async_event_callback_t *callback, void *result, zend_object *exception
+)
+{
+	zend_coroutine_t *coroutine = ((zend_coroutine_event_callback_t *) callback)->coroutine;
+
+	if (UNEXPECTED(exception != NULL)) {
+		ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(event);
+		ZEND_ASYNC_RESUME_WITH_ERROR(coroutine, exception, false);
+		return;
+	}
+
+	if (EXPECTED(coroutine->waker != NULL)) {
+		// Simply set result to 1 (event occurred)
+		ZVAL_LONG(&coroutine->waker->result, 1);
+	}
+
+	ZEND_ASYNC_RESUME_WITH_ERROR(coroutine, exception, false);
+}
+
+/**
+ * Asynchronous await for single socket with reusable event handle.
+ * 
+ * This function provides optimized async I/O waiting for a single socket by reusing
+ * the event handle stored in the socket structure, avoiding repeated
+ * ZEND_ASYNC_NEW_SOCKET_EVENT allocations.
+ *
+ * @param sock      Socket data structure containing event handle
+ * @param events    Poll events (POLLIN, POLLOUT, etc.)
+ * @param timeout   Timeout as struct timeval* (NULL for infinite)
+ * @return          1 if events occurred, 0 on timeout, -1 on error
+ */
+ZEND_API int async_await_socket(php_netstream_data_t *sock, short events, struct timeval *timeout)
+{
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+
+	if (coroutine == NULL) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	if (sock == NULL || sock->socket == -1) {
+		errno = EBADF;
+		return -1;
+	}
+
+	// Create or reuse event handle
+	if (sock->event_handle == NULL) {
+		sock->event_handle = ZEND_ASYNC_NEW_SOCKET_EVENT(
+			sock->socket, poll2_events_to_async(events)
+		);
+
+		if (UNEXPECTED(EG(exception) != NULL || sock->event_handle == NULL)) {
+			errno = ENOMEM;
+			return -1;
+		}
+	}
+
+	// Convert timeval timeout to milliseconds for async waker
+	zend_ulong timeout_ms = 0;  // 0 means infinite timeout for async waker
+	if (timeout != NULL) {
+		timeout_ms = (zend_ulong)(timeout->tv_sec * 1000 + timeout->tv_usec / 1000);
+	}
+
+	// Initialize waker with timeout
+	zend_async_waker_new_with_timeout(coroutine, timeout_ms, NULL);
+	if (UNEXPECTED(EG(exception) != NULL)) {
+		handle_exception_and_errno();
+		return -1;
+	}
+
+	// Register the event
+	zend_async_resume_when(
+		coroutine,
+		&sock->event_handle->base,
+		false,
+		socket_await_callback_resolve,
+		NULL
+	);
+
+	if (UNEXPECTED(EG(exception) != NULL)) {
+		zend_async_waker_clean(coroutine);
+		handle_exception_and_errno();
+		return -1;
+	}
+
+	// Initialize result counter to 0 (will be set to 1 on event)
+	ZVAL_LONG(&coroutine->waker->result, 0);
+
+	// Suspend until event or timeout
+	ZEND_ASYNC_SUSPEND();
+
+	if (UNEXPECTED(EG(exception) != NULL)) {
+		zend_async_waker_clean(coroutine);
+		handle_exception_and_errno();
+		return -1;
+	}
+
+	int result = Z_LVAL(coroutine->waker->result);
+	zend_async_waker_clean(coroutine);
+
+	return result > 0 ? 1 : 0;
+}

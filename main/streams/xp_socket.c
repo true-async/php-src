@@ -91,21 +91,33 @@ retry:
 
 				sock->timeout_event = false;
 
-				do {
-					retval = php_pollfd_for(sock->socket, POLLOUT, ptimeout);
+				if (ZEND_ASYNC_IS_ACTIVE) {
+					retval = async_await_socket(sock, POLLOUT, ptimeout);
 
 					if (retval == 0) {
 						sock->timeout_event = true;
-						break;
-					}
-
-					if (retval > 0) {
+					} else if (retval > 0) {
 						/* writable now; retry */
 						goto retry;
 					}
+					// On error, retval is -1 and errno is already set
+				} else {
+					do {
+						retval = php_pollfd_for(sock->socket, POLLOUT, ptimeout);
 
-					err = php_socket_errno();
-				} while (err == EINTR);
+						if (retval == 0) {
+							sock->timeout_event = true;
+							break;
+						}
+
+						if (retval > 0) {
+							/* writable now; retry */
+							goto retry;
+						}
+
+						err = php_socket_errno();
+					} while (err == EINTR);
+				}
 			} else {
 				/* EWOULDBLOCK/EAGAIN is not an error for a non-blocking stream.
 				 * Report zero byte write instead. */
@@ -159,17 +171,26 @@ static void php_sock_stream_wait_for_data(php_stream *stream, php_netstream_data
 		ptimeout = &sock->timeout;
 	}
 
-	while(1) {
-		retval = php_pollfd_for(sock->socket, PHP_POLLREADABLE, ptimeout);
+	if (ZEND_ASYNC_IS_ACTIVE) {
+		retval = async_await_socket(sock, PHP_POLLREADABLE, ptimeout);
 
-		if (retval == 0)
+		if (retval == 0) {
 			sock->timeout_event = true;
+		}
+		// On error or success, retval is already set correctly
+	} else {
+		while(1) {
+			retval = php_pollfd_for(sock->socket, PHP_POLLREADABLE, ptimeout);
 
-		if (retval >= 0)
-			break;
+			if (retval == 0)
+				sock->timeout_event = true;
 
-		if (php_socket_errno() != EINTR)
-			break;
+			if (retval >= 0)
+				break;
+
+			if (php_socket_errno() != EINTR)
+				break;
+		}
 	}
 }
 
@@ -262,6 +283,12 @@ static int php_sockop_close(php_stream *stream, int close_handle)
 			sock->socket = SOCK_ERR;
 		}
 
+	}
+
+	/* Cleanup async event handle before freeing socket structure */
+	if (sock->event_handle) {
+		sock->event_handle->base.dispose(&sock->event_handle->base);
+		sock->event_handle = NULL;
 	}
 
 	pefree(sock, php_stream_is_persistent(stream));
@@ -382,7 +409,9 @@ static int php_sockop_set_option(php_stream *stream, int option, int value, void
 						!(stream->flags & PHP_STREAM_FLAG_NO_IO) &&
 						((MSG_DONTWAIT != 0) || !sock->is_blocked)
 					) ||
-					php_pollfd_for(sock->socket, PHP_POLLREADABLE|POLLPRI, &tv) > 0
+					(ZEND_ASYNC_IS_ACTIVE ? 
+						async_await_socket(sock, PHP_POLLREADABLE|POLLPRI, &tv) > 0 :
+						php_pollfd_for(sock->socket, PHP_POLLREADABLE|POLLPRI, &tv) > 0)
 				) {
 					/* the poll() call was skipped if the socket is non-blocking (or MSG_DONTWAIT is available) and if the timeout is zero */
 #ifdef PHP_WIN32
@@ -983,6 +1012,7 @@ PHPAPI php_stream *php_stream_generic_socket_factory(const char *proto, size_t p
 	sock->timeout.tv_sec = FG(default_socket_timeout);
 	sock->timeout.tv_usec = 0;
 	sock->nonblocking_applied = false;
+	sock->event_handle = NULL;
 
 	/* we don't know the socket until we have determined if we are binding or
 	 * connecting */

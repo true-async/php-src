@@ -331,6 +331,7 @@ struct _php_netstream_data_t	{
 	struct timeval timeout;
 	size_t ownsize;
 	bool nonblocking_applied;
+	zend_async_poll_event_t *event_handle;
 };
 typedef struct _php_netstream_data_t php_netstream_data_t;
 PHPAPI extern const php_stream_ops php_stream_socket_ops;
