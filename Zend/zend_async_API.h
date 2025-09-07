@@ -63,13 +63,33 @@ typedef HANDLE zend_file_descriptor_t;
 typedef DWORD zend_process_id_t;
 typedef HANDLE zend_process_t;
 typedef SOCKET zend_socket_t;
+#define INVALID_IO_DESCRIPTOR INVALID_HANDLE_VALUE
 #else
 typedef int zend_file_descriptor_t;
 typedef pid_t zend_process_id_t;
 typedef pid_t zend_process_t;
 typedef int zend_socket_t;
 #define ZEND_FD_NULL 0
+#define INVALID_IO_DESCRIPTOR -1;
 #endif
+
+typedef enum {
+	IO_DESCRIPTOR_FD = 1,
+	IO_DESCRIPTOR_SOCKET,
+	IO_DESCRIPTOR_PROCESS
+} io_descriptor_type;
+
+/**
+ * A union that can be used as a VOID* in operations that return input/output descriptors.
+ */
+typedef struct io_descriptor_s {
+	union {
+		zend_file_descriptor_t fd;
+		zend_socket_t socket;
+		zend_process_t process;
+	};
+	io_descriptor_type type;
+} io_descriptor_t;
 
 /**
  * php_exec
