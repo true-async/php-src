@@ -92,7 +92,7 @@ retry:
 				sock->timeout_event = false;
 
 				if (ZEND_ASYNC_IS_ACTIVE) {
-					retval = async_await_socket(sock, POLLOUT, ptimeout);
+					retval = network_async_await_stream_socket(sock, POLLOUT, ptimeout);
 
 					if (retval == 0) {
 						sock->timeout_event = true;
@@ -172,7 +172,7 @@ static void php_sock_stream_wait_for_data(php_stream *stream, php_netstream_data
 	}
 
 	if (ZEND_ASYNC_IS_ACTIVE) {
-		retval = async_await_socket(sock, PHP_POLLREADABLE, ptimeout);
+		retval = network_async_await_stream_socket(sock, PHP_POLLREADABLE, ptimeout);
 
 		if (retval == 0) {
 			sock->timeout_event = true;
@@ -410,7 +410,7 @@ static int php_sockop_set_option(php_stream *stream, int option, int value, void
 						((MSG_DONTWAIT != 0) || !sock->is_blocked)
 					) ||
 					(ZEND_ASYNC_IS_ACTIVE ? 
-						async_await_socket(sock, PHP_POLLREADABLE|POLLPRI, &tv) > 0 :
+						network_async_await_stream_socket(sock, PHP_POLLREADABLE|POLLPRI, &tv) > 0 :
 						php_pollfd_for(sock->socket, PHP_POLLREADABLE|POLLPRI, &tv) > 0)
 				) {
 					/* the poll() call was skipped if the socket is non-blocking (or MSG_DONTWAIT is available) and if the timeout is zero */
