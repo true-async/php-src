@@ -96,7 +96,7 @@ PHPAPI int php_select(php_socket_t max_fd, fd_set *rfds, fd_set *wfds, fd_set *e
 	if (n_handles == 0) {
 		/* plain sockets only - let winsock handle the whole thing */
 		// For win32 we support only sockets in this function
-		if (ZEND_ASYNC_IS_ACTIVE) {
+		if (ZEND_ASYNC_IS_ACTIVE && (tv->tv_sec > 0 || tv->tv_usec > 0)) {
 			return php_select_async(max_fd, rfds, wfds, efds, tv);
 		}
 		return select(-1, rfds, wfds, efds, tv);

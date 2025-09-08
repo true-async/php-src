@@ -793,15 +793,23 @@ typedef struct async_stream_callback_s {
 	struct async_stream_callback_s *next;  // For linked list
 } async_stream_callback_t;
 
-static zend_always_inline void add_stream_to_array(zval *array, zval *key, zval *stream_zval) {
-	if (array == NULL) return;
-	
+static zend_always_inline void add_stream_to_array(zval *array, zval *key, zval *stream_zval)
+{
+	if (array == NULL) {
+		return;
+	}
+
+	if (Z_REFCOUNT_P(array) > 1) {
+		SEPARATE_ARRAY(array);
+	}
+
 	zval *dest_elem;
 	if (Z_TYPE_P(key) == IS_STRING) {
 		dest_elem = zend_hash_add(Z_ARR_P(array), Z_STR_P(key), stream_zval);
 	} else {
 		dest_elem = zend_hash_index_add(Z_ARR_P(array), Z_LVAL_P(key), stream_zval);
 	}
+
 	if (dest_elem) zval_add_ref(dest_elem);
 }
 
@@ -869,7 +877,7 @@ static zend_always_inline bool process_stream_array(zval *streams, async_poll_ev
 		php_stream_from_zval_no_verify(stream, z_stream);
 
 		if (stream == NULL) {
-			continue;
+			return false;
 		}
 
 		// Try to get async event handle from socket streams first
@@ -948,6 +956,10 @@ static zend_always_inline bool process_stream_array(zval *streams, async_poll_ev
 		);
 	} ZEND_HASH_FOREACH_END();
 
+	if (Z_REFCOUNT_P(streams) > 1) {
+		SEPARATE_ARRAY(streams);
+	}
+
 	// Now clean up the input array to prepare for results
 	zend_hash_clean(Z_ARR_P(streams));
 
@@ -1014,16 +1026,6 @@ ZEND_API int network_async_stream_select(zval *read_streams, zval *write_streams
 	// Initialize result counter
 	ZVAL_LONG(&coroutine->waker->result, 0);
 
-	if (read_streams != NULL && Z_REFCOUNT_P(read_streams) > 1) {
-		SEPARATE_ARRAY(read_streams);
-	}
-	if (write_streams != NULL && Z_REFCOUNT_P(write_streams) > 1) {
-		SEPARATE_ARRAY(write_streams);
-	}
-	if (except_streams != NULL && Z_REFCOUNT_P(except_streams) > 1) {
-		SEPARATE_ARRAY(except_streams);
-	}
-
 	// Process all stream arrays using the helper function
 	if (UNEXPECTED(!process_stream_array(read_streams, ASYNC_READABLE, coroutine, read_streams, write_streams, except_streams, &result))) {
 		goto cleanup;
@@ -1032,6 +1034,10 @@ ZEND_API int network_async_stream_select(zval *read_streams, zval *write_streams
 		goto cleanup;
 	}
 	if (UNEXPECTED(!process_stream_array(except_streams, ASYNC_PRIORITIZED, coroutine, read_streams, write_streams, except_streams, &result))) {
+		goto cleanup;
+	}
+
+	if (coroutine->waker->events.nNumOfElements == 0) {
 		goto cleanup;
 	}
 
