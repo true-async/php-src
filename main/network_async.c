@@ -853,7 +853,7 @@ static void async_stream_callback_resolve(
  * Optimized select() for PHP stream arrays using event reuse
  */
 static zend_always_inline bool process_stream_array(zval *streams, async_poll_event events, zend_coroutine_t *coroutine, 
-	zval *read_streams_array, zval *write_streams_array, zval *except_streams_array, int *result) {
+	zval *read_streams, zval *write_streams, zval *except_streams, int *result) {
 
 	if (streams == NULL || Z_TYPE_P(streams) != IS_ARRAY) {
 		return true;
@@ -863,12 +863,14 @@ static zend_always_inline bool process_stream_array(zval *streams, async_poll_ev
 	php_stream *stream;
 	zend_string *key;
 	zend_ulong num_key;
-	int count = 0;
 
 	ZEND_HASH_FOREACH_KEY_VAL(Z_ARR_P(streams), num_key, key, z_stream) {
 		ZVAL_DEREF(z_stream);
 		php_stream_from_zval_no_verify(stream, z_stream);
-		if (stream == NULL) continue;
+
+		if (stream == NULL) {
+			continue;
+		}
 
 		// Try to get async event handle from socket streams first
 		zend_async_poll_event_t *event_handle = NULL;
@@ -882,6 +884,7 @@ static zend_always_inline bool process_stream_array(zval *streams, async_poll_ev
 				|| io_descriptor.fd == INVALID_IO_DESCRIPTOR)) {
 			zend_throw_error(NULL, "Failed to cast stream to I/O descriptor");
 			*result = -1;
+
 			return false;
 		}
 
@@ -900,10 +903,15 @@ static zend_always_inline bool process_stream_array(zval *streams, async_poll_ev
 				return false;
 			}
 
+			// We add the IO descriptor event to the EventLoop without waiting
+			// for the Waker to initiate work, in order to save on system calls.
+			event_handle->base.start(&event_handle->base);
+
 			// And save it
 			if (UNEXPECTED(PHP_STREAM_OPTION_RETURN_OK != php_stream_set_option(
 					stream, PHP_STREAM_OPTION_ASYNC_EVENT_HANDLE, events, &event_handle)
 					)) {
+
 				zend_throw_error(NULL, "Failed to set async event handle on stream");
 				*result = -1;
 				return false;
@@ -927,22 +935,23 @@ static zend_always_inline bool process_stream_array(zval *streams, async_poll_ev
 		}
 		
 		// Save references to result arrays
-		callback->read_streams = read_streams_array;
-		callback->write_streams = write_streams_array;
-		callback->except_streams = except_streams_array;
+		callback->read_streams = read_streams;
+		callback->write_streams = write_streams;
+		callback->except_streams = except_streams;
 
 		zend_async_resume_when(
 			coroutine,
 			&event_handle->base,
-			true,
+			false,
 			NULL,
 			&callback->callback
 		);
-
-		count++;
 	} ZEND_HASH_FOREACH_END();
 
-	return count;
+	// Now clean up the input array to prepare for results
+	zend_hash_clean(Z_ARR_P(streams));
+
+	return true;
 }
 
 /**
@@ -982,7 +991,7 @@ static zend_always_inline bool process_stream_array(zval *streams, async_poll_ev
  *
  * @see                  select(2), php_poll2_async(), php_select_async()
  */
-ZEND_API int php_stream_select_async(zval *read_streams, zval *write_streams, zval *except_streams, struct timeval *tv)
+ZEND_API int network_async_stream_select(zval *read_streams, zval *write_streams, zval *except_streams, struct timeval *tv)
 {
 	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 
@@ -1005,15 +1014,14 @@ ZEND_API int php_stream_select_async(zval *read_streams, zval *write_streams, zv
 	// Initialize result counter
 	ZVAL_LONG(&coroutine->waker->result, 0);
 
-	// Clear result arrays first
-	if (read_streams != NULL && Z_TYPE_P(read_streams) == IS_ARRAY) {
-		zend_hash_clean(Z_ARR_P(read_streams));
+	if (read_streams != NULL && Z_REFCOUNT_P(read_streams) > 1) {
+		SEPARATE_ARRAY(read_streams);
 	}
-	if (write_streams != NULL && Z_TYPE_P(write_streams) == IS_ARRAY) {
-		zend_hash_clean(Z_ARR_P(write_streams));
+	if (write_streams != NULL && Z_REFCOUNT_P(write_streams) > 1) {
+		SEPARATE_ARRAY(write_streams);
 	}
-	if (except_streams != NULL && Z_TYPE_P(except_streams) == IS_ARRAY) {
-		zend_hash_clean(Z_ARR_P(except_streams));
+	if (except_streams != NULL && Z_REFCOUNT_P(except_streams) > 1) {
+		SEPARATE_ARRAY(except_streams);
 	}
 
 	// Process all stream arrays using the helper function

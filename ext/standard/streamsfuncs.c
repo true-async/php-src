@@ -753,7 +753,7 @@ PHP_FUNCTION(stream_select)
 			tv_async.tv_usec = usecnull ? 0 : usec;
 			tv_p_async = &tv_async;
 		}
-		retval = php_stream_select_async(r_array, w_array, e_array, tv_p_async);
+		retval = network_async_stream_select(r_array, w_array, e_array, tv_p_async);
 		RETURN_LONG(retval >= 0 ? retval : 0);
 	}
 
