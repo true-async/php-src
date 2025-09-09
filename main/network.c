@@ -808,7 +808,17 @@ PHPAPI php_socket_t php_network_accept_incoming(php_socket_t srvsock,
 		*error_code = error;
 	}
 	if (error_string) {
-		*error_string = php_socket_error_str(error);
+		if(EG(exception)) {
+			zval rv;
+			const zval *message =
+					zend_read_property_ex(EG(exception)->ce, EG(exception), zend_known_strings[ZEND_STR_MESSAGE], 0, &rv);
+
+			if (message != NULL && Z_TYPE_P(message) == IS_STRING) {
+				*error_string = Z_STR_P(message);
+			}
+		} else {
+			*error_string = php_socket_error_str(error);
+		}
 	}
 
 	return clisock;
