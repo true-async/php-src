@@ -29,6 +29,14 @@ ZEND_API int php_poll2_async(php_pollfd *ufds, unsigned int nfds, int timeout);
 ZEND_API int php_select_async(php_socket_t max_fd, fd_set *rfds, fd_set *wfds, fd_set *efds, struct timeval *tv);
 ZEND_API int network_async_stream_select(zval *read_streams, zval *write_streams, zval *except_streams, struct timeval *tv);
 
+ZEND_API php_socket_t network_async_accept_incoming(php_stream *stream,
+		zend_string **textaddr, struct sockaddr **addr, socklen_t *addrlen,
+		struct timeval *timeout, zend_string **error_string, int *error_code, int tcp_nodelay);
+
+ZEND_API int network_async_connect_socket(php_stream *stream, php_socket_t sockfd,
+		const struct sockaddr *addr, socklen_t addrlen, int asynchronous,
+		struct timeval *timeout, zend_string **error_string, int *error_code);
+
 ZEND_API int php_network_getaddrinfo_async(const char *node, const char *service, const struct addrinfo *hints, struct addrinfo **res);
 ZEND_API struct hostent* php_network_gethostbyname_async(const char *name);
 ZEND_API zend_string* php_network_gethostbyaddr_async(const char *ip);

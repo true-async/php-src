@@ -836,11 +836,19 @@ static inline int php_tcp_sockop_connect(php_stream *stream, php_netstream_data_
 
 		parse_unix_address(xparam, &unix_addr);
 
-		ret = php_network_connect_socket(sock->socket,
+		if (ZEND_ASYNC_IS_ACTIVE) {
+			ret = network_async_connect_socket(stream, sock->socket,
 				(const struct sockaddr *)&unix_addr, (socklen_t) XtOffsetOf(struct sockaddr_un, sun_path) + xparam->inputs.namelen,
 				xparam->op == STREAM_XPORT_OP_CONNECT_ASYNC, xparam->inputs.timeout,
 				xparam->want_errortext ? &xparam->outputs.error_text : NULL,
 				&err);
+		} else {
+			ret = php_network_connect_socket(sock->socket,
+				(const struct sockaddr *)&unix_addr, (socklen_t) XtOffsetOf(struct sockaddr_un, sun_path) + xparam->inputs.namelen,
+				xparam->op == STREAM_XPORT_OP_CONNECT_ASYNC, xparam->inputs.timeout,
+				xparam->want_errortext ? &xparam->outputs.error_text : NULL,
+				&err);
+		}
 
 		xparam->outputs.error_code = err;
 
@@ -938,14 +946,27 @@ static inline int php_tcp_sockop_accept(php_stream *stream, php_netstream_data_t
 		nodelay = 1;
 	}
 
-	php_socket_t clisock = php_network_accept_incoming(sock->socket,
-		xparam->want_textaddr ? &xparam->outputs.textaddr : NULL,
-		xparam->want_addr ? &xparam->outputs.addr : NULL,
-		xparam->want_addr ? &xparam->outputs.addrlen : NULL,
-		xparam->inputs.timeout,
-		xparam->want_errortext ? &xparam->outputs.error_text : NULL,
-		&xparam->outputs.error_code,
-		nodelay);
+	php_socket_t clisock;
+
+	if (ZEND_ASYNC_IS_ACTIVE) {
+		clisock = network_async_accept_incoming(stream,
+			xparam->want_textaddr ? &xparam->outputs.textaddr : NULL,
+			xparam->want_addr ? &xparam->outputs.addr : NULL,
+			xparam->want_addr ? &xparam->outputs.addrlen : NULL,
+			xparam->inputs.timeout,
+			xparam->want_errortext ? &xparam->outputs.error_text : NULL,
+			&xparam->outputs.error_code,
+			nodelay);
+	} else {
+		clisock = php_network_accept_incoming(sock->socket,
+			xparam->want_textaddr ? &xparam->outputs.textaddr : NULL,
+			xparam->want_addr ? &xparam->outputs.addr : NULL,
+			xparam->want_addr ? &xparam->outputs.addrlen : NULL,
+			xparam->inputs.timeout,
+			xparam->want_errortext ? &xparam->outputs.error_text : NULL,
+			&xparam->outputs.error_code,
+			nodelay);
+	}
 
 	if (clisock >= 0) {
 		php_netstream_data_t *clisockdata = (php_netstream_data_t*) emalloc(sizeof(*clisockdata));

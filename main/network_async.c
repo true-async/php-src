@@ -17,6 +17,28 @@
 #include <Zend/zend_async_API.h>
 #include <Zend/zend_exceptions.h>
 
+// Definitions from network.c needed for async functions
+#ifdef PHP_WIN32
+# define SOCK_ERR INVALID_SOCKET
+# define SOCK_CONN_ERR SOCKET_ERROR
+# define PHP_TIMEOUT_ERROR_VALUE		WSAETIMEDOUT
+typedef u_long php_non_blocking_flags_t;
+#  define SET_SOCKET_BLOCKING_MODE(sock, save) \
+	save = TRUE; ioctlsocket(sock, FIONBIO, &save)
+#  define RESTORE_SOCKET_BLOCKING_MODE(sock, save) \
+	ioctlsocket(sock, FIONBIO, &save)
+#else
+# define SOCK_ERR -1
+# define SOCK_CONN_ERR -1
+# define PHP_TIMEOUT_ERROR_VALUE		ETIMEDOUT
+typedef int php_non_blocking_flags_t;
+#  define SET_SOCKET_BLOCKING_MODE(sock, save) \
+	 save = fcntl(sock, F_GETFL, 0); \
+	 fcntl(sock, F_SETFL, save | O_NONBLOCK)
+#  define RESTORE_SOCKET_BLOCKING_MODE(sock, save) \
+	 fcntl(sock, F_SETFL, save)
+#endif
+
 #ifdef PHP_WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -1084,6 +1106,212 @@ cleanup:
 ///////////////////////////////////////////////////////////////
 /// Select Emulation for Async Context END
 ///////////////////////////////////////////////////////////////
+
+/**
+ * Async version of php_network_accept_incoming
+ * Accepts an incoming connection on a server socket using the modern async system
+ * 
+ * @param stream        Server socket stream
+ * @param textaddr      Output: text representation of client address  
+ * @param addr          Output: client socket address structure
+ * @param addrlen       Output: length of client address structure
+ * @param timeout       Accept timeout
+ * @param error_string  Output: error message string
+ * @param error_code    Output: error code  
+ * @param tcp_nodelay   Whether to set TCP_NODELAY on accepted socket
+ * @return              Client socket fd, or -1 on error
+ */
+ZEND_API php_socket_t network_async_accept_incoming(php_stream *stream,
+		zend_string **textaddr,
+		struct sockaddr **addr,
+		socklen_t *addrlen,
+		struct timeval *timeout,
+		zend_string **error_string,
+		int *error_code,
+		int tcp_nodelay)
+{
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+
+	if (coroutine == NULL) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	if (stream == NULL) {
+		errno = EBADF;
+		return -1;
+	}
+
+	php_socket_t clisock = -1;
+	int error = 0;
+	php_sockaddr_storage sa;
+	socklen_t sl;
+
+	// Use the modern async await mechanism instead of php_pollfd_for
+	int n = network_async_await_stream_socket(stream, PHP_POLLREADABLE, timeout);
+
+	if (n == 0) {
+		error = PHP_TIMEOUT_ERROR_VALUE;
+	} else if (n == -1) {
+		error = errno; // errno set by network_async_await_stream_socket
+	} else {
+		// Socket is ready for accept, get the underlying fd from stream
+		php_netstream_data_t *sock = (php_netstream_data_t*)stream->abstract;
+		if (sock == NULL) {
+			error = EBADF;
+		} else {
+			sl = sizeof(sa);
+			clisock = accept(sock->socket, (struct sockaddr*)&sa, &sl);
+
+			if (clisock != SOCK_ERR) {
+				php_network_populate_name_from_sockaddr((struct sockaddr*)&sa, sl,
+						textaddr,
+						addr, addrlen);
+				if (tcp_nodelay) {
+#ifdef TCP_NODELAY
+					setsockopt(clisock, IPPROTO_TCP, TCP_NODELAY, (char*)&tcp_nodelay, sizeof(tcp_nodelay));
+#endif
+				}
+			} else {
+				error = php_socket_errno();
+			}
+		}
+	}
+
+	if (error_code) {
+		*error_code = error;
+	}
+	if (error_string) {
+		if(EG(exception)) {
+			zval rv;
+			const zval *message =
+					zend_read_property_ex(EG(exception)->ce, EG(exception), zend_known_strings[ZEND_STR_MESSAGE], 0, &rv);
+
+			if (message != NULL && Z_TYPE_P(message) == IS_STRING) {
+				*error_string = Z_STR_P(message);
+			}
+		} else {
+			*error_string = php_socket_error_str(error);
+		}
+	}
+
+	return clisock;
+}
+
+/**
+ * Async version of php_network_connect_socket
+ * Connects to a remote address using the modern async system
+ * 
+ * @param stream        Socket stream
+ * @param sockfd        Socket file descriptor (from stream)
+ * @param addr          Remote socket address to connect to
+ * @param addrlen       Length of address structure
+ * @param asynchronous  Whether to make an async connection
+ * @param timeout       Connect timeout
+ * @param error_string  Output: error message string
+ * @param error_code    Output: error code
+ * @return              0 on success, -1 on error
+ */
+ZEND_API int network_async_connect_socket(php_stream *stream, php_socket_t sockfd,
+		const struct sockaddr *addr,
+		socklen_t addrlen,
+		int asynchronous,
+		struct timeval *timeout,
+		zend_string **error_string,
+		int *error_code)
+{
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+
+	if (coroutine == NULL) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	if (stream == NULL) {
+		errno = EBADF;
+		return -1;
+	}
+
+	php_non_blocking_flags_t orig_flags;
+	int n;
+	int error = 0;
+	socklen_t len;
+	int ret = 0;
+
+	SET_SOCKET_BLOCKING_MODE(sockfd, orig_flags);
+
+	if ((n = connect(sockfd, addr, addrlen)) != 0) {
+		error = php_socket_errno();
+
+		if (error_code) {
+			*error_code = error;
+		}
+
+		if (error != EINPROGRESS) {
+			if (error_string) {
+				*error_string = php_socket_error_str(error);
+			}
+
+			return -1;
+		}
+		if (asynchronous && error == EINPROGRESS) {
+			/* this is fine by us */
+			return 0;
+		}
+	}
+
+	if (n == 0) {
+		goto ok;
+	}
+
+# ifdef PHP_WIN32
+	/* The documentation for connect() says in case of non-blocking connections
+	 * the select function reports success in the writefds set and failure in
+	 * the exceptfds set. Indeed, using PHP_POLLREADABLE results in select
+	 * failing only due to the timeout and not immediately as would be
+	 * expected when a connection is actively refused. This way,
+	 * php_pollfd_for will return a mask with POLLOUT if the connection
+	 * is successful and with POLLPRI otherwise. */
+	int events = POLLOUT|POLLPRI;
+#else
+	int events = PHP_POLLREADABLE|POLLOUT;
+#endif
+
+	// Use the modern async await mechanism instead of php_pollfd_for loop
+	n = network_async_await_stream_socket(stream, events, timeout);
+	
+	if (n < 0) {
+		error = errno;
+		ret = -1;
+	} else if (n == 0) {
+		error = PHP_TIMEOUT_ERROR_VALUE;
+	} else {
+		len = sizeof(error);
+		/* BSD-derived systems set errno correctly.
+		 * Solaris returns -1 from getsockopt in case of error. */
+		if (getsockopt(sockfd, SOL_SOCKET, SO_ERROR, (char*)&error, &len) != 0) {
+			ret = -1;
+		}
+	}
+
+ok:
+	if (!asynchronous) {
+		/* back to blocking mode */
+		RESTORE_SOCKET_BLOCKING_MODE(sockfd, orig_flags);
+	}
+
+	if (error_code) {
+		*error_code = error;
+	}
+
+	if (error) {
+		ret = -1;
+		if (error_string) {
+			*error_string = php_socket_error_str(error);
+		}
+	}
+	return ret;
+}
 
 ///////////////////////////////////////////////////////////////
 /// DNS API Implementation
