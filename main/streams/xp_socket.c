@@ -286,9 +286,9 @@ static int php_sockop_close(php_stream *stream, int close_handle)
 	}
 
 	/* Cleanup async event handle before freeing socket structure */
-	if (sock->event_handle) {
-		sock->event_handle->base.dispose(&sock->event_handle->base);
-		sock->event_handle = NULL;
+	if (sock->poll_event) {
+		sock->poll_event->base.dispose(&sock->poll_event->base);
+		sock->poll_event = NULL;
 	}
 
 	pefree(sock, php_stream_is_persistent(stream));
@@ -540,14 +540,24 @@ static int php_sockop_set_option(php_stream *stream, int option, int value, void
 			if (!sock) {
 				return PHP_STREAM_OPTION_RETURN_NOTIMPL;
 			}
+
 			zend_async_poll_event_t **handle_ptr = (zend_async_poll_event_t **)ptrparam;
-			if (sock->event_handle == NULL) {
-				sock->event_handle = ZEND_ASYNC_NEW_SOCKET_EVENT(sock->socket, value);
+			if (sock->poll_event == NULL) {
+				sock->poll_event = ZEND_ASYNC_NEW_SOCKET_EVENT(sock->socket, value);
+				if (UNEXPECTED(EG(exception) != NULL)) {
+					return PHP_STREAM_OPTION_RETURN_ERR;
+				}
+
+				// We add the IO descriptor event to the EventLoop without waiting
+				// for the Waker to initiate work, in order to save on system calls.
+				sock->poll_event->base.start(&sock->poll_event->base);
+
 				if (UNEXPECTED(EG(exception) != NULL)) {
 					return PHP_STREAM_OPTION_RETURN_ERR;
 				}
 			}
-			*handle_ptr = sock->event_handle;
+
+			*handle_ptr = sock->poll_event;
 			return PHP_STREAM_OPTION_RETURN_OK;
 	}
 
@@ -942,6 +952,8 @@ static inline int php_tcp_sockop_accept(php_stream *stream, php_netstream_data_t
 
 		memcpy(clisockdata, sock, sizeof(*clisockdata));
 		clisockdata->socket = clisock;
+		clisockdata->poll_event = NULL;
+		clisockdata->nonblocking_applied = false;
 #ifdef __linux__
 		/* O_NONBLOCK is not inherited on Linux */
 		clisockdata->is_blocked = true;
@@ -1026,7 +1038,7 @@ PHPAPI php_stream *php_stream_generic_socket_factory(const char *proto, size_t p
 	sock->timeout.tv_sec = FG(default_socket_timeout);
 	sock->timeout.tv_usec = 0;
 	sock->nonblocking_applied = false;
-	sock->event_handle = NULL;
+	sock->poll_event = NULL;
 
 	/* we don't know the socket until we have determined if we are binding or
 	 * connecting */
