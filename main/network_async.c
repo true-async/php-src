@@ -204,18 +204,17 @@ static void socket_await_callback_resolve(
 }
 
 /**
- * Asynchronous await for single socket with reusable event handle.
+ * Asynchronous await for single socket stream with reusable event handle.
  *
- * This function provides optimized async I/O waiting for a single socket by reusing
- * the event handle stored in the socket structure, avoiding repeated
- * ZEND_ASYNC_NEW_SOCKET_EVENT allocations.
+ * This function provides optimized async I/O waiting for a single socket stream by using
+ * the unified php_stream_set_option approach for event handle management.
  *
- * @param sock      Socket data structure containing event handle
+ * @param stream    PHP stream (must be a socket stream)
  * @param events    Poll events (POLLIN, POLLOUT, etc.)
  * @param timeout   Timeout as struct timeval* (NULL for infinite)
  * @return          1 if events occurred, 0 on timeout, -1 on error
  */
-ZEND_API int network_async_await_stream_socket(php_netstream_data_t *sock, short events, struct timeval *timeout)
+ZEND_API int network_async_await_stream_socket(php_stream *stream, short events, struct timeval *timeout)
 {
 	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 
@@ -224,21 +223,25 @@ ZEND_API int network_async_await_stream_socket(php_netstream_data_t *sock, short
 		return -1;
 	}
 
-	if (sock == NULL || sock->socket == -1) {
+	if (stream == NULL) {
 		errno = EBADF;
 		return -1;
 	}
 
-	// Create or reuse event handle
-	if (sock->poll_event == NULL) {
-		sock->poll_event = ZEND_ASYNC_NEW_SOCKET_EVENT(
-			sock->socket, poll2_events_to_async(events)
-		);
-
-		if (UNEXPECTED(EG(exception) != NULL || sock->poll_event == NULL)) {
-			errno = ENOMEM;
-			return -1;
-		}
+	// Use unified approach: get event handle via php_stream_set_option
+	zend_async_poll_event_t *poll_event = NULL;
+	zend_ulong async_events = poll2_events_to_async(events);
+	
+	php_stream_set_option(stream, PHP_STREAM_OPTION_ASYNC_EVENT_HANDLE, async_events, &poll_event);
+	
+	if (UNEXPECTED(EG(exception) != NULL)) {
+		handle_exception_and_errno();
+		return -1;
+	}
+	
+	if (UNEXPECTED(poll_event == NULL)) {
+		errno = ENOTSUP;  // Stream doesn't support async operations
+		return -1;
 	}
 
 	// Convert timeval timeout to milliseconds for async waker
@@ -257,7 +260,7 @@ ZEND_API int network_async_await_stream_socket(php_netstream_data_t *sock, short
 	// Register the event
 	zend_async_resume_when(
 		coroutine,
-		&sock->poll_event->base,
+		&poll_event->base,
 		false,
 		socket_await_callback_resolve,
 		NULL
