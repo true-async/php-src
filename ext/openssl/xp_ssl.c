@@ -28,6 +28,7 @@
 #include "zend_smart_str.h"
 #include "zend_exceptions.h"
 #include "php_openssl.h"
+#include "main/network_async.h"
 #include "php_openssl_backend.h"
 #include "php_network.h"
 #include <openssl/ssl.h>
@@ -2170,9 +2171,14 @@ static int php_openssl_sockop_close(php_stream *stream, int close_handle) /* {{{
 			 * We use a small timeout which should encourage the OS to send the data,
 			 * but at the same time avoid hanging indefinitely.
 			 * */
-			do {
-				n = php_pollfd_for_ms(sslsock->s.socket, POLLOUT, 500);
-			} while (n == -1 && php_socket_errno() == EINTR);
+			if (ZEND_ASYNC_IS_ACTIVE) {
+				struct timeval tv = {0, 500000}; // 500ms
+				network_async_await_stream_socket(stream, POLLOUT, &tv);
+			} else {
+				do {
+					n = php_pollfd_for_ms(sslsock->s.socket, POLLOUT, 500);
+				} while (n == -1 && php_socket_errno() == EINTR);
+			}
 #endif
 			closesocket(sslsock->s.socket);
 			sslsock->s.socket = SOCK_ERR;
@@ -2196,6 +2202,12 @@ static int php_openssl_sockop_close(php_stream *stream, int close_handle) /* {{{
 
 	if (sslsock->reneg) {
 		pefree(sslsock->reneg, php_stream_is_persistent(stream));
+	}
+
+	/* Cleanup async event handle before freeing socket structure */
+	if (sslsock->s.poll_event) {
+		sslsock->s.poll_event->base.dispose(&sslsock->s.poll_event->base);
+		sslsock->s.poll_event = NULL;
 	}
 
 	pefree(sslsock, php_stream_is_persistent(stream));
@@ -2231,14 +2243,25 @@ static inline int php_openssl_tcp_sockop_accept(php_stream *stream, php_openssl_
 		nodelay = 1;
 	}
 
-	clisock = php_network_accept_incoming(sock->s.socket,
-		xparam->want_textaddr ? &xparam->outputs.textaddr : NULL,
-		xparam->want_addr ? &xparam->outputs.addr : NULL,
-		xparam->want_addr ? &xparam->outputs.addrlen : NULL,
-		xparam->inputs.timeout,
-		xparam->want_errortext ? &xparam->outputs.error_text : NULL,
-		&xparam->outputs.error_code,
-		nodelay);
+	if (ZEND_ASYNC_IS_ACTIVE) {
+		clisock = network_async_accept_incoming(stream,
+			xparam->want_textaddr ? &xparam->outputs.textaddr : NULL,
+			xparam->want_addr ? &xparam->outputs.addr : NULL,
+			xparam->want_addr ? &xparam->outputs.addrlen : NULL,
+			xparam->inputs.timeout,
+			xparam->want_errortext ? &xparam->outputs.error_text : NULL,
+			&xparam->outputs.error_code,
+			nodelay);
+	} else {
+		clisock = php_network_accept_incoming(sock->s.socket,
+			xparam->want_textaddr ? &xparam->outputs.textaddr : NULL,
+			xparam->want_addr ? &xparam->outputs.addr : NULL,
+			xparam->want_addr ? &xparam->outputs.addrlen : NULL,
+			xparam->inputs.timeout,
+			xparam->want_errortext ? &xparam->outputs.error_text : NULL,
+			&xparam->outputs.error_code,
+			nodelay);
+	}
 
 	if (clisock >= 0) {
 		php_openssl_netstream_data_t *clisockdata = (php_openssl_netstream_data_t*) emalloc(sizeof(*clisockdata));
