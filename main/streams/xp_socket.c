@@ -409,7 +409,7 @@ static int php_sockop_set_option(php_stream *stream, int option, int value, void
 						!(stream->flags & PHP_STREAM_FLAG_NO_IO) &&
 						((MSG_DONTWAIT != 0) || !sock->is_blocked)
 					) ||
-					(ZEND_ASYNC_IS_ACTIVE ? 
+					(ZEND_ASYNC_IS_ACTIVE ?
 						network_async_await_stream_socket(stream, PHP_POLLREADABLE|POLLPRI, &tv) > 0 :
 						php_pollfd_for(sock->socket, PHP_POLLREADABLE|POLLPRI, &tv) > 0)
 				) {
@@ -535,6 +535,8 @@ static int php_sockop_set_option(php_stream *stream, int option, int value, void
 				default:
 					break;
 			}
+
+			break;
 
 		case PHP_STREAM_OPTION_ASYNC_EVENT_HANDLE:
 			if (!sock) {
