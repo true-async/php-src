@@ -877,7 +877,7 @@ static inline int php_tcp_sockop_accept(php_stream *stream, php_netstream_data_t
 		&xparam->outputs.error_code,
 		nodelay);
 
-	if (clisock >= 0) {
+	if (ZEND_VALID_SOCKET(clisock)) {
 		php_netstream_data_t *clisockdata = (php_netstream_data_t*) emalloc(sizeof(*clisockdata));
 
 		memcpy(clisockdata, sock, sizeof(*clisockdata));

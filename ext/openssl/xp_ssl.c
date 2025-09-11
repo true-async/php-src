@@ -2240,7 +2240,7 @@ static inline int php_openssl_tcp_sockop_accept(php_stream *stream, php_openssl_
 		&xparam->outputs.error_code,
 		nodelay);
 
-	if (clisock >= 0) {
+	if (ZEND_VALID_SOCKET(clisock)) {
 		php_openssl_netstream_data_t *clisockdata = (php_openssl_netstream_data_t*) emalloc(sizeof(*clisockdata));
 
 		/* copy underlying tcp fields */
