@@ -91,6 +91,9 @@ PHP 8.5 UPGRADE NOTES
 - ODBC:
   . ODBC now assumes that at least ODBC 3.5 functionality is available. The
     ODBCVER definition and build system flags to control it have been removed.
+  . ODBC no longer has build flags to build against specific drivers (except
+    for DB2) and removes special cases for those drivers. It is strongly
+    recommended to use a driver manager like iODBC or unixODBC on non-Windows.
 
 - Opcache:
   . The Opcache extension is now always built into the PHP binary and is always
@@ -266,6 +269,11 @@ PHP 8.5 UPGRADE NOTES
   . Added class constants Pdo_Sqlite::ATTR_EXPLAIN_STATEMENT,
     Pdo_Sqlite::EXPLAIN_MODE_PREPARED, Pdo_Sqlite::EXPLAIN_MODE_EXPLAIN,
     Pdo_Sqlite::EXPLAIN_MODE_EXPLAIN_QUERY_PLAN.
+  . Added PDO\Sqlite::ATTR_TRANSACTION_MODE connection attribute with
+    possible values PDO\Sqlite::TRANSACTION_MODE_DEFERRED,
+    PDO\Sqlite::TRANSACTION_MODE_IMMEDIATE,
+    and PDO\Sqlite::TRANSACTION_MODE_EXCLUSIVE, allowing to configure
+    the transaction mode to use when calling beginTransaction().
 
 - Session:
   . session_set_cookie_params(), session_get_cookie_params(), and session_start()
@@ -379,6 +387,15 @@ PHP 8.5 UPGRADE NOTES
   . Using null as an array offset or when calling array_key_exists() is now
     deprecated. Instead an empty string should be used.
     RFC: https://wiki.php.net/rfc/deprecations_php_8_5#deprecate_using_values_null_as_an_array_offset_and_when_calling_array_key_exists
+  . Deriving $_SERVER['argc'] and $_SERVER['argv'] from the query string for non-CLI
+    SAPIs has been deprecated. Configure register_argc_argv=0 and switch to either
+    $_GET or $_SERVER['QUERY_STRING'] to access the information, after verifying
+    that the usage is safe.
+    RFC: https://wiki.php.net/rfc/deprecations_php_8_5#deprecate_the_register_argc_argv_ini_directive
+  . The __sleep() and __wakeup() magic methods have been deprecated. The
+    __serialize() and __unserialize() magic methods should be used instead,
+    or at the same time if compatibility with PHP 7 is required.
+    RFC: https://wiki.php.net/rfc/deprecations_php_8_5#deprecate_the_sleep_and_wakeup_magic_methods
 
 - Curl:
   . The curl_close() function has been deprecated, as CurlHandle objects are
@@ -494,6 +511,11 @@ PHP 8.5 UPGRADE NOTES
         PDO::sqliteCreateFunction() => Pdo\Sqlite::createFunction()
     RFC: https://wiki.php.net/rfc/deprecations_php_8_5#deprecate_driver_specific_pdo_constants_and_methods
 
+- PDO_PGSQL: Constants related to transaction states have been deprecated:
+        PDO::PGSQL_TRANSACTION_IDLE, PDO::PGSQL_TRANSACTION_ACTIVE, PDO::PGSQL_TRANSACTION_INTRANS,
+        PDO::PGSQL_TRANSACTION_INERROR, PDO::PGSQL_TRANSACTION_UNKNOWN.
+    RFC: https://wiki.php.net/rfc/deprecations_php_8_5#extpdo_deprecations
+
 - Reflection:
   . The setAccessible() methods of various Reflection objects have been
     deprecated, as those no longer have an effect.
@@ -555,6 +577,10 @@ PHP 8.5 UPGRADE NOTES
     TransLiterator::getErrorCode(), and TransLiterator::getErrorMessage()
     have dropped the false from the return type union. Returning false
     was actually never possible.
+  . grapheme_strpos(), grapheme_stripos(), grapheme_strrpos(),
+    grapheme_strripos(), grapheme_strstr(), grapheme_stristr() and
+    grapheme_levenshtein() functions add $locale parameter.
+    RFC: https://wiki.php.net/rfc/grapheme_add_locale_for_case_insensitive
 
 - LDAP:
   . ldap_get_option() now accepts a NULL connection, as ldap_set_option(),

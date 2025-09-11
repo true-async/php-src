@@ -1,6 +1,21 @@
 PHP                                                                        NEWS
 |||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
-?? ??? ????, PHP 8.5.0beta3
+?? ??? ????, PHP 8.5.0RC1
+
+- Core:
+  . Fixed bug GH-19765 (object_properties_load() bypasses readonly property
+    checks). (timwolla)
+  . The __sleep() and __wakeup() magic methods have been deprecated. (Girgias)
+
+- URI:
+  . Fixed bug GH-19780 (InvalidUrlException should check $errors argument).
+    (nielsdos)
+
+- Windows:
+  . Fix GH-19722 (_get_osfhandle asserts in debug mode when given a socket).
+    (dktapps)
+
+11 Sep 2025, PHP 8.5.0beta3
 
 - Core:
   . Destructing non-array values (other than NULL) using [] or list() now
@@ -12,6 +27,9 @@ PHP                                                                        NEWS
   . Using null as an array offset or when calling array_key_exists() is now
     deprecated. (alexandre-daubois)
   . Fixed bug GH-19681 (PHP_EXPAND_PATH broken with bash 5.3.0). (Remi)
+  . Marks the stack as non-executable on Haiku. (David Carlier)
+  . Deriving $_SERVER['argc'] and $_SERVER['argv'] from the query string is
+    now deprecated. (timwolla, nicolasgrekas)
 
 - CLI:
   . Fixed bug GH-19461 (Improve error message on listening error with IPv6
@@ -27,6 +45,20 @@ PHP                                                                        NEWS
 - FPM:
   . Fixed failed debug assertion when php_admin_value setting fails. (ilutov)
 
+- Filter:
+  . Fixed bug GH-16993 (filter_var_array with FILTER_VALIDATE_INT|FILTER_NULL_ON_FAILURE
+    should emit warning for invalid filter usage). (alexandre-daubois)
+
+- Intl:
+  . Added grapheme_strpos(), grapheme_stripos(), grapheme_strrpos(),
+    grapheme_strripos(), grapheme_strstr(), grapheme_stristr() and
+    grapheme_levenshtein() functions add $locale parameter (Yuya Hamada).
+  . Fixed bug GH-11952 (Fix locale strings canonicalization for IntlDateFormatter
+    and NumberFormatter). (alexandre-daubois)
+
+- ODBC:
+  . Removed driver-specific build flags and support. (Calvin Buckley)
+
 - Opcache:
   . Fixed bug GH-19486 (Incorrect opline after deoptimization). (Arnaud)
   . Fixed bug GH-19601 (Wrong JIT stack setup on aarch64/clang). (Arnaud)
@@ -40,6 +72,10 @@ PHP                                                                        NEWS
 - PDO:
   . Driver specific methods in the PDO class are now deprecated. (Arnaud)
 
+- PDO_SQLITE:
+  . Add PDO\Sqlite::ATTR_TRANSACTION_MODE connection attribute.
+    (Samuel Štancl)
+
 - Reflection:
   . Fix GH-19691 (getModifierNames() not reporting asymmetric visibility).
     (DanielEScherzer)
@@ -52,6 +88,8 @@ PHP                                                                        NEWS
     (Girgias)
   . Fixed bug GH-19577 (Avoid integer overflow when using a small offset
     and PHP_INT_MAX with LimitIterator). (alexandre-daubois)
+  . Implement GH-19188: Add support for new INI mail.cr_lf_mode.
+    (alexandre-daubois)
 
 - Streams:
   . Fixed bug GH-14506 (Closing a userspace stream inside a userspace handler
@@ -59,6 +97,7 @@ PHP                                                                        NEWS
   . Avoid double conversion to string in php_userstreamop_readdir(). (nielsdos)
 
 - URI:
+  . Added support for Uri\Rfc3986\Uri::with*() methods. (kocsismate)
   . Fixed memory management of Uri\WhatWg\Url objects. (timwolla)
   . Fixed memory management of the internal "parse_url" URI parser.
     (timwolla)
@@ -66,6 +105,10 @@ PHP                                                                        NEWS
     the Uri\WhatWg\Url parser. (timwolla)
   . Reject out-of-range ports when using the Uri\Rfc3986\Uri parser.
     (timwolla)
+  . Return null instead of 0 for Uri\Rfc3986\Uri::getPort() when the
+    URI contains an empty port. (timwolla)
+  . Fixed creation of the InvalidUrlException when not passing an
+    errors zval to the internal whatwg parser. (timwolla)
   . Clean up naming of internal API. (timwolla)
 
 28 Aug 2025, PHP 8.5.0beta2
