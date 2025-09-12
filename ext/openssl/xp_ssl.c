@@ -2180,8 +2180,31 @@ static int php_openssl_sockop_close(php_stream *stream, int close_handle) /* {{{
 				} while (n == -1 && php_socket_errno() == EINTR);
 			}
 #endif
-			closesocket(sslsock->s.socket);
-			sslsock->s.socket = SOCK_ERR;
+			/**
+			 * If we are in an async context and there is an active EventLoop, we should not close the
+			 * socket immediately, because there might be pending operations for this socket in the loop.
+			 * Instead, we transfer the ownership of the descriptor to the EventLoop which will close it
+			 * once all pending operations are finished.
+			 */
+			if (sslsock->s.poll_event) {
+				sslsock->s.poll_event->socket = sslsock->s.socket;
+
+				/* Set flag to close descriptor after EventLoop cleanup */
+				ZEND_ASYNC_EVENT_SET_CLOSE_FD(&sslsock->s.poll_event->base);
+				sslsock->s.socket = SOCK_ERR;
+				sslsock->s.poll_event->base.dispose(&sslsock->s.poll_event->base);
+				sslsock->s.poll_event = NULL;
+			} else {
+				/* Just close the socket ourselves immediately */
+				closesocket(sslsock->s.socket);
+				sslsock->s.socket = SOCK_ERR;
+			}
+		}
+	} else {
+		/* Cleanup async event handle before freeing other resources */
+		if (sslsock->s.poll_event) {
+			sslsock->s.poll_event->base.dispose(&sslsock->s.poll_event->base);
+			sslsock->s.poll_event = NULL;
 		}
 	}
 
@@ -2202,12 +2225,6 @@ static int php_openssl_sockop_close(php_stream *stream, int close_handle) /* {{{
 
 	if (sslsock->reneg) {
 		pefree(sslsock->reneg, php_stream_is_persistent(stream));
-	}
-
-	/* Cleanup async event handle before freeing socket structure */
-	if (sslsock->s.poll_event) {
-		sslsock->s.poll_event->base.dispose(&sslsock->s.poll_event->base);
-		sslsock->s.poll_event = NULL;
 	}
 
 	pefree(sslsock, php_stream_is_persistent(stream));

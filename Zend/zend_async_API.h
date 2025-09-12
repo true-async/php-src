@@ -528,6 +528,7 @@ typedef struct {
 
 // Flag indicating that the event has a zend_object reference by extra_offset.
 #define ZEND_ASYNC_EVENT_F_OBJ_REF (1u << 8) /* has zend_object ref */
+#define ZEND_ASYNC_EVENT_F_CLOSE_FD (1u << 9) /* close file descriptor after event cleanup */
 
 #define ZEND_ASYNC_EVENT_REFERENCE_PREFIX ((uint32_t) 0x80) /* prefix for reference structures */
 
@@ -573,6 +574,10 @@ typedef struct {
 	((ev)->flags &= ~ZEND_ASYNC_EVENT_F_EXCEPTION_HANDLED)
 
 #define ZEND_ASYNC_EVENT_WITH_OBJECT_REF(ev) ((ev)->flags |= ZEND_ASYNC_EVENT_F_OBJ_REF)
+
+#define ZEND_ASYNC_EVENT_SET_CLOSE_FD(ev) ((ev)->flags |= ZEND_ASYNC_EVENT_F_CLOSE_FD)
+#define ZEND_ASYNC_EVENT_CLR_CLOSE_FD(ev) ((ev)->flags &= ~ZEND_ASYNC_EVENT_F_CLOSE_FD)
+#define ZEND_ASYNC_EVENT_SHOULD_CLOSE_FD(ev) (((ev)->flags & ZEND_ASYNC_EVENT_F_CLOSE_FD) != 0)
 
 // Convert awaitable Zend object to zend_async_event_t pointer
 #define ZEND_ASYNC_EVENT_IS_REFERENCE(ptr) \

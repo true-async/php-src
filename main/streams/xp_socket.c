@@ -275,20 +275,42 @@ static int php_sockop_close(php_stream *stream, int close_handle)
 			 * We use a small timeout which should encourage the OS to send the data,
 			 * but at the same time avoid hanging indefinitely.
 			 * */
-			do {
-				n = php_pollfd_for_ms(sock->socket, POLLOUT, 500);
-			} while (n == -1 && php_socket_errno() == EINTR);
+			if (ZEND_ASYNC_IS_ACTIVE) {
+				struct timeval tv = {0, 500000}; // 500ms
+				network_async_await_stream_socket(stream, POLLOUT, &tv);
+			} else {
+				do {
+					n = php_pollfd_for_ms(sock->socket, POLLOUT, 500);
+				} while (n == -1 && php_socket_errno() == EINTR);
+			}
 #endif
-			closesocket(sock->socket);
-			sock->socket = SOCK_ERR;
+
+			/**
+			 * If we are in an async context and there is an active EventLoop, we should not close the
+			 * socket immediately, because there might be pending operations for this socket in the loop.
+			 * Instead, we transfer the ownership of the descriptor to the EventLoop which will close it
+			 * once all pending operations are finished.
+			 */
+			if (sock->poll_event) {
+				sock->poll_event->socket = sock->socket;
+
+				/* Set flag to close descriptor after EventLoop leanup */
+				ZEND_ASYNC_EVENT_SET_CLOSE_FD(&sock->poll_event->base);
+				sock->socket = SOCK_ERR;
+				sock->poll_event->base.dispose(&sock->poll_event->base);
+				sock->poll_event = NULL;
+			} else {
+				// Just the socket close ourselves immediately
+				closesocket(sock->socket);
+				sock->socket = SOCK_ERR;
+			}
 		}
-
-	}
-
-	/* Cleanup async event handle before freeing socket structure */
-	if (sock->poll_event) {
-		sock->poll_event->base.dispose(&sock->poll_event->base);
-		sock->poll_event = NULL;
+	} else {
+		/* Cleanup async event handle before freeing socket structure */
+		if (sock->poll_event) {
+			sock->poll_event->base.dispose(&sock->poll_event->base);
+			sock->poll_event = NULL;
+		}
 	}
 
 	pefree(sock, php_stream_is_persistent(stream));
