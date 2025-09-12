@@ -1145,38 +1145,57 @@ ZEND_API php_socket_t network_async_accept_incoming(php_stream *stream,
 	php_socket_t clisock = -1;
 	int error = 0;
 	php_sockaddr_storage sa;
-	socklen_t sl;
+	socklen_t sl = sizeof(sa);
 
-	// Use the modern async await mechanism instead of php_pollfd_for
-	int n = network_async_await_stream_socket(stream, PHP_POLLREADABLE, timeout);
+	// Get the underlying fd from stream
+	php_netstream_data_t *sock = (php_netstream_data_t*)stream->abstract;
 
-	if (n == 0) {
-		error = PHP_TIMEOUT_ERROR_VALUE;
-	} else if (n == -1) {
-		error = errno; // errno set by network_async_await_stream_socket
-	} else {
-		// Socket is ready for accept, get the underlying fd from stream
-		php_netstream_data_t *sock = (php_netstream_data_t*)stream->abstract;
-		if (sock == NULL) {
-			error = EBADF;
-		} else {
-			sl = sizeof(sa);
+	if (sock == NULL) {
+		error = EBADF;
+		goto return_error;
+	}
+	// Try accept() first - there might be a connection ready already
+	clisock = accept(sock->socket, (struct sockaddr*)&sa, &sl);
+
+	if (clisock == SOCK_ERR) {
+
+		// Check if we need to wait or if it's a real error
+		const int accept_errno = php_socket_errno();
+
+		if (UNEXPECTED(accept_errno != EAGAIN && accept_errno != EWOULDBLOCK)) {
+			error = accept_errno;
+			goto return_error;
+		}
+
+		// No connection ready, need to wait for one
+		const int events_count = network_async_await_stream_socket(stream, PHP_POLLREADABLE, timeout);
+
+		if (EXPECTED(events_count > 0)) {
+			// Socket is ready for accept, try again
 			clisock = accept(sock->socket, (struct sockaddr*)&sa, &sl);
-
-			if (clisock != SOCK_ERR) {
-				php_network_populate_name_from_sockaddr((struct sockaddr*)&sa, sl,
-						textaddr,
-						addr, addrlen);
-				if (tcp_nodelay) {
-#ifdef TCP_NODELAY
-					setsockopt(clisock, IPPROTO_TCP, TCP_NODELAY, (char*)&tcp_nodelay, sizeof(tcp_nodelay));
-#endif
-				}
-			} else {
-				error = php_socket_errno();
-			}
+		} else if (events_count == 0) {
+			error = PHP_TIMEOUT_ERROR_VALUE;
+		} else if (events_count == -1) {
+			error = errno; // errno set by network_async_await_stream_socket
 		}
 	}
+
+	// Handle successful accept() (either first try or after waiting)
+	if (ZEND_VALID_SOCKET(clisock)) {
+		php_network_populate_name_from_sockaddr((struct sockaddr*)&sa, sl,
+				textaddr,
+				addr, addrlen);
+
+#ifdef TCP_NODELAY
+		if (tcp_nodelay) {
+			setsockopt(clisock, IPPROTO_TCP, TCP_NODELAY, (char*)&tcp_nodelay, sizeof(tcp_nodelay));
+		}
+#endif
+	} else {
+		error = php_socket_errno();
+	}
+
+return_error:
 
 	if (error_code) {
 		*error_code = error;
