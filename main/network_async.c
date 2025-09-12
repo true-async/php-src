@@ -1154,6 +1154,15 @@ ZEND_API php_socket_t network_async_accept_incoming(php_stream *stream,
 		error = EBADF;
 		goto return_error;
 	}
+
+	// Ensure socket is in non-blocking mode for async operations
+	if (sock->is_blocked && !sock->nonblocking_applied) {
+		network_async_set_socket_blocking(sock->socket, false, sock);
+		if (UNEXPECTED(EG(exception) != NULL)) {
+			goto return_error;
+		}
+	}
+
 	// Try accept() first - there might be a connection ready already
 	clisock = accept(sock->socket, (struct sockaddr*)&sa, &sl);
 
