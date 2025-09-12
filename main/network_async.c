@@ -1163,30 +1163,15 @@ ZEND_API php_socket_t network_async_accept_incoming(php_stream *stream,
 		}
 	}
 
-	// Try accept() first - there might be a connection ready already
-	clisock = accept(sock->socket, (struct sockaddr*)&sa, &sl);
+	const int events_count = network_async_await_stream_socket(stream, PHP_POLLREADABLE, timeout);
 
-	if (clisock == SOCK_ERR) {
-
-		// Check if we need to wait or if it's a real error
-		const int accept_errno = php_socket_errno();
-
-		if (UNEXPECTED(accept_errno != EAGAIN && accept_errno != EWOULDBLOCK)) {
-			error = accept_errno;
-			goto return_error;
-		}
-
-		// No connection ready, need to wait for one
-		const int events_count = network_async_await_stream_socket(stream, PHP_POLLREADABLE, timeout);
-
-		if (EXPECTED(events_count > 0)) {
-			// Socket is ready for accept, try again
-			clisock = accept(sock->socket, (struct sockaddr*)&sa, &sl);
-		} else if (events_count == 0) {
-			error = PHP_TIMEOUT_ERROR_VALUE;
-		} else if (events_count == -1) {
-			error = errno; // errno set by network_async_await_stream_socket
-		}
+	if (EXPECTED(events_count > 0)) {
+		// Socket is ready for accept, try again
+		clisock = accept(sock->socket, (struct sockaddr*)&sa, &sl);
+	} else if (events_count == 0) {
+		error = PHP_TIMEOUT_ERROR_VALUE;
+	} else if (events_count == -1) {
+		error = errno; // errno set by network_async_await_stream_socket
 	}
 
 	// Handle successful accept() (either first try or after waiting)
