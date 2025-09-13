@@ -153,6 +153,7 @@ zend_async_reactor_execute_t zend_async_reactor_execute_fn = NULL;
 zend_async_reactor_loop_alive_t zend_async_reactor_loop_alive_fn = NULL;
 zend_async_new_socket_event_t zend_async_new_socket_event_fn = NULL;
 zend_async_new_poll_event_t zend_async_new_poll_event_fn = NULL;
+zend_async_new_poll_proxy_event_t zend_async_new_poll_proxy_event_fn = NULL;
 zend_async_new_timer_event_t zend_async_new_timer_event_fn = NULL;
 zend_async_new_signal_event_t zend_async_new_signal_event_fn = NULL;
 zend_async_new_process_event_t zend_async_new_process_event_fn = NULL;
@@ -316,6 +317,7 @@ ZEND_API bool zend_async_reactor_register(char *module, bool allow_override,
 		zend_async_reactor_loop_alive_t reactor_loop_alive_fn,
 		zend_async_new_socket_event_t new_socket_event_fn,
 		zend_async_new_poll_event_t new_poll_event_fn,
+		zend_async_new_poll_proxy_event_t new_poll_proxy_event_fn,
 		zend_async_new_timer_event_t new_timer_event_fn,
 		zend_async_new_signal_event_t new_signal_event_fn,
 		zend_async_new_process_event_t new_process_event_fn,
@@ -350,6 +352,7 @@ ZEND_API bool zend_async_reactor_register(char *module, bool allow_override,
 
 	zend_async_new_socket_event_fn = new_socket_event_fn;
 	zend_async_new_poll_event_fn = new_poll_event_fn;
+	zend_async_new_poll_proxy_event_fn = new_poll_proxy_event_fn;
 	zend_async_new_timer_event_fn = new_timer_event_fn;
 	zend_async_new_signal_event_fn = new_signal_event_fn;
 

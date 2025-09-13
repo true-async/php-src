@@ -201,6 +201,7 @@ typedef void (*zend_async_event_dispose_t)(zend_async_event_t *event);
 typedef zend_string *(*zend_async_event_info_t)(zend_async_event_t *event);
 
 typedef struct _zend_async_poll_event_s zend_async_poll_event_t;
+typedef struct _zend_async_poll_proxy_s zend_async_poll_proxy_t;
 typedef struct _zend_async_timer_event_s zend_async_timer_event_t;
 typedef struct _zend_async_signal_event_s zend_async_signal_event_t;
 typedef struct _zend_async_filesystem_event_s zend_async_filesystem_event_t;
@@ -257,6 +258,8 @@ typedef zend_async_poll_event_t *(*zend_async_new_socket_event_t)(
 		zend_socket_t socket, async_poll_event events, size_t extra_size);
 typedef zend_async_poll_event_t *(*zend_async_new_poll_event_t)(zend_file_descriptor_t fh,
 		zend_socket_t socket, async_poll_event events, size_t extra_size);
+typedef zend_async_poll_proxy_t *(*zend_async_new_poll_proxy_event_t)(
+		zend_async_poll_event_t *poll_event, async_poll_event events, size_t extra_size);
 typedef zend_async_timer_event_t *(*zend_async_new_timer_event_t)(const zend_ulong timeout,
 		const zend_ulong nanoseconds, const bool is_periodic, size_t extra_size);
 typedef zend_async_signal_event_t *(*zend_async_new_signal_event_t)(int signum, size_t extra_size);
@@ -683,6 +686,12 @@ struct _zend_async_poll_event_s {
 	};
 	async_poll_event events;
 	async_poll_event triggered_events;
+};
+
+struct _zend_async_poll_proxy_s {
+	zend_async_event_t base;
+	zend_async_poll_event_t *poll_event;
+	async_poll_event events;
 };
 
 struct _zend_async_timer_event_s {
@@ -1361,6 +1370,7 @@ ZEND_API extern zend_async_reactor_execute_t zend_async_reactor_execute_fn;
 ZEND_API extern zend_async_reactor_loop_alive_t zend_async_reactor_loop_alive_fn;
 ZEND_API extern zend_async_new_socket_event_t zend_async_new_socket_event_fn;
 ZEND_API extern zend_async_new_poll_event_t zend_async_new_poll_event_fn;
+ZEND_API extern zend_async_new_poll_proxy_event_t zend_async_new_poll_proxy_event_fn;
 ZEND_API extern zend_async_new_timer_event_t zend_async_new_timer_event_fn;
 ZEND_API extern zend_async_new_signal_event_t zend_async_new_signal_event_fn;
 ZEND_API extern zend_async_new_process_event_t zend_async_new_process_event_fn;
@@ -1409,6 +1419,7 @@ ZEND_API bool zend_async_reactor_register(char *module, bool allow_override,
 		zend_async_reactor_loop_alive_t reactor_loop_alive_fn,
 		zend_async_new_socket_event_t new_socket_event_fn,
 		zend_async_new_poll_event_t new_poll_event_fn,
+		zend_async_new_poll_proxy_event_t new_poll_proxy_event_fn,
 		zend_async_new_timer_event_t new_timer_event_fn,
 		zend_async_new_signal_event_t new_signal_event_fn,
 		zend_async_new_process_event_t new_process_event_fn,
@@ -1590,6 +1601,10 @@ END_EXTERN_C()
 	zend_async_new_poll_event_fn(fh, socket, events, 0)
 #define ZEND_ASYNC_NEW_POLL_EVENT_EX(fh, socket, events, extra_size) \
 	zend_async_new_poll_event_fn(fh, socket, events, extra_size)
+#define ZEND_ASYNC_NEW_POLL_PROXY_EVENT(poll_event, events) \
+	zend_async_new_poll_proxy_event_fn(poll_event, events, 0)
+#define ZEND_ASYNC_NEW_POLL_PROXY_EVENT_EX(poll_event, events, extra_size) \
+	zend_async_new_poll_proxy_event_fn(poll_event, events, extra_size)
 #define ZEND_ASYNC_NEW_TIMER_EVENT(timeout, is_periodic) \
 	zend_async_new_timer_event_fn(timeout, 0, is_periodic, 0)
 #define ZEND_ASYNC_NEW_TIMER_EVENT_EX(timeout, is_periodic, extra_size) \

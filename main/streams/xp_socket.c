@@ -567,7 +567,7 @@ static int php_sockop_set_option(php_stream *stream, int option, int value, void
 
 			zend_async_poll_event_t **handle_ptr = (zend_async_poll_event_t **)ptrparam;
 			if (sock->poll_event == NULL) {
-				sock->poll_event = ZEND_ASYNC_NEW_SOCKET_EVENT(sock->socket, value);
+				sock->poll_event = ZEND_ASYNC_NEW_SOCKET_EVENT(sock->socket, 0);
 				if (UNEXPECTED(EG(exception) != NULL)) {
 					return PHP_STREAM_OPTION_RETURN_ERR;
 				}
