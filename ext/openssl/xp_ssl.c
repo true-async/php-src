@@ -2186,6 +2186,16 @@ static int php_openssl_sockop_close(php_stream *stream, int close_handle) /* {{{
 			 * Instead, we transfer the ownership of the descriptor to the EventLoop which will close it
 			 * once all pending operations are finished.
 			 */
+			/* Cleanup proxy events first */
+			if (sslsock->s.read_event) {
+				sslsock->s.read_event->base.dispose(&sslsock->s.read_event->base);
+				sslsock->s.read_event = NULL;
+			}
+			if (sslsock->s.write_event) {
+				sslsock->s.write_event->base.dispose(&sslsock->s.write_event->base);
+				sslsock->s.write_event = NULL;
+			}
+
 			if (sslsock->s.poll_event) {
 				sslsock->s.poll_event->socket = sslsock->s.socket;
 
@@ -2202,6 +2212,14 @@ static int php_openssl_sockop_close(php_stream *stream, int close_handle) /* {{{
 		}
 	} else {
 		/* Cleanup async event handle before freeing other resources */
+		if (sslsock->s.read_event) {
+			sslsock->s.read_event->base.dispose(&sslsock->s.read_event->base);
+			sslsock->s.read_event = NULL;
+		}
+		if (sslsock->s.write_event) {
+			sslsock->s.write_event->base.dispose(&sslsock->s.write_event->base);
+			sslsock->s.write_event = NULL;
+		}
 		if (sslsock->s.poll_event) {
 			sslsock->s.poll_event->base.dispose(&sslsock->s.poll_event->base);
 			sslsock->s.poll_event = NULL;
