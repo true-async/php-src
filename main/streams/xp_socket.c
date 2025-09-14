@@ -292,6 +292,16 @@ static int php_sockop_close(php_stream *stream, int close_handle)
 			 * once all pending operations are finished.
 			 */
 			if (sock->poll_event) {
+				/* Dispose proxy events first */
+				if (sock->read_event) {
+					sock->read_event->base.dispose(&sock->read_event->base);
+					sock->read_event = NULL;
+				}
+				if (sock->write_event) {
+					sock->write_event->base.dispose(&sock->write_event->base);
+					sock->write_event = NULL;
+				}
+
 				sock->poll_event->socket = sock->socket;
 
 				/* Set flag to close descriptor after EventLoop leanup */
@@ -306,7 +316,15 @@ static int php_sockop_close(php_stream *stream, int close_handle)
 			}
 		}
 	} else {
-		/* Cleanup async event handle before freeing socket structure */
+		/* Cleanup async event handles before freeing socket structure */
+		if (sock->read_event) {
+			sock->read_event->base.dispose(&sock->read_event->base);
+			sock->read_event = NULL;
+		}
+		if (sock->write_event) {
+			sock->write_event->base.dispose(&sock->write_event->base);
+			sock->write_event = NULL;
+		}
 		if (sock->poll_event) {
 			sock->poll_event->base.dispose(&sock->poll_event->base);
 			sock->poll_event = NULL;
@@ -566,6 +584,8 @@ static int php_sockop_set_option(php_stream *stream, int option, int value, void
 			}
 
 			zend_async_poll_event_t **handle_ptr = (zend_async_poll_event_t **)ptrparam;
+
+			// Create base poll event if needed
 			if (sock->poll_event == NULL) {
 				sock->poll_event = ZEND_ASYNC_NEW_SOCKET_EVENT(sock->socket, 0);
 				if (UNEXPECTED(EG(exception) != NULL)) {
@@ -581,7 +601,33 @@ static int php_sockop_set_option(php_stream *stream, int option, int value, void
 				}
 			}
 
-			*handle_ptr = sock->poll_event;
+			if (value == ASYNC_READABLE && sock->read_event) {
+				*handle_ptr = (zend_async_poll_event_t*)sock->read_event;
+				return PHP_STREAM_OPTION_RETURN_OK;
+			}
+
+			if (value == ASYNC_WRITABLE && sock->write_event) {
+				*handle_ptr = (zend_async_poll_event_t*)sock->write_event;
+				return PHP_STREAM_OPTION_RETURN_OK;
+			}
+
+			// Create new proxy for any events
+			zend_async_poll_proxy_t *proxy = ZEND_ASYNC_NEW_POLL_PROXY_EVENT(sock->poll_event, value);
+			if (UNEXPECTED(EG(exception) != NULL)) {
+				return PHP_STREAM_OPTION_RETURN_ERR;
+			}
+
+			*handle_ptr = (zend_async_poll_event_t*)proxy;
+
+			// Cache standard event-proxy for reuse
+			if (value == ASYNC_READABLE) {
+				sock->read_event = proxy;
+			} else if (value == ASYNC_WRITABLE) {
+				sock->write_event = proxy;
+			} else {
+				proxy->base.ref_count = 0;
+			}
+
 			return PHP_STREAM_OPTION_RETURN_OK;
 	}
 
@@ -998,6 +1044,8 @@ static inline int php_tcp_sockop_accept(php_stream *stream, php_netstream_data_t
 		memcpy(clisockdata, sock, sizeof(*clisockdata));
 		clisockdata->socket = clisock;
 		clisockdata->poll_event = NULL;
+		clisockdata->read_event = NULL;
+		clisockdata->write_event = NULL;
 		clisockdata->nonblocking_applied = false;
 #ifdef __linux__
 		/* O_NONBLOCK is not inherited on Linux */
@@ -1084,6 +1132,8 @@ PHPAPI php_stream *php_stream_generic_socket_factory(const char *proto, size_t p
 	sock->timeout.tv_usec = 0;
 	sock->nonblocking_applied = false;
 	sock->poll_event = NULL;
+	sock->read_event = NULL;
+	sock->write_event = NULL;
 
 	/* we don't know the socket until we have determined if we are binding or
 	 * connecting */

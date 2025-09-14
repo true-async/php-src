@@ -332,6 +332,8 @@ struct _php_netstream_data_t	{
 	size_t ownsize;
 	bool nonblocking_applied;
 	zend_async_poll_event_t *poll_event;
+	zend_async_poll_proxy_t *read_event;
+	zend_async_poll_proxy_t *write_event;
 };
 typedef struct _php_netstream_data_t php_netstream_data_t;
 PHPAPI extern const php_stream_ops php_stream_socket_ops;
