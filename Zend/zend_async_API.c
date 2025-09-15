@@ -885,24 +885,10 @@ ZEND_API void zend_async_waker_callback_resolve(zend_async_event_t *event,
 {
 	zend_coroutine_t *coroutine = ((zend_coroutine_event_callback_t *) callback)->coroutine;
 
-	if (exception == NULL && coroutine->waker != NULL) {
-
-		if (coroutine->waker->triggered_events == NULL) {
-			coroutine->waker->triggered_events = (HashTable *) emalloc(sizeof(HashTable));
-			zend_hash_init(
-					coroutine->waker->triggered_events, 2, NULL, waker_triggered_events_dtor, 0);
-		}
-
-		if (EXPECTED(zend_hash_index_add_ptr(
-							 coroutine->waker->triggered_events, (zend_ulong) event, event)
-					!= NULL)) {
-			ZEND_ASYNC_EVENT_ADD_REF(event);
-		}
-
+	if (exception == NULL && coroutine->waker != NULL
+		&& ZEND_ASYNC_EVENT_WILL_ZVAL_RESULT(event) && result != NULL) {
 		// Copy the result to the waker if it is not NULL
-		if (ZEND_ASYNC_EVENT_WILL_ZVAL_RESULT(event) && result != NULL) {
-			ZVAL_COPY(&coroutine->waker->result, result);
-		}
+		ZVAL_COPY(&coroutine->waker->result, result);
 	}
 
 	if (exception != NULL) {
@@ -962,7 +948,7 @@ ZEND_API zend_async_waker_t *zend_async_waker_new_with_timeout(
 
 	if (timeout > 0) {
 		zend_async_resume_when(coroutine, &ZEND_ASYNC_NEW_TIMER_EVENT(timeout, false)->base, true,
-				zend_async_waker_callback_resolve, NULL);
+				zend_async_waker_callback_timeout, NULL);
 	}
 
 	if (cancellation != NULL) {

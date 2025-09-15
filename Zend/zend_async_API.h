@@ -692,6 +692,7 @@ struct _zend_async_poll_proxy_s {
 	zend_async_event_t base;
 	zend_async_poll_event_t *poll_event;
 	async_poll_event events;
+	async_poll_event triggered_events;
 };
 
 struct _zend_async_timer_event_s {

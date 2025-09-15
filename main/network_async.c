@@ -880,7 +880,7 @@ static void async_stream_callback_resolve(
 	if (EXPECTED(coroutine->waker != NULL)) {
 		async_stream_callback_t *stream_callback = (async_stream_callback_t *)callback;
 		
-		zend_async_poll_event_t *poll_event = (zend_async_poll_event_t *)event;
+		zend_async_poll_proxy_t *poll_event = (zend_async_poll_proxy_t *)event;
 		
 		// Immediately add ready stream to appropriate result array with preserved key
 		zval stream_zval;
