@@ -19,9 +19,9 @@
 #include "zend_fibers.h"
 #include "zend_globals.h"
 
-#define ZEND_ASYNC_API "TrueAsync API v0.5.0"
+#define ZEND_ASYNC_API "TrueAsync API v0.6.0"
 #define ZEND_ASYNC_API_VERSION_MAJOR 0
-#define ZEND_ASYNC_API_VERSION_MINOR 5
+#define ZEND_ASYNC_API_VERSION_MINOR 6
 #define ZEND_ASYNC_API_VERSION_PATCH 0
 
 #define ZEND_ASYNC_API_VERSION_NUMBER \
@@ -985,6 +985,7 @@ struct _zend_async_waker_s {
 };
 
 #define ZEND_ASYNC_WAKER_WAITING(waker) ((waker)->status < ZEND_ASYNC_WAKER_RESULT)
+#define ZEND_ASYNC_WAKER_CLEAN_EVENTS(waker) (zend_hash_clean(&waker->events))
 
 /**
  * Coroutine destructor. Called when the coroutine needs to clean up all its data.
