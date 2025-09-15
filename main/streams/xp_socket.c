@@ -601,7 +601,10 @@ static int php_sockop_set_option(php_stream *stream, int option, int value, void
 				}
 			}
 
-			if (value == ASYNC_READABLE && sock->read_event) {
+			// Mask of events covered by read_event (PHP_POLLREADABLE)
+			#define READ_EVENT_MASK (ASYNC_READABLE | ASYNC_DISCONNECT)
+
+			if (sock->read_event && (value & READ_EVENT_MASK) == value) {
 				*handle_ptr = (zend_async_poll_event_t*)sock->read_event;
 				return PHP_STREAM_OPTION_RETURN_OK;
 			}
@@ -619,8 +622,8 @@ static int php_sockop_set_option(php_stream *stream, int option, int value, void
 
 			*handle_ptr = (zend_async_poll_event_t*)proxy;
 
-			// Cache standard event-proxy for reuse
-			if (value == ASYNC_READABLE) {
+			// Cache event-proxy for reuse
+			if ((value & READ_EVENT_MASK) == value) {
 				sock->read_event = proxy;
 			} else if (value == ASYNC_WRITABLE) {
 				sock->write_event = proxy;
