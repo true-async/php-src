@@ -948,7 +948,7 @@ ZEND_API zend_async_waker_t *zend_async_waker_new_with_timeout(
 
 	if (timeout > 0) {
 		zend_async_resume_when(coroutine, &ZEND_ASYNC_NEW_TIMER_EVENT(timeout, false)->base, true,
-				zend_async_waker_callback_timeout, NULL);
+				zend_async_waker_callback_resolve, NULL);
 	}
 
 	if (cancellation != NULL) {

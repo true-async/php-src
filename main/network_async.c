@@ -251,7 +251,7 @@ ZEND_API int network_async_await_stream_socket(php_stream *stream, short events,
 	}
 
 	// Use unified approach: get event handle via php_stream_set_option
-	zend_async_poll_event_t *poll_event = NULL;
+	zend_async_poll_proxy_t *poll_event = NULL;
 	zend_ulong async_events = poll2_events_to_async(events);
 	
 	php_stream_set_option(stream, PHP_STREAM_OPTION_ASYNC_EVENT_HANDLE, async_events, &poll_event);
