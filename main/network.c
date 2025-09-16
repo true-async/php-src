@@ -832,10 +832,10 @@ PHPAPI php_socket_t php_network_accept_incoming(php_socket_t srvsock,
  * */
 
 /* {{{ php_network_connect_socket_to_host */
-php_socket_t php_network_connect_socket_to_host(const char *host, unsigned short port,
+php_socket_t php_network_connect_socket_to_host_ex(const char *host, unsigned short port,
 		int socktype, int asynchronous, struct timeval *timeout, zend_string **error_string,
 		int *error_code, const char *bindto, unsigned short bindport, long sockopts,
-		php_stream *stream
+		php_netstream_data_t *netdata
 		)
 {
 	int num_addrs, n, fatal = 0;
@@ -959,10 +959,22 @@ php_socket_t php_network_connect_socket_to_host(const char *host, unsigned short
 			}
 		}
 #endif
-		if (ZEND_ASYNC_IS_ACTIVE && stream != NULL) {
-			n = network_async_connect_socket(stream, sock, sa, socklen, asynchronous,
-					timeout ? &working_timeout : NULL,
-					error_string, error_code);
+		if (ZEND_ASYNC_IS_ACTIVE && netdata != NULL) {
+			// Create temporary stream for async connection
+			php_stream *temp_stream = php_stream_sock_open_from_socket(sock, "r+");
+			if (temp_stream) {
+				temp_stream->abstract = netdata;
+				n = network_async_connect_socket(temp_stream, sock, sa, socklen, asynchronous,
+						timeout ? &working_timeout : NULL,
+						error_string, error_code);
+				// Don't close the stream, just clear abstract to avoid double-free
+				temp_stream->abstract = NULL;
+				php_stream_close(temp_stream);
+			} else {
+				n = php_network_connect_socket(sock, sa, socklen, asynchronous,
+						timeout ? &working_timeout : NULL,
+						error_string, error_code);
+			}
 		} else {
 			n = php_network_connect_socket(sock, sa, socklen, asynchronous,
 					timeout ? &working_timeout : NULL,
@@ -1010,6 +1022,17 @@ connected:
 	php_network_freeaddresses(psal);
 
 	return sock;
+}
+/* }}} */
+
+/* {{{ php_network_connect_socket_to_host */
+php_socket_t php_network_connect_socket_to_host(const char *host, unsigned short port,
+		int socktype, int asynchronous, struct timeval *timeout, zend_string **error_string,
+		int *error_code, const char *bindto, unsigned short bindport, long sockopts
+		)
+{
+	return php_network_connect_socket_to_host_ex(host, port, socktype, asynchronous,
+			timeout, error_string, error_code, bindto, bindport, sockopts, NULL);
 }
 /* }}} */
 

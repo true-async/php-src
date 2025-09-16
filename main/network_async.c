@@ -250,17 +250,21 @@ ZEND_API int network_async_await_stream_socket(php_stream *stream, short events,
 		return -1;
 	}
 
-	// Use unified approach: get event handle via php_stream_set_option
-	zend_async_poll_proxy_t *poll_event = NULL;
+	// Get async event directly from netstream data
+	php_netstream_data_t *netdata = (php_netstream_data_t*)stream->abstract;
+	if (UNEXPECTED(netdata == NULL)) {
+		errno = ENOTSUP;  // Not a network stream
+		return -1;
+	}
+
 	zend_ulong async_events = poll2_events_to_async(events);
-	
-	php_stream_set_option(stream, PHP_STREAM_OPTION_ASYNC_EVENT_HANDLE, async_events, &poll_event);
-	
+	zend_async_poll_event_t *poll_event = php_netstream_get_async_event(netdata, async_events);
+
 	if (UNEXPECTED(EG(exception) != NULL)) {
 		handle_exception_and_errno();
 		return -1;
 	}
-	
+
 	if (UNEXPECTED(poll_event == NULL)) {
 		errno = ENOTSUP;  // Stream doesn't support async operations
 		return -1;
@@ -1758,3 +1762,67 @@ ZEND_API int php_network_getaddresses_async(const char *host, int socktype, stru
 ///////////////////////////////////////////////////////////////
 /// DNS API Implementation END
 ///////////////////////////////////////////////////////////////
+
+/**
+ * Get or create async event for php_netstream_data_t.
+ *
+ * This function provides direct access to async events for network streams
+ * without going through the stream layer, avoiding circular dependencies.
+ *
+ * @param netdata   Network stream data structure
+ * @param events    Event mask (ASYNC_READABLE, ASYNC_WRITABLE, etc.)
+ * @return          Poll event handle, or NULL on error
+ */
+ZEND_API zend_async_poll_event_t* php_netstream_get_async_event(php_netstream_data_t *netdata, zend_ulong events)
+{
+	if (netdata == NULL) {
+		return NULL;
+	}
+
+	// Create base poll event if needed
+	if (netdata->poll_event == NULL) {
+		netdata->poll_event = ZEND_ASYNC_NEW_SOCKET_EVENT(netdata->socket, 0);
+		if (UNEXPECTED(EG(exception) != NULL)) {
+			return NULL;
+		}
+
+		// Start the event immediately for efficiency
+		if (netdata->poll_event) {
+			netdata->poll_event->base.start(&netdata->poll_event->base);
+			if (UNEXPECTED(EG(exception) != NULL)) {
+				return NULL;
+			}
+		}
+	}
+
+	// Mask of events covered by read_event (PHP_POLLREADABLE)
+	#define READ_EVENT_MASK (ASYNC_READABLE | ASYNC_DISCONNECT)
+
+	// Return cached read event if it matches
+	if (netdata->read_event && (events & READ_EVENT_MASK) == events) {
+		return (zend_async_poll_event_t*)netdata->read_event;
+	}
+
+	// Return cached write event if it matches
+	if (events == ASYNC_WRITABLE && netdata->write_event) {
+		return (zend_async_poll_event_t*)netdata->write_event;
+	}
+
+	// Create new proxy for any events
+	zend_async_poll_proxy_t *proxy = ZEND_ASYNC_NEW_POLL_PROXY_EVENT(netdata->poll_event, events);
+	if (UNEXPECTED(EG(exception) != NULL)) {
+		return NULL;
+	}
+
+	// Cache proxy for reuse
+	if ((events & READ_EVENT_MASK) == events) {
+		netdata->read_event = proxy;
+	} else if (events == ASYNC_WRITABLE) {
+		netdata->write_event = proxy;
+	} else {
+		// Don't cache non-standard event combinations
+		proxy->base.ref_count = 0;
+	}
+
+	return (zend_async_poll_event_t*)proxy;
+}

@@ -972,7 +972,7 @@ static inline int php_tcp_sockop_connect(php_stream *stream, php_netstream_data_
 	 * want the default to be TCP sockets so that the openssl extension can
 	 * re-use this code. */
 
-	sock->socket = php_network_connect_socket_to_host(host, portno,
+	sock->socket = php_network_connect_socket_to_host_ex(host, portno,
 			stream->ops == &php_stream_udp_socket_ops ? SOCK_DGRAM : SOCK_STREAM,
 			xparam->op == STREAM_XPORT_OP_CONNECT_ASYNC,
 			xparam->inputs.timeout,
@@ -981,7 +981,7 @@ static inline int php_tcp_sockop_connect(php_stream *stream, php_netstream_data_
 			bindto,
 			bindport,
 			sockopts,
-			stream
+			sock
 			);
 
 	ret = sock->socket == -1 ? -1 : 0;
