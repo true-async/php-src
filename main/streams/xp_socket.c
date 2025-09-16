@@ -980,7 +980,8 @@ static inline int php_tcp_sockop_connect(php_stream *stream, php_netstream_data_
 			&err,
 			bindto,
 			bindport,
-			sockopts
+			sockopts,
+			stream
 			);
 
 	ret = sock->socket == -1 ? -1 : 0;

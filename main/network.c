@@ -834,7 +834,8 @@ PHPAPI php_socket_t php_network_accept_incoming(php_socket_t srvsock,
 /* {{{ php_network_connect_socket_to_host */
 php_socket_t php_network_connect_socket_to_host(const char *host, unsigned short port,
 		int socktype, int asynchronous, struct timeval *timeout, zend_string **error_string,
-		int *error_code, const char *bindto, unsigned short bindport, long sockopts
+		int *error_code, const char *bindto, unsigned short bindport, long sockopts,
+		php_stream *stream
 		)
 {
 	int num_addrs, n, fatal = 0;
@@ -958,9 +959,15 @@ php_socket_t php_network_connect_socket_to_host(const char *host, unsigned short
 			}
 		}
 #endif
-		n = php_network_connect_socket(sock, sa, socklen, asynchronous,
-				timeout ? &working_timeout : NULL,
-				error_string, error_code);
+		if (ZEND_ASYNC_IS_ACTIVE && stream != NULL) {
+			n = network_async_connect_socket(stream, sock, sa, socklen, asynchronous,
+					timeout ? &working_timeout : NULL,
+					error_string, error_code);
+		} else {
+			n = php_network_connect_socket(sock, sa, socklen, asynchronous,
+					timeout ? &working_timeout : NULL,
+					error_string, error_code);
+		}
 
 		if (n != -1) {
 			goto connected;

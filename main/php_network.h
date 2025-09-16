@@ -280,7 +280,8 @@ PHPAPI void php_network_freeaddresses(struct sockaddr **sal);
 
 PHPAPI php_socket_t php_network_connect_socket_to_host(const char *host, unsigned short port,
 		int socktype, int asynchronous, struct timeval *timeout, zend_string **error_string,
-		int *error_code, const char *bindto, unsigned short bindport, long sockopts
+		int *error_code, const char *bindto, unsigned short bindport, long sockopts,
+		php_stream *stream
 		);
 
 PHPAPI int php_network_connect_socket(php_socket_t sockfd,
