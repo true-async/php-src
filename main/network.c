@@ -967,8 +967,8 @@ php_socket_t php_network_connect_socket_to_host_ex(const char *host, unsigned sh
 					error_string, error_code);
 
 			if (UNEXPECTED(n == -1)) {
-				sock = INVALID_SOCKET;
-				netdata->socket = INVALID_SOCKET;
+				sock = -1;
+				netdata->socket = -1;
 				fatal = 1;
 			}
 		} else {
