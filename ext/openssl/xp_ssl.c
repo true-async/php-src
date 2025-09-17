@@ -2173,7 +2173,7 @@ static int php_openssl_sockop_close(php_stream *stream, int close_handle) /* {{{
 			 * */
 			if (ZEND_ASYNC_IS_ACTIVE) {
 				struct timeval tv = {0, 500000}; // 500ms
-				network_async_await_stream_socket(stream, POLLOUT, &tv);
+				network_async_await_stream_socket(&sslsock->s, POLLOUT, &tv);
 			} else {
 				do {
 					n = php_pollfd_for_ms(sslsock->s.socket, POLLOUT, 500);
@@ -2279,7 +2279,7 @@ static inline int php_openssl_tcp_sockop_accept(php_stream *stream, php_openssl_
 	}
 
 	if (ZEND_ASYNC_IS_ACTIVE) {
-		clisock = network_async_accept_incoming(stream,
+		clisock = network_async_accept_incoming(&sock->s,
 			xparam->want_textaddr ? &xparam->outputs.textaddr : NULL,
 			xparam->want_addr ? &xparam->outputs.addr : NULL,
 			xparam->want_addr ? &xparam->outputs.addrlen : NULL,

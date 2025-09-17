@@ -231,29 +231,22 @@ static void socket_await_callback_resolve(
  * This function provides optimized async I/O waiting for a single socket stream by using
  * the unified php_stream_set_option approach for event handle management.
  *
- * @param stream    PHP stream (must be a socket stream)
+ * @param netdata   Network stream data structure
  * @param events    Poll events (POLLIN, POLLOUT, etc.)
  * @param timeout   Timeout as struct timeval* (NULL for infinite)
  * @return          1 if events occurred, 0 on timeout, -1 on error
  */
-ZEND_API int network_async_await_stream_socket(php_stream *stream, short events, struct timeval *timeout)
+ZEND_API int network_async_await_stream_socket(php_netstream_data_t *netdata, short events, struct timeval *timeout)
 {
 	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 
-	if (coroutine == NULL) {
+	if (UNEXPECTED(coroutine == NULL)) {
 		errno = EINVAL;
 		return -1;
 	}
 
-	if (stream == NULL) {
-		errno = EBADF;
-		return -1;
-	}
-
-	// Get async event directly from netstream data
-	php_netstream_data_t *netdata = (php_netstream_data_t*)stream->abstract;
 	if (UNEXPECTED(netdata == NULL)) {
-		errno = ENOTSUP;  // Not a network stream
+		errno = EBADF;
 		return -1;
 	}
 
@@ -1125,7 +1118,7 @@ cleanup:
  * @param tcp_nodelay   Whether to set TCP_NODELAY on accepted socket
  * @return              Client socket fd, or -1 on error
  */
-ZEND_API php_socket_t network_async_accept_incoming(php_stream *stream,
+ZEND_API php_socket_t network_async_accept_incoming(php_netstream_data_t *netdata,
 		zend_string **textaddr,
 		struct sockaddr **addr,
 		socklen_t *addrlen,
@@ -1141,7 +1134,7 @@ ZEND_API php_socket_t network_async_accept_incoming(php_stream *stream,
 		return -1;
 	}
 
-	if (stream == NULL) {
+	if (netdata == NULL) {
 		errno = EBADF;
 		return -1;
 	}
@@ -1151,27 +1144,20 @@ ZEND_API php_socket_t network_async_accept_incoming(php_stream *stream,
 	php_sockaddr_storage sa;
 	socklen_t sl = sizeof(sa);
 
-	// Get the underlying fd from stream
-	php_netstream_data_t *sock = (php_netstream_data_t*)stream->abstract;
-
-	if (sock == NULL) {
-		error = EBADF;
-		goto return_error;
-	}
 
 	// Ensure socket is in non-blocking mode for async operations
-	if (sock->is_blocked && !sock->nonblocking_applied) {
-		network_async_set_socket_blocking(sock->socket, false, sock);
+	if (netdata->is_blocked && !netdata->nonblocking_applied) {
+		network_async_set_socket_blocking(netdata->socket, false, netdata);
 		if (UNEXPECTED(EG(exception) != NULL)) {
 			goto return_error;
 		}
 	}
 
-	const int events_count = network_async_await_stream_socket(stream, PHP_POLLREADABLE, timeout);
+	const int events_count = network_async_await_stream_socket(netdata, PHP_POLLREADABLE, timeout);
 
 	if (EXPECTED(events_count > 0)) {
 		// Socket is ready for accept, try again
-		clisock = accept(sock->socket, (struct sockaddr*)&sa, &sl);
+		clisock = accept(netdata->socket, (struct sockaddr*)&sa, &sl);
 	} else if (events_count == 0) {
 		error = PHP_TIMEOUT_ERROR_VALUE;
 	} else if (events_count == -1) {
@@ -1229,7 +1215,7 @@ return_error:
  * @param error_code    Output: error code
  * @return              0 on success, -1 on error
  */
-ZEND_API int network_async_connect_socket(php_stream *stream, php_socket_t sockfd,
+ZEND_API int network_async_connect_socket(php_netstream_data_t *netdata, php_socket_t sockfd,
 		const struct sockaddr *addr,
 		socklen_t addrlen,
 		int asynchronous,
@@ -1244,7 +1230,7 @@ ZEND_API int network_async_connect_socket(php_stream *stream, php_socket_t sockf
 		return -1;
 	}
 
-	if (stream == NULL) {
+	if (netdata == NULL) {
 		errno = EBADF;
 		return -1;
 	}
@@ -1295,7 +1281,7 @@ ZEND_API int network_async_connect_socket(php_stream *stream, php_socket_t sockf
 #endif
 
 	// Use the modern async await mechanism instead of php_pollfd_for loop
-	n = network_async_await_stream_socket(stream, events, timeout);
+	n = network_async_await_stream_socket(netdata, events, timeout);
 	
 	if (n < 0) {
 		error = errno;
@@ -1775,9 +1761,7 @@ ZEND_API int php_network_getaddresses_async(const char *host, int socktype, stru
  */
 ZEND_API zend_async_poll_event_t* php_netstream_get_async_event(php_netstream_data_t *netdata, zend_ulong events)
 {
-	if (netdata == NULL) {
-		return NULL;
-	}
+	ZEND_ASSERT(netdata != NULL && "netdata must not be NULL");
 
 	// Create base poll event if needed
 	if (netdata->poll_event == NULL) {

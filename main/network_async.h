@@ -23,18 +23,18 @@ BEGIN_EXTERN_C()
 ZEND_API void network_async_set_socket_blocking(php_socket_t socket, bool blocking, php_netstream_data_t *sock_data);
 ZEND_API bool network_async_ensure_socket_nonblocking(php_socket_t socket);
 ZEND_API void network_async_wait_socket(php_socket_t socket, const zend_ulong events, const zend_ulong timeout);
-ZEND_API int network_async_await_stream_socket(php_stream *stream, short events, struct timeval *timeout);
+ZEND_API int network_async_await_stream_socket(php_netstream_data_t *netdata, short events, struct timeval *timeout);
 ZEND_API zend_async_poll_event_t* php_netstream_get_async_event(php_netstream_data_t *netdata, zend_ulong events);
 
 ZEND_API int php_poll2_async(php_pollfd *ufds, unsigned int nfds, int timeout);
 ZEND_API int php_select_async(php_socket_t max_fd, fd_set *rfds, fd_set *wfds, fd_set *efds, struct timeval *tv);
 ZEND_API int network_async_stream_select(zval *read_streams, zval *write_streams, zval *except_streams, struct timeval *tv);
 
-ZEND_API php_socket_t network_async_accept_incoming(php_stream *stream,
+ZEND_API php_socket_t network_async_accept_incoming(php_netstream_data_t *netdata,
 		zend_string **textaddr, struct sockaddr **addr, socklen_t *addrlen,
 		struct timeval *timeout, zend_string **error_string, int *error_code, int tcp_nodelay);
 
-ZEND_API int network_async_connect_socket(php_stream *stream, php_socket_t sockfd,
+ZEND_API int network_async_connect_socket(php_netstream_data_t *netdata, php_socket_t sockfd,
 		const struct sockaddr *addr, socklen_t addrlen, int asynchronous,
 		struct timeval *timeout, zend_string **error_string, int *error_code);
 

@@ -960,17 +960,10 @@ php_socket_t php_network_connect_socket_to_host_ex(const char *host, unsigned sh
 		}
 #endif
 		if (ZEND_ASYNC_IS_ACTIVE && netdata != NULL) {
-			// Create temporary stream for async connection
-			php_stream *temp_stream = php_stream_sock_open_from_socket(sock, "r+");
-			if (temp_stream) {
-				temp_stream->abstract = netdata;
-				n = network_async_connect_socket(temp_stream, sock, sa, socklen, asynchronous,
-						timeout ? &working_timeout : NULL,
-						error_string, error_code);
-				// Don't close the stream, just clear abstract to avoid double-free
-				temp_stream->abstract = NULL;
-				php_stream_close(temp_stream);
-			} else {
+			n = network_async_connect_socket(netdata, sock, sa, socklen, asynchronous,
+					timeout ? &working_timeout : NULL,
+					error_string, error_code);
+			if (n == -1) {
 				n = php_network_connect_socket(sock, sa, socklen, asynchronous,
 						timeout ? &working_timeout : NULL,
 						error_string, error_code);
