@@ -92,7 +92,7 @@ retry:
 				sock->timeout_event = false;
 
 				if (ZEND_ASYNC_IS_ACTIVE) {
-                retval = network_async_await_stream_socket(sock, POLLOUT, ptimeout);
+					retval = network_async_await_stream_socket(sock, POLLOUT, ptimeout);
 
 					if (retval == 0) {
 						sock->timeout_event = true;
@@ -136,14 +136,6 @@ retry:
 
 	if (didwrite > 0) {
 		php_stream_notify_progress_increment(PHP_STREAM_CONTEXT(stream), didwrite, 0);
-	}
-
-	if (ZEND_ASYNC_IS_ACTIVE && sock->is_blocked && !sock->nonblocking_applied) {
-		network_async_set_socket_blocking(sock->socket, true, sock);
-		if (UNEXPECTED(EG(exception) != NULL)) {
-			/* If we are in async context and an exception was thrown, we should not continue. */
-			return -1;
-		}
 	}
 
 	return didwrite;

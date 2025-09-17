@@ -251,9 +251,9 @@ ZEND_API int network_async_await_stream_socket(php_netstream_data_t *netdata, sh
 	}
 
 	zend_ulong async_events = poll2_events_to_async(events);
-	zend_async_poll_event_t *poll_event = php_netstream_get_async_event(netdata, async_events);
+	zend_async_poll_proxy_t *poll_event = php_netstream_get_async_event(netdata, async_events);
 
-	if (UNEXPECTED(EG(exception) != NULL)) {
+	if (UNEXPECTED(poll_event == NULL)) {
 		handle_exception_and_errno();
 		return -1;
 	}
@@ -876,21 +876,21 @@ static void async_stream_callback_resolve(
 
 	if (EXPECTED(coroutine->waker != NULL)) {
 		async_stream_callback_t *stream_callback = (async_stream_callback_t *)callback;
-		
+
 		zend_async_poll_proxy_t *poll_event = (zend_async_poll_proxy_t *)event;
-		
+
 		// Immediately add ready stream to appropriate result array with preserved key
 		zval stream_zval;
 		php_stream_to_zval(stream_callback->stream, &stream_zval);
-		
+
 		if (stream_callback->read_streams != NULL && poll_event->triggered_events & ASYNC_READABLE) {
 			add_stream_to_array(stream_callback->read_streams, &stream_callback->key, &stream_zval);
 		}
-		
+
 		if (stream_callback->write_streams != NULL && poll_event->triggered_events & ASYNC_WRITABLE) {
 			add_stream_to_array(stream_callback->write_streams, &stream_callback->key, &stream_zval);
 		}
-		
+
 		if (stream_callback->except_streams != NULL && poll_event->triggered_events & ASYNC_PRIORITIZED) {
 			add_stream_to_array(stream_callback->except_streams, &stream_callback->key, &stream_zval);
 		}
@@ -1046,7 +1046,7 @@ ZEND_API int network_async_stream_select(zval *read_streams, zval *write_streams
 	}
 
 	int result = 0;
-	
+
 	// Calculate timeout in milliseconds
 	zend_ulong timeout = 0;
 	if (tv != NULL) {
@@ -1095,7 +1095,7 @@ cleanup:
 			zval_ptr_dtor(&cb->key);
 		} ZEND_HASH_FOREACH_END();
 	}
-	
+
 	zend_async_waker_clean(coroutine);
 	return result;
 }
@@ -1107,14 +1107,14 @@ cleanup:
 /**
  * Async version of php_network_accept_incoming
  * Accepts an incoming connection on a server socket using the modern async system
- * 
+ *
  * @param stream        Server socket stream
- * @param textaddr      Output: text representation of client address  
+ * @param textaddr      Output: text representation of client address
  * @param addr          Output: client socket address structure
  * @param addrlen       Output: length of client address structure
  * @param timeout       Accept timeout
  * @param error_string  Output: error message string
- * @param error_code    Output: error code  
+ * @param error_code    Output: error code
  * @param tcp_nodelay   Whether to set TCP_NODELAY on accepted socket
  * @return              Client socket fd, or -1 on error
  */
@@ -1204,7 +1204,7 @@ return_error:
 /**
  * Async version of php_network_connect_socket
  * Connects to a remote address using the modern async system
- * 
+ *
  * @param stream        Socket stream
  * @param sockfd        Socket file descriptor (from stream)
  * @param addr          Remote socket address to connect to
@@ -1282,7 +1282,7 @@ ZEND_API int network_async_connect_socket(php_netstream_data_t *netdata, php_soc
 
 	// Use the modern async await mechanism instead of php_pollfd_for loop
 	n = network_async_await_stream_socket(netdata, events, timeout);
-	
+
 	if (n < 0) {
 		error = errno;
 		ret = -1;
@@ -1540,7 +1540,7 @@ ZEND_API struct hostent* php_network_gethostbyname_async(const char *name)
 	hints.ai_socktype = SOCK_STREAM;
 
 	struct addrinfo *result = NULL;
-	
+
 	if (php_network_getaddrinfo_async(name, NULL, &hints, &result) != 0) {
 		return NULL;
 	}
@@ -1676,7 +1676,7 @@ error:
 
 /**
  * Asynchronous network address resolution implementation for coroutine contexts.
- * 
+ *
  * This function resolves a hostname to multiple socket addresses, similar to
  * the standard getaddrinfo() but compatible with the async coroutine system.
  */
@@ -1757,16 +1757,16 @@ ZEND_API int php_network_getaddresses_async(const char *host, int socktype, stru
  *
  * @param netdata   Network stream data structure
  * @param events    Event mask (ASYNC_READABLE, ASYNC_WRITABLE, etc.)
- * @return          Poll event handle, or NULL on error
+ * @return          Poll-proxy event handle, or NULL on error
  */
-ZEND_API zend_async_poll_event_t* php_netstream_get_async_event(php_netstream_data_t *netdata, zend_ulong events)
+ZEND_API zend_async_poll_proxy_t* php_netstream_get_async_event(php_netstream_data_t *netdata, async_poll_event events)
 {
 	ZEND_ASSERT(netdata != NULL && "netdata must not be NULL");
 
 	// Create base poll event if needed
 	if (netdata->poll_event == NULL) {
 		netdata->poll_event = ZEND_ASYNC_NEW_SOCKET_EVENT(netdata->socket, 0);
-		if (UNEXPECTED(EG(exception) != NULL)) {
+		if (UNEXPECTED(netdata->poll_event == NULL)) {
 			return NULL;
 		}
 
@@ -1784,29 +1784,29 @@ ZEND_API zend_async_poll_event_t* php_netstream_get_async_event(php_netstream_da
 
 	// Return cached read event if it matches
 	if (netdata->read_event && (events & READ_EVENT_MASK) == events) {
-		return (zend_async_poll_event_t*)netdata->read_event;
+		return netdata->read_event;
 	}
 
 	// Return cached write event if it matches
-	if (events == ASYNC_WRITABLE && netdata->write_event) {
-		return (zend_async_poll_event_t*)netdata->write_event;
+	if (netdata->write_event && events == ASYNC_WRITABLE) {
+		return netdata->write_event;
 	}
 
 	// Create new proxy for any events
 	zend_async_poll_proxy_t *proxy = ZEND_ASYNC_NEW_POLL_PROXY_EVENT(netdata->poll_event, events);
-	if (UNEXPECTED(EG(exception) != NULL)) {
+	if (UNEXPECTED(proxy == NULL)) {
 		return NULL;
 	}
 
 	// Cache proxy for reuse
-	if ((events & READ_EVENT_MASK) == events) {
+	if (netdata->read_event == NULL && (events & READ_EVENT_MASK) == events) {
 		netdata->read_event = proxy;
-	} else if (events == ASYNC_WRITABLE) {
+	} else if (netdata->write_event == NULL && events == ASYNC_WRITABLE) {
 		netdata->write_event = proxy;
 	} else {
 		// Don't cache non-standard event combinations
 		proxy->base.ref_count = 0;
 	}
 
-	return (zend_async_poll_event_t*)proxy;
+	return proxy;
 }
