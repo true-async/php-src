@@ -960,13 +960,16 @@ php_socket_t php_network_connect_socket_to_host_ex(const char *host, unsigned sh
 		}
 #endif
 		if (ZEND_ASYNC_IS_ACTIVE && netdata != NULL) {
+			netdata->socket = sock;
+
 			n = network_async_connect_socket(netdata, sock, sa, socklen, asynchronous,
 					timeout ? &working_timeout : NULL,
 					error_string, error_code);
-			if (n == -1) {
-				n = php_network_connect_socket(sock, sa, socklen, asynchronous,
-						timeout ? &working_timeout : NULL,
-						error_string, error_code);
+
+			if (UNEXPECTED(n == -1)) {
+				sock = INVALID_SOCKET;
+				netdata->socket = INVALID_SOCKET;
+				fatal = 1;
 			}
 		} else {
 			n = php_network_connect_socket(sock, sa, socklen, asynchronous,
