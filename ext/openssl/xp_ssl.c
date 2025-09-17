@@ -2307,6 +2307,8 @@ static inline int php_openssl_tcp_sockop_accept(php_stream *stream, php_openssl_
 
 		clisockdata->s.socket = clisock;
 		clisockdata->s.poll_event = NULL;
+		clisockdata->s.read_event = NULL;
+		clisockdata->s.write_event = NULL;
 		clisockdata->s.nonblocking_applied = false;
 #ifdef __linux__
 		/* O_NONBLOCK is not inherited on Linux */

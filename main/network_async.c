@@ -258,11 +258,6 @@ ZEND_API int network_async_await_stream_socket(php_netstream_data_t *netdata, sh
 		return -1;
 	}
 
-	if (UNEXPECTED(poll_event == NULL)) {
-		errno = ENOTSUP;  // Stream doesn't support async operations
-		return -1;
-	}
-
 	// Convert timeval timeout to milliseconds for async waker
 	zend_ulong timeout_ms = 0;  // 0 means infinite timeout for async waker
 	if (timeout != NULL) {
