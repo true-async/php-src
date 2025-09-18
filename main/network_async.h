@@ -20,7 +20,7 @@
 
 BEGIN_EXTERN_C()
 
-ZEND_API void network_async_set_socket_blocking(php_socket_t socket, bool blocking, php_netstream_data_t *sock_data);
+ZEND_API bool network_async_set_socket_blocking(php_socket_t socket, bool blocking, php_netstream_data_t *sock_data);
 ZEND_API bool network_async_ensure_socket_nonblocking(php_socket_t socket);
 ZEND_API void network_async_wait_socket(php_socket_t socket, const zend_ulong events, const zend_ulong timeout);
 ZEND_API int network_async_await_stream_socket(php_netstream_data_t *netdata, async_poll_event events, struct timeval *timeout);

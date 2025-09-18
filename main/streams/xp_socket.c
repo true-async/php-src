@@ -72,8 +72,7 @@ static ssize_t php_sockop_write(php_stream *stream, const char *buf, size_t coun
 		ptimeout = &sock->timeout;
 
 	if (ZEND_ASYNC_IS_ACTIVE && sock->is_blocked && !sock->nonblocking_applied) {
-		network_async_set_socket_blocking(sock->socket, false, sock);
-		if (UNEXPECTED(EG(exception) != NULL)) {
+		if (UNEXPECTED(!network_async_set_socket_blocking(sock->socket, false, sock))) {
 			/* If we are in async context and an exception was thrown, we should not continue. */
 			return -1;
 		}
@@ -351,8 +350,7 @@ static int php_sockop_stat(php_stream *stream, php_stream_statbuf *ssb)
 static inline int sock_async_poll(php_netstream_data_t *sock, async_poll_event poll_events)
 {
 	if (UNEXPECTED(sock->is_blocked && !sock->nonblocking_applied && ZEND_ASYNC_IS_ACTIVE)) {
-		network_async_set_socket_blocking(sock->socket, false, sock);
-		if (UNEXPECTED(EG(exception) != NULL)) {
+		if (UNEXPECTED(!network_async_set_socket_blocking(sock->socket, false, sock))) {
 			return -1;
 		}
 	}

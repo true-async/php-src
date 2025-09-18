@@ -63,17 +63,17 @@ static zend_always_inline zend_ulong poll2_events_to_async(const short events);
  * @param blocking
  * @param sock_data
  */
-void network_async_set_socket_blocking(php_socket_t socket, bool blocking, php_netstream_data_t *sock_data)
+bool network_async_set_socket_blocking(php_socket_t socket, bool blocking, php_netstream_data_t *sock_data)
 {
 	// Optimization: avoid redundant system calls if the socket is already in the desired mode
 	if (sock_data != NULL) {
 		if (!blocking && sock_data->nonblocking_applied) {
 			// Already in non-blocking mode, skip system call
-			return;
+			return true;
 		}
 		if (blocking && !sock_data->nonblocking_applied) {
 			// Already in blocking mode, skip system call
-			return;
+			return true;
 		}
 	}
 
@@ -86,7 +86,7 @@ void network_async_set_socket_blocking(php_socket_t socket, bool blocking, php_n
 			ZEND_ASYNC_EXCEPTION_DEFAULT,
 			"ioctlsocket(FIONBIO) failed (WSA error %d)", err
 		);
-		return;
+		return false;
 	}
 #else
 	int flags = fcntl(socket, F_GETFL, 0);
@@ -97,7 +97,7 @@ void network_async_set_socket_blocking(php_socket_t socket, bool blocking, php_n
 			"fcntl(F_GETFL) failed: %s", strerror(errno)
 		);
 
-		return;
+		return false;
 	}
 
 	int new_flags = blocking ? (flags & ~O_NONBLOCK) : (flags | O_NONBLOCK);
@@ -107,7 +107,7 @@ void network_async_set_socket_blocking(php_socket_t socket, bool blocking, php_n
 			ZEND_ASYNC_EXCEPTION_DEFAULT,
 			"fcntl(F_SETFL) failed: %s", strerror(errno)
 		);
-		return;
+		return false;
 	}
 #endif
 
@@ -115,6 +115,8 @@ void network_async_set_socket_blocking(php_socket_t socket, bool blocking, php_n
 	if (sock_data != NULL) {
 		sock_data->nonblocking_applied = !blocking;
 	}
+
+	return true;
 }
 
 bool network_async_ensure_socket_nonblocking(php_socket_t socket)
@@ -1142,8 +1144,7 @@ ZEND_API php_socket_t network_async_accept_incoming(php_netstream_data_t *netdat
 
 	// Ensure socket is in non-blocking mode for async operations
 	if (netdata->is_blocked && !netdata->nonblocking_applied) {
-		network_async_set_socket_blocking(netdata->socket, false, netdata);
-		if (UNEXPECTED(EG(exception) != NULL)) {
+		if (UNEXPECTED(!network_async_set_socket_blocking(netdata->socket, false, netdata))) {
 			goto return_error;
 		}
 	}
