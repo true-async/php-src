@@ -236,7 +236,7 @@ static void socket_await_callback_resolve(
  * @param timeout   Timeout as struct timeval* (NULL for infinite)
  * @return          1 if events occurred, 0 on timeout, -1 on error
  */
-ZEND_API int network_async_await_stream_socket(php_netstream_data_t *netdata, short events, struct timeval *timeout)
+ZEND_API int network_async_await_stream_socket(php_netstream_data_t *netdata, async_poll_event events, struct timeval *timeout)
 {
 	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 

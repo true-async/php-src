@@ -348,27 +348,37 @@ static int php_sockop_stat(php_stream *stream, php_stream_statbuf *ssb)
 #endif
 }
 
-static inline int sock_sendto(php_netstream_data_t *sock, const char *buf, size_t buflen, int flags,
-		struct sockaddr *addr, socklen_t addrlen
-		)
+static inline int sock_async_poll(php_netstream_data_t *sock, async_poll_event poll_events)
 {
-	int ret;
-
-	if (ZEND_ASYNC_IS_ACTIVE && sock && sock->is_blocked && !sock->nonblocking_applied) {
+	if (UNEXPECTED(sock->is_blocked && !sock->nonblocking_applied && ZEND_ASYNC_IS_ACTIVE)) {
 		network_async_set_socket_blocking(sock->socket, false, sock);
 		if (UNEXPECTED(EG(exception) != NULL)) {
 			return -1;
 		}
 	}
 
-	/* Poll-first approach for writes - wait for socket writability */
-	if (sock && sock->is_blocked && ZEND_ASYNC_IS_ACTIVE) {
+	if (sock->is_blocked && ZEND_ASYNC_IS_ACTIVE) {
 		struct timeval *timeout = (sock->timeout.tv_sec == -1) ? NULL : &sock->timeout;
-		int poll_result = network_async_await_stream_socket(sock, POLLOUT, timeout);
-		if (poll_result <= 0) {
-			/* Timeout or error during poll */
+		int poll_result = network_async_await_stream_socket(sock, poll_events, timeout);
+
+		if (UNEXPECTED(poll_result <= 0)) {
 			return poll_result;
 		}
+	}
+
+	return 1; /* ready to proceed */
+}
+
+static inline int sock_sendto(php_netstream_data_t *sock, const char *buf, size_t buflen, int flags,
+		struct sockaddr *addr, socklen_t addrlen
+		)
+{
+	int ret;
+
+	/* Setup async and poll for writability */
+	ret = sock_async_poll(sock, POLLOUT);
+	if (UNEXPECTED(ret <= 0)) {
+		return ret;
 	}
 
 	if (addr) {
@@ -391,21 +401,10 @@ static inline int sock_recvfrom(php_netstream_data_t *sock, char *buf, size_t bu
 	int ret;
 	int want_addr = textaddr || addr;
 
-	if (ZEND_ASYNC_IS_ACTIVE && sock && sock->is_blocked && !sock->nonblocking_applied) {
-		network_async_set_socket_blocking(sock->socket, false, sock);
-		if (UNEXPECTED(EG(exception) != NULL)) {
-			return -1;
-		}
-	}
-
-	/* Poll-first approach for reads - wait for data availability */
-	if (sock && sock->is_blocked && ZEND_ASYNC_IS_ACTIVE) {
-		struct timeval *timeout = (sock->timeout.tv_sec == -1) ? NULL : &sock->timeout;
-		int poll_result = network_async_await_stream_socket(sock, PHP_POLLREADABLE, timeout);
-		if (poll_result <= 0) {
-			/* Timeout or error during poll */
-			return poll_result;
-		}
+	/* Setup async and poll for readability */
+	ret = sock_async_poll(sock, PHP_POLLREADABLE);
+	if (UNEXPECTED(ret <= 0)) {
+		return ret;
 	}
 
 	if (want_addr) {
