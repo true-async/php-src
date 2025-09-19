@@ -288,7 +288,7 @@ ZEND_API int network_async_await_stream_socket(php_netstream_data_t *netdata, as
 		return -1;
 	}
 
-	// Initialize result counter to 0 (will be set to 1 on event)
+	// Initialize result counter to 0 (timeout by default)
 	ZVAL_LONG(&coroutine->waker->result, 0);
 
 	// Suspend until event or timeout
@@ -303,7 +303,11 @@ ZEND_API int network_async_await_stream_socket(php_netstream_data_t *netdata, as
 	const int result = Z_LVAL(coroutine->waker->result);
 	zend_async_waker_clean(coroutine);
 
-	return result > 0 ? 1 : 0;
+	// Return appropriate values:
+	// 1 = socket event occurred (success)
+	// 0 = timeout occurred
+	// -1 = error (handled above for exceptions)
+	return result;
 }
 ///////////////////////////////////////////////////////////////
 /// Poll2 Emulation for Async Context

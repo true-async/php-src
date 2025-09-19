@@ -365,13 +365,8 @@ static inline int sock_async_poll(php_netstream_data_t *sock, async_poll_event p
 
 	if (UNEXPECTED(poll_result <= 0)) {
 		if (poll_result == 0 && timeout) {
-			php_error_docref(NULL, E_WARNING, "Socket operation timed out after %ld.%06ld seconds",
-				(long)timeout->tv_sec, (long)timeout->tv_usec);
-
 			sock->timeout_event = true;
-			return -1;
 		}
-
 		return poll_result;
 	}
 
