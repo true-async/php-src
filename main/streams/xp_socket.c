@@ -349,19 +349,30 @@ static int php_sockop_stat(php_stream *stream, php_stream_statbuf *ssb)
 
 static inline int sock_async_poll(php_netstream_data_t *sock, async_poll_event poll_events)
 {
-	if (UNEXPECTED(sock->is_blocked && !sock->nonblocking_applied && ZEND_ASYNC_IS_ACTIVE)) {
+	if (!sock->is_blocked || !ZEND_ASYNC_IS_ACTIVE) {
+		return 1; /* nothing to do */
+	}
+
+	if (UNEXPECTED(!sock->nonblocking_applied)) {
 		if (UNEXPECTED(!network_async_set_socket_blocking(sock->socket, false, sock))) {
 			return -1;
 		}
 	}
 
-	if (sock->is_blocked && ZEND_ASYNC_IS_ACTIVE) {
-		struct timeval *timeout = (sock->timeout.tv_sec == -1) ? NULL : &sock->timeout;
-		int poll_result = network_async_await_stream_socket(sock, poll_events, timeout);
+	struct timeval *timeout = (sock->timeout.tv_sec == -1) ? NULL : &sock->timeout;
 
-		if (UNEXPECTED(poll_result <= 0)) {
-			return poll_result;
+	const int poll_result = network_async_await_stream_socket(sock, poll_events, timeout);
+
+	if (UNEXPECTED(poll_result <= 0)) {
+		if (poll_result == 0 && timeout) {
+			php_error_docref(NULL, E_WARNING, "Socket operation timed out after %ld.%06ld seconds",
+				(long)timeout->tv_sec, (long)timeout->tv_usec);
+
+			sock->timeout_event = true;
+			return -1;
 		}
+
+		return poll_result;
 	}
 
 	return 1; /* ready to proceed */
