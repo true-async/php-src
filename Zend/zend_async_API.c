@@ -771,13 +771,10 @@ ZEND_API void zend_async_resume_when(zend_coroutine_t *coroutine, zend_async_eve
 		const bool trans_event, zend_async_event_callback_fn callback,
 		zend_coroutine_event_callback_t *event_callback)
 {
-	zend_exception_save();
-
 	bool callback_should_dispose = false;
 
 	if (UNEXPECTED(ZEND_ASYNC_EVENT_IS_CLOSED(event))) {
 		zend_throw_error(NULL, "The event cannot be used after it has been terminated");
-		zend_exception_restore();
 		return;
 	}
 
@@ -788,7 +785,6 @@ ZEND_API void zend_async_resume_when(zend_coroutine_t *coroutine, zend_async_eve
 			event->dispose(event);
 		}
 
-		zend_exception_restore();
 		return;
 	}
 
@@ -829,7 +825,6 @@ ZEND_API void zend_async_resume_when(zend_coroutine_t *coroutine, zend_async_eve
 			event->dispose(event);
 		}
 
-		zend_exception_restore();
 		return;
 	}
 
@@ -877,8 +872,6 @@ ZEND_API void zend_async_resume_when(zend_coroutine_t *coroutine, zend_async_eve
 			}
 		}
 	}
-
-	zend_exception_restore();
 }
 
 ZEND_API void zend_async_waker_callback_resolve(zend_async_event_t *event,
