@@ -432,7 +432,7 @@ ZEND_API zend_async_event_callback_t *zend_async_event_callback_new(
 	zend_async_event_callback_t *event_callback
 			= ecalloc(1, size != 0 ? size : sizeof(zend_async_event_callback_t));
 
-	event_callback->ref_count = 1;
+	event_callback->ref_count = 0;
 	event_callback->callback = callback;
 	event_callback->dispose = event_callback_dispose;
 
