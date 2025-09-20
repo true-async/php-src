@@ -529,7 +529,7 @@ ZEND_API int php_poll2_async(php_pollfd *ufds, unsigned int nfds, int timeout)
 		// so it can update the revents field when the event occurs.
 		poll_callback_t * callback = ecalloc(1, sizeof(poll_callback_t));
 		callback->callback.coroutine = coroutine;
-		callback->callback.base.ref_count = 1;
+		callback->callback.base.ref_count = 0;
 		callback->callback.base.callback = poll_callback_resolve;
 		callback->ufd = &ufds[i];
 
@@ -746,7 +746,7 @@ ZEND_API int php_select_async(php_socket_t max_fd, fd_set *rfds, fd_set *wfds, f
 
 		select_callback_t * callback = ecalloc(1, sizeof(select_callback_t));
 		callback->callback.coroutine = coroutine;
-		callback->callback.base.ref_count = 1;
+		callback->callback.base.ref_count = 0;
 		callback->callback.base.callback = select_callback_resolve;
 		callback->fd = i;
 		callback->rfds = &aread;
@@ -952,7 +952,7 @@ static zend_always_inline bool process_stream_array(
 
 		async_stream_callback_t *callback = ecalloc(1, sizeof(async_stream_callback_t));
 		callback->callback.coroutine = coroutine;
-		callback->callback.base.ref_count = 1;
+		callback->callback.base.ref_count = 0;
 		callback->callback.base.callback = async_stream_callback_resolve;
 		callback->stream = stream;
 		callback->event = poll_event;
@@ -1419,6 +1419,8 @@ static void dns_nameinfo_callback_resolve(
 
 		if (dns_callback->hostname_result != NULL) {
 			*(dns_callback->hostname_result) = dns_event->hostname;
+			// Should be free by the caller using zend_string_release (php_network_gethostbyaddr_async)
+			zend_string_addref(dns_event->hostname);
 		}
 
 		ZVAL_TRUE(&coroutine->waker->result);
@@ -1456,7 +1458,7 @@ ZEND_API int php_network_getaddrinfo_async(const char *node, const char *service
 
 	dns_callback_t *callback = ecalloc(1, sizeof(dns_callback_t));
 	callback->callback.coroutine = coroutine;
-	callback->callback.base.ref_count = 1;
+	callback->callback.base.ref_count = 0;
 	callback->callback.base.callback = dns_callback_resolve;
 	callback->result = res;
 
@@ -1639,7 +1641,7 @@ ZEND_API zend_string* php_network_gethostbyaddr_async(const char *ip)
 	zend_string *hostname_result = NULL;
 	dns_callback_t *callback = ecalloc(1, sizeof(dns_callback_t));
 	callback->callback.coroutine = coroutine;
-	callback->callback.base.ref_count = 1;
+	callback->callback.base.ref_count = 0;
 	callback->callback.base.callback = dns_nameinfo_callback_resolve;
 	callback->hostname_result = &hostname_result;
 
@@ -1659,16 +1661,16 @@ ZEND_API zend_string* php_network_gethostbyaddr_async(const char *ip)
 
 	IF_EXCEPTION_GOTO_ERROR;
 
-	if (hostname_result != NULL) {
-		zend_string_addref(hostname_result);
-	}
-
 	if (Z_TYPE(coroutine->waker->result) == IS_TRUE) {
 		zend_async_waker_clean(coroutine);
 		return hostname_result;
 	}
 
 error:
+	if (hostname_result != NULL) {
+		zend_string_release(hostname_result);
+	}
+
 	zend_async_waker_clean(coroutine);
 	dns_handle_exception_and_errno();
 	return NULL;

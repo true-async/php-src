@@ -674,6 +674,7 @@ static zend_always_inline void zend_async_callbacks_push(
 				vector->data, vector->capacity, sizeof(zend_async_event_callback_t *), 0);
 	}
 
+	callback->ref_count++;
 	vector->data[vector->length++] = callback;
 }
 
