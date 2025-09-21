@@ -297,6 +297,11 @@ static bool php_accept_connect(php_socket *in_sock, php_socket *out_sock, struct
 		flags |= SOCK_NONBLOCK;
 	}
 
+	/*
+	 * This code requires optimization:
+	 * Caching the POLL descriptor
+	 * Properly setting the socket to non-blocking mode, with fewer calls
+	*/
 	if (in_sock->blocking && ZEND_ASYNC_IS_ACTIVE && network_async_ensure_socket_nonblocking(in_sock->bsd_socket)) {
 		out_sock->bsd_socket = accept4(in_sock->bsd_socket, la, la_len, flags);
 
@@ -2167,7 +2172,7 @@ PHP_FUNCTION(socket_sendto)
 				RETURN_THROWS();
 			}
 
-			memset(&sll, 0, sizeof(sll));			
+			memset(&sll, 0, sizeof(sll));
 			sll.sll_family = AF_PACKET;
 			sll.sll_ifindex = port;
 
