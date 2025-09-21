@@ -3339,6 +3339,13 @@ const CURLINFO_PROXY_ERROR = UNKNOWN;
  * @cvalue CURLOPT_SSL_EC_CURVES
  */
 const CURLOPT_SSL_EC_CURVES = UNKNOWN;
+#if LIBCURL_VERSION_NUM >= 0x080e00 /* Available since 8.14.0 */
+/**
+ * @var int
+ * @cvalue CURLOPT_SSL_SIGNATURE_ALGORITHMS
+ */
+const CURLOPT_SSL_SIGNATURE_ALGORITHMS = UNKNOWN;
+#endif
 /**
  * @var int
  * @cvalue CURLPX_BAD_ADDRESS_TYPE
@@ -3733,6 +3740,7 @@ final class CurlSharePersistentHandle
     public readonly array $options;
 }
 
+#[\Deprecated(since: '8.5', message: "as it has no effect since PHP 8.0")]
 function curl_close(CurlHandle $handle): void {}
 
 /** @refcount 1 */
@@ -3803,6 +3811,7 @@ function curl_setopt_array(CurlHandle $handle, array $options): bool {}
 
 function curl_setopt(CurlHandle $handle, int $option, mixed $value): bool {}
 
+#[\Deprecated(since: '8.5', message: "as it has no effect since PHP 8.0")]
 function curl_share_close(CurlShareHandle $share_handle): void {}
 
 function curl_share_errno(CurlShareHandle $share_handle): int {}

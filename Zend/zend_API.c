@@ -1520,6 +1520,9 @@ ZEND_API zend_result zend_update_class_constant(zend_class_constant *c, const ze
 	zval_ptr_dtor(&c->value);
 	ZVAL_COPY_VALUE(&c->value, &tmp);
 
+	/* may not return SUCCESS in case of an exception,
+	 * should've returned FAILURE in zval_update_constant_ex! */
+	ZEND_ASSERT(!EG(exception));
 	return SUCCESS;
 }
 
@@ -1766,6 +1769,14 @@ ZEND_API void object_properties_load(zend_object *object, HashTable *properties)
 				property_info &&
 				(property_info->flags & ZEND_ACC_STATIC) == 0) {
 				zval *slot = OBJ_PROP(object, property_info->offset);
+				if (UNEXPECTED((property_info->flags & ZEND_ACC_READONLY) && !Z_ISUNDEF_P(slot))) {
+					if (Z_PROP_FLAG_P(slot) & IS_PROP_REINITABLE) {
+						Z_PROP_FLAG_P(slot) &= ~IS_PROP_REINITABLE;
+					} else {
+						zend_readonly_property_modification_error(property_info);
+						return;
+					}
+				}
 				zval_ptr_dtor(slot);
 				ZVAL_COPY_VALUE(slot, prop);
 				zval_add_ref(slot);
@@ -3692,77 +3703,6 @@ ZEND_API void zend_disable_functions(const char *function_list) /* {{{ */
 }
 /* }}} */
 
-#ifdef ZEND_WIN32
-#pragma optimize("", off)
-#endif
-static ZEND_COLD zend_object *display_disabled_class(zend_class_entry *class_type) /* {{{ */
-{
-	zend_object *intern;
-
-	intern = zend_objects_new(class_type);
-
-	/* Initialize default properties */
-	if (EXPECTED(class_type->default_properties_count != 0)) {
-		zval *p = intern->properties_table;
-		zval *end = p + class_type->default_properties_count;
-		do {
-			ZVAL_UNDEF(p);
-			p++;
-		} while (p != end);
-	}
-
-	zend_error(E_WARNING, "%s() has been disabled for security reasons", ZSTR_VAL(class_type->name));
-	return intern;
-}
-#ifdef ZEND_WIN32
-#pragma optimize("", on)
-#endif
-/* }}} */
-
-static const zend_function_entry disabled_class_new[] = {
-	ZEND_FE_END
-};
-
-ZEND_API zend_result zend_disable_class(const char *class_name, size_t class_name_length) /* {{{ */
-{
-	zend_class_entry *disabled_class;
-	zend_string *key;
-	zend_function *fn;
-	zend_property_info *prop;
-
-	key = zend_string_alloc(class_name_length, 0);
-	zend_str_tolower_copy(ZSTR_VAL(key), class_name, class_name_length);
-	disabled_class = zend_hash_find_ptr(CG(class_table), key);
-	zend_string_release_ex(key, 0);
-	if (!disabled_class) {
-		return FAILURE;
-	}
-
-	/* Will be reset by INIT_CLASS_ENTRY. */
-	free(disabled_class->interfaces);
-
-	INIT_CLASS_ENTRY_INIT_METHODS((*disabled_class), disabled_class_new);
-	disabled_class->create_object = display_disabled_class;
-
-	ZEND_HASH_MAP_FOREACH_PTR(&disabled_class->function_table, fn) {
-		if ((fn->common.fn_flags & (ZEND_ACC_HAS_RETURN_TYPE|ZEND_ACC_HAS_TYPE_HINTS)) &&
-			fn->common.scope == disabled_class) {
-			zend_free_internal_arg_info(&fn->internal_function);
-		}
-	} ZEND_HASH_FOREACH_END();
-	zend_hash_clean(&disabled_class->function_table);
-	ZEND_HASH_MAP_FOREACH_PTR(&disabled_class->properties_info, prop) {
-		if (prop->ce == disabled_class) {
-			zend_string_release(prop->name);
-			zend_type_release(prop->type, /* persistent */ 1);
-			free(prop);
-		}
-	} ZEND_HASH_FOREACH_END();
-	zend_hash_clean(&disabled_class->properties_info);
-	return SUCCESS;
-}
-/* }}} */
-
 static zend_always_inline zend_class_entry *get_scope(zend_execute_data *frame)
 {
 	return frame && frame->func ? frame->func->common.scope : NULL;
@@ -3770,7 +3710,7 @@ static zend_always_inline zend_class_entry *get_scope(zend_execute_data *frame)
 
 static bool zend_is_callable_check_class(zend_string *name, zend_class_entry *scope, zend_execute_data *frame, zend_fcall_info_cache *fcc, bool *strict_class, char **error, bool suppress_deprecation) /* {{{ */
 {
-	bool ret = 0;
+	bool ret = false;
 	zend_class_entry *ce;
 	size_t name_len = ZSTR_LEN(name);
 	zend_string *lcname;
@@ -3795,7 +3735,7 @@ static bool zend_is_callable_check_class(zend_string *name, zend_class_entry *sc
 			if (!fcc->object) {
 				fcc->object = zend_get_this_object(frame);
 			}
-			ret = 1;
+			ret = true;
 		}
 	} else if (zend_string_equals(lcname, ZSTR_KNOWN(ZEND_STR_PARENT))) {
 		if (!scope) {
@@ -3815,7 +3755,7 @@ static bool zend_is_callable_check_class(zend_string *name, zend_class_entry *sc
 				fcc->object = zend_get_this_object(frame);
 			}
 			*strict_class = 1;
-			ret = 1;
+			ret = true;
 		}
 	} else if (zend_string_equals(lcname, ZSTR_KNOWN(ZEND_STR_STATIC))) {
 		zend_class_entry *called_scope = zend_get_called_scope(frame);
@@ -3832,7 +3772,7 @@ static bool zend_is_callable_check_class(zend_string *name, zend_class_entry *sc
 				fcc->object = zend_get_this_object(frame);
 			}
 			*strict_class = 1;
-			ret = 1;
+			ret = true;
 		}
 	} else if ((ce = zend_lookup_class(name)) != NULL) {
 		zend_class_entry *scope = get_scope(frame);
@@ -3852,7 +3792,7 @@ static bool zend_is_callable_check_class(zend_string *name, zend_class_entry *sc
 			fcc->called_scope = fcc->object ? fcc->object->ce : ce;
 		}
 		*strict_class = 1;
-		ret = 1;
+		ret = true;
 	} else {
 		if (error) zend_spprintf(error, 0, "class \"%.*s\" not found", (int)name_len, ZSTR_VAL(name));
 	}

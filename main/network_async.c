@@ -17,6 +17,28 @@
 #include <Zend/zend_async_API.h>
 #include <Zend/zend_exceptions.h>
 
+// Definitions from network.c needed for async functions
+#ifdef PHP_WIN32
+# define SOCK_ERR INVALID_SOCKET
+# define SOCK_CONN_ERR SOCKET_ERROR
+# define PHP_TIMEOUT_ERROR_VALUE		WSAETIMEDOUT
+typedef u_long php_non_blocking_flags_t;
+#  define SET_SOCKET_BLOCKING_MODE(sock, save) \
+	save = TRUE; ioctlsocket(sock, FIONBIO, &save)
+#  define RESTORE_SOCKET_BLOCKING_MODE(sock, save) \
+	ioctlsocket(sock, FIONBIO, &save)
+#else
+# define SOCK_ERR -1
+# define SOCK_CONN_ERR -1
+# define PHP_TIMEOUT_ERROR_VALUE		ETIMEDOUT
+typedef int php_non_blocking_flags_t;
+#  define SET_SOCKET_BLOCKING_MODE(sock, save) \
+	 save = fcntl(sock, F_GETFL, 0); \
+	 fcntl(sock, F_SETFL, save | O_NONBLOCK)
+#  define RESTORE_SOCKET_BLOCKING_MODE(sock, save) \
+	 fcntl(sock, F_SETFL, save)
+#endif
+
 #ifdef PHP_WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -30,14 +52,31 @@
 #include <arpa/inet.h>
 #endif
 
+static zend_always_inline void handle_exception_and_errno(void);
+static zend_always_inline zend_ulong poll2_events_to_async(const short events);
+
 /**
  * Sets a socket to blocking (true) or non-blocking (false) mode.
+ * Optimized to avoid redundant fcntl() calls by tracking the actual socket state.
  *
  * @param socket
  * @param blocking
+ * @param sock_data
  */
-void network_async_set_socket_blocking(php_socket_t socket, bool blocking)
+bool network_async_set_socket_blocking(php_socket_t socket, bool blocking, php_netstream_data_t *sock_data)
 {
+	// Optimization: avoid redundant system calls if the socket is already in the desired mode
+	if (sock_data != NULL) {
+		if (!blocking && sock_data->nonblocking_applied) {
+			// Already in non-blocking mode, skip system call
+			return true;
+		}
+		if (blocking && !sock_data->nonblocking_applied) {
+			// Already in blocking mode, skip system call
+			return true;
+		}
+	}
+
 #ifdef PHP_WIN32
 	u_long mode = blocking ? 0 : 1;
 
@@ -47,6 +86,7 @@ void network_async_set_socket_blocking(php_socket_t socket, bool blocking)
 			ZEND_ASYNC_EXCEPTION_DEFAULT,
 			"ioctlsocket(FIONBIO) failed (WSA error %d)", err
 		);
+		return false;
 	}
 #else
 	int flags = fcntl(socket, F_GETFL, 0);
@@ -57,7 +97,7 @@ void network_async_set_socket_blocking(php_socket_t socket, bool blocking)
 			"fcntl(F_GETFL) failed: %s", strerror(errno)
 		);
 
-		return;
+		return false;
 	}
 
 	int new_flags = blocking ? (flags & ~O_NONBLOCK) : (flags | O_NONBLOCK);
@@ -67,8 +107,16 @@ void network_async_set_socket_blocking(php_socket_t socket, bool blocking)
 			ZEND_ASYNC_EXCEPTION_DEFAULT,
 			"fcntl(F_SETFL) failed: %s", strerror(errno)
 		);
+		return false;
 	}
 #endif
+
+	// Update the flag to reflect the actual socket state
+	if (sock_data != NULL) {
+		sock_data->nonblocking_applied = !blocking;
+	}
+
+	return true;
 }
 
 bool network_async_ensure_socket_nonblocking(php_socket_t socket)
@@ -148,6 +196,118 @@ void network_async_wait_socket(php_socket_t socket, const zend_ulong events, con
 
 cleanup:
 	zend_async_waker_clean(coroutine);
+}
+
+///////////////////////////////////////////////////////////////
+/// Single Socket Async Await Implementation
+///////////////////////////////////////////////////////////////
+
+typedef struct
+{
+	zend_coroutine_event_callback_t callback;
+} socket_await_callback_t;
+
+static void socket_await_callback_resolve(
+	zend_async_event_t *event, zend_async_event_callback_t *callback, void *result, zend_object *exception
+)
+{
+	zend_coroutine_t *coroutine = ((zend_coroutine_event_callback_t *) callback)->coroutine;
+
+	if (UNEXPECTED(exception != NULL)) {
+		ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(event);
+		ZEND_ASYNC_RESUME_WITH_ERROR(coroutine, exception, false);
+		return;
+	}
+
+	if (EXPECTED(coroutine->waker != NULL)) {
+		// Simply set result to 1 (event occurred)
+		ZVAL_LONG(&coroutine->waker->result, 1);
+	}
+
+	ZEND_ASYNC_RESUME_WITH_ERROR(coroutine, exception, false);
+}
+
+/**
+ * Asynchronous await for single socket stream with reusable event handle.
+ *
+ * This function provides optimized async I/O waiting for a single socket stream by using
+ * the unified php_stream_set_option approach for event handle management.
+ *
+ * @param netdata   Network stream data structure
+ * @param events    Poll events (POLLIN, POLLOUT, etc.)
+ * @param timeout   Timeout as struct timeval* (NULL for infinite)
+ * @return          1 if events occurred, 0 on timeout, -1 on error
+ */
+ZEND_API int network_async_await_stream_socket(php_netstream_data_t *netdata, async_poll_event events, struct timeval *timeout)
+{
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+
+	if (UNEXPECTED(coroutine == NULL)) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	if (UNEXPECTED(netdata == NULL)) {
+		errno = EBADF;
+		return -1;
+	}
+
+	zend_ulong async_events = poll2_events_to_async(events);
+	zend_async_poll_proxy_t *poll_event = php_netstream_get_async_event(netdata, async_events);
+
+	if (UNEXPECTED(poll_event == NULL)) {
+		handle_exception_and_errno();
+		return -1;
+	}
+
+	// Convert timeval timeout to milliseconds for async waker
+	zend_ulong timeout_ms = 0;  // 0 means infinite timeout for async waker
+	if (timeout != NULL) {
+		timeout_ms = timeout->tv_sec * 1000 + timeout->tv_usec / 1000;
+	}
+
+	// Initialize waker with timeout
+	zend_async_waker_new_with_timeout(coroutine, timeout_ms, NULL);
+	if (UNEXPECTED(EG(exception) != NULL)) {
+		handle_exception_and_errno();
+		return -1;
+	}
+
+	// Register the event
+	zend_async_resume_when(
+		coroutine,
+		&poll_event->base,
+		false,
+		socket_await_callback_resolve,
+		NULL
+	);
+
+	if (UNEXPECTED(EG(exception) != NULL)) {
+		zend_async_waker_clean(coroutine);
+		handle_exception_and_errno();
+		return -1;
+	}
+
+	// Initialize result counter to 0 (timeout by default)
+	ZVAL_LONG(&coroutine->waker->result, 0);
+
+	// Suspend until event or timeout
+	ZEND_ASYNC_SUSPEND();
+
+	if (UNEXPECTED(EG(exception) != NULL)) {
+		zend_async_waker_clean(coroutine);
+		handle_exception_and_errno();
+		return -1;
+	}
+
+	const int result = Z_LVAL(coroutine->waker->result);
+	zend_async_waker_clean(coroutine);
+
+	// Return appropriate values:
+	// 1 = socket event occurred (success)
+	// 0 = timeout occurred
+	// -1 = error (handled above for exceptions)
+	return result;
 }
 ///////////////////////////////////////////////////////////////
 /// Poll2 Emulation for Async Context
@@ -369,7 +529,7 @@ ZEND_API int php_poll2_async(php_pollfd *ufds, unsigned int nfds, int timeout)
 		// so it can update the revents field when the event occurs.
 		poll_callback_t * callback = ecalloc(1, sizeof(poll_callback_t));
 		callback->callback.coroutine = coroutine;
-		callback->callback.base.ref_count = 1;
+		callback->callback.base.ref_count = 0;
 		callback->callback.base.callback = poll_callback_resolve;
 		callback->ufd = &ufds[i];
 
@@ -586,7 +746,7 @@ ZEND_API int php_select_async(php_socket_t max_fd, fd_set *rfds, fd_set *wfds, f
 
 		select_callback_t * callback = ecalloc(1, sizeof(select_callback_t));
 		callback->callback.coroutine = coroutine;
-		callback->callback.base.ref_count = 1;
+		callback->callback.base.ref_count = 0;
 		callback->callback.base.callback = select_callback_resolve;
 		callback->fd = i;
 		callback->rfds = &aread;
@@ -640,8 +800,521 @@ cleanup:
 }
 
 ///////////////////////////////////////////////////////////////
+/// Optimized Async Select for Stream Arrays
+///////////////////////////////////////////////////////////////
+
+typedef struct async_stream_callback_s {
+	zend_coroutine_event_callback_t callback;
+	php_stream *stream;
+	zend_async_poll_event_t *event;
+	async_poll_event events;
+	zval key;  // Original array key (string or numeric)
+	zval *read_streams;   // Reference to read streams result array
+	zval *write_streams;  // Reference to write streams result array
+	zval *except_streams; // Reference to except streams result array
+	zend_async_event_callback_dispose_fn prev_dispose;
+} async_stream_callback_t;
+
+/**
+ * Custom dispose function to clean up stream references and keys.
+ */
+static void async_stream_callback_dispose(zend_async_event_callback_t *base, zend_async_event_t *event)
+{
+	async_stream_callback_t *callback = (async_stream_callback_t *)base;
+
+	if (callback->prev_dispose) {
+		zval_ptr_dtor(&callback->key);
+		ZVAL_UNDEF(&callback->key);
+
+		// Release php stream reference
+		if (callback->stream) {
+			zval z_stream;
+			php_stream_to_zval(callback->stream, &z_stream);
+			callback->stream = NULL;
+			zval_ptr_dtor(&z_stream);
+		}
+
+		callback->prev_dispose(base, event);
+	} else {
+		return;
+	}
+}
+
+static zend_always_inline void add_stream_to_array(zval *array, zval *key, zval *stream_zval)
+{
+	if (array == NULL) {
+		return;
+	}
+
+	if (Z_REFCOUNT_P(array) > 1) {
+		SEPARATE_ARRAY(array);
+	}
+
+	zval *destination = NULL;
+
+	if (Z_TYPE_P(key) == IS_STRING) {
+		destination = zend_hash_add(Z_ARR_P(array), Z_STR_P(key), stream_zval);
+	} else {
+		destination = zend_hash_index_add(Z_ARR_P(array), Z_LVAL_P(key), stream_zval);
+	}
+
+	if (destination) {
+		zval_add_ref(stream_zval);
+	}
+}
+
+static void async_stream_callback_resolve(
+	zend_async_event_t *event, zend_async_event_callback_t *callback, void *result, zend_object *exception
+)
+{
+	zend_coroutine_t *coroutine = ((zend_coroutine_event_callback_t *)callback)->coroutine;
+
+	if (UNEXPECTED(exception != NULL)) {
+		ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(event);
+		ZEND_ASYNC_RESUME_WITH_ERROR(coroutine, exception, false);
+		return;
+	}
+
+	if (EXPECTED(coroutine->waker != NULL)) {
+		async_stream_callback_t *stream_callback = (async_stream_callback_t *)callback;
+
+		zend_async_poll_proxy_t *poll_event = (zend_async_poll_proxy_t *)event;
+
+		// Immediately add ready stream to appropriate result array with preserved key
+		zval stream_zval;
+		php_stream_to_zval(stream_callback->stream, &stream_zval);
+
+		if (stream_callback->read_streams != NULL && poll_event->triggered_events & ASYNC_READABLE) {
+			add_stream_to_array(stream_callback->read_streams, &stream_callback->key, &stream_zval);
+		}
+
+		if (stream_callback->write_streams != NULL && poll_event->triggered_events & ASYNC_WRITABLE) {
+			add_stream_to_array(stream_callback->write_streams, &stream_callback->key, &stream_zval);
+		}
+
+		if (stream_callback->except_streams != NULL && poll_event->triggered_events & ASYNC_PRIORITIZED) {
+			add_stream_to_array(stream_callback->except_streams, &stream_callback->key, &stream_zval);
+		}
+
+		// Increment total ready count in waker result
+		if (Z_TYPE(coroutine->waker->result) == IS_UNDEF) {
+			ZVAL_LONG(&coroutine->waker->result, 1);
+		} else {
+			Z_LVAL(coroutine->waker->result)++;
+		}
+	}
+
+	ZEND_ASYNC_RESUME(coroutine);
+}
+
+/**
+ * Optimized select() for PHP stream arrays using event reuse
+ */
+static zend_always_inline bool process_stream_array(
+	zval *streams, async_poll_event events, zend_coroutine_t *coroutine,
+	zval *read_streams, zval *write_streams, zval *except_streams, int *result)
+{
+
+	if (streams == NULL || Z_TYPE_P(streams) != IS_ARRAY) {
+		return true;
+	}
+
+	zval *z_stream;
+	php_stream *stream;
+	zend_string *key;
+	zend_ulong num_key;
+
+	ZEND_HASH_FOREACH_KEY_VAL(Z_ARR_P(streams), num_key, key, z_stream) {
+
+		ZVAL_DEREF(z_stream);
+
+		php_stream_from_zval_no_verify(stream, z_stream);
+
+		if (UNEXPECTED(stream == NULL)) {
+			return false;
+		}
+
+		// Try to get async event handle from socket streams first
+		zend_async_poll_event_t *poll_event = NULL;
+
+		php_stream_set_option(
+			stream, PHP_STREAM_OPTION_ASYNC_EVENT_HANDLE, events, &poll_event
+		);
+
+		if (UNEXPECTED(EG(exception))) {
+			*result = -1;
+			return false;
+		} else if (UNEXPECTED(poll_event == NULL)) {
+			zend_throw_error(NULL, "Stream does not support async I/O");
+			*result = -1;
+			return false;
+		}
+
+		async_stream_callback_t *callback = ecalloc(1, sizeof(async_stream_callback_t));
+		callback->callback.coroutine = coroutine;
+		callback->callback.base.ref_count = 0;
+		callback->callback.base.callback = async_stream_callback_resolve;
+		callback->stream = stream;
+		callback->event = poll_event;
+		callback->events = events;
+		// Save references to result arrays
+		callback->read_streams = read_streams;
+		callback->write_streams = write_streams;
+		callback->except_streams = except_streams;
+
+		// Save original array key
+		if (key) {
+			ZVAL_STR_COPY(&callback->key, key);
+		} else {
+			ZVAL_LONG(&callback->key, num_key);
+		}
+
+		zend_async_resume_when(
+			coroutine,
+			&poll_event->base,
+			false,
+			NULL,
+			&callback->callback
+		);
+
+		if (UNEXPECTED(EG(exception))) {
+			callback->callback.base.dispose(&callback->callback.base, NULL);
+			*result = -1;
+			return false;
+		}
+
+		callback->prev_dispose = callback->callback.base.dispose;
+		callback->callback.base.dispose = async_stream_callback_dispose;
+
+		Z_TRY_ADDREF_P(z_stream);
+
+	} ZEND_HASH_FOREACH_END();
+
+	if (Z_REFCOUNT_P(streams) > 1) {
+		SEPARATE_ARRAY(streams);
+	}
+
+	// Now clean up the input array to prepare for results
+	zend_hash_clean(Z_ARR_P(streams));
+
+	return true;
+}
+
+/**
+ * Asynchronous select() implementation for PHP stream arrays in coroutine contexts.
+ *
+ * This function provides an async-compatible version of the standard select()
+ * system call, allowing coroutines to wait for I/O events on multiple PHP streams
+ * without blocking the entire thread.
+ *
+ * @param read_streams   Array of streams to monitor for read events, or NULL if
+ *                       not monitoring for read events. Modified to indicate
+ *                       which streams are ready for reading.
+ * @param write_streams  Array of streams to monitor for write events, or NULL
+ *                       if not monitoring for write events. Modified to indicate
+ *                       which streams are ready for writing.
+ * @param except_streams Array of streams to monitor for exception events, or NULL
+ *                       if not monitoring for exceptions. Modified to indicate
+ *                       which streams have exceptions.
+ * @param tv             Timeout specification, or NULL for infinite timeout.
+ *                       Specifies maximum time to wait for events.
+ *
+ * @return               On success, returns the number of streams that are
+ *                       ready for I/O. Returns 0 if the timeout expired with no
+ *                       events. Returns -1 on error, with errno set appropriately:
+ *                       - EINVAL: Not called from async context or invalid input
+ *                       - ENOMEM: Memory allocation failure
+ *                       - EINTR: Operation interrupted
+ *                       - ECANCELED: Operation was cancelled
+ *                       - ETIMEDOUT: Operation timed out
+ *
+ * @note                 This function can only be called from within an async
+ *                       coroutine context. Calling from regular PHP code will
+ *                       result in EINVAL error.
+ * @note                 The function modifies the input stream arrays to
+ *                       indicate which streams triggered events, similar to
+ *                       the standard select() behavior.
+ *
+ * @see                  select(2), php_poll2_async(), php_select_async()
+ */
+ZEND_API int network_async_stream_select(zval *read_streams, zval *write_streams, zval *except_streams, struct timeval *tv)
+{
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+
+	if (coroutine == NULL) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	int result = 0;
+
+	// Calculate timeout in milliseconds
+	zend_ulong timeout = 0;
+	if (tv != NULL) {
+		timeout = (zend_ulong)tv->tv_sec * 1000 + (zend_ulong)tv->tv_usec / 1000;
+	}
+
+	zend_async_waker_new_with_timeout(coroutine, timeout, NULL);
+	IF_EXCEPTION_GOTO_ERROR;
+
+	// Initialize result counter
+	ZVAL_LONG(&coroutine->waker->result, 0);
+
+	// Process all stream arrays using the helper function
+	if (UNEXPECTED(!process_stream_array(read_streams, ASYNC_READABLE, coroutine, read_streams, write_streams, except_streams, &result))) {
+		goto cleanup;
+	}
+	if (UNEXPECTED(!process_stream_array(write_streams, ASYNC_WRITABLE, coroutine, read_streams, write_streams, except_streams, &result))) {
+		goto cleanup;
+	}
+	if (UNEXPECTED(!process_stream_array(except_streams, ASYNC_PRIORITIZED, coroutine, read_streams, write_streams, except_streams, &result))) {
+		goto cleanup;
+	}
+
+	if (coroutine->waker->events.nNumOfElements == 0) {
+		goto cleanup;
+	}
+
+	// Suspend until events occur or timeout
+	ZEND_ASYNC_SUSPEND();
+	IF_EXCEPTION_GOTO_ERROR;
+
+	// Get result count - arrays are already filled by callbacks
+	result = Z_LVAL(coroutine->waker->result);
+
+	goto cleanup;
+
+error:
+	result = -1;
+	handle_exception_and_errno();
+
+cleanup:
+	// Clean up zval keys in callbacks before waker cleanup
+	if (coroutine->waker != NULL && coroutine->waker->triggered_events != NULL) {
+		async_stream_callback_t *cb;
+		ZEND_HASH_FOREACH_PTR(coroutine->waker->triggered_events, cb) {
+			zval_ptr_dtor(&cb->key);
+		} ZEND_HASH_FOREACH_END();
+	}
+
+	zend_async_waker_clean(coroutine);
+	return result;
+}
+
+///////////////////////////////////////////////////////////////
 /// Select Emulation for Async Context END
 ///////////////////////////////////////////////////////////////
+
+/**
+ * Async version of php_network_accept_incoming
+ * Accepts an incoming connection on a server socket using the modern async system
+ *
+ * @param stream        Server socket stream
+ * @param textaddr      Output: text representation of client address
+ * @param addr          Output: client socket address structure
+ * @param addrlen       Output: length of client address structure
+ * @param timeout       Accept timeout
+ * @param error_string  Output: error message string
+ * @param error_code    Output: error code
+ * @param tcp_nodelay   Whether to set TCP_NODELAY on accepted socket
+ * @return              Client socket fd, or -1 on error
+ */
+ZEND_API php_socket_t network_async_accept_incoming(php_netstream_data_t *netdata,
+		zend_string **textaddr,
+		struct sockaddr **addr,
+		socklen_t *addrlen,
+		struct timeval *timeout,
+		zend_string **error_string,
+		int *error_code,
+		int tcp_nodelay)
+{
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+
+	if (coroutine == NULL) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	if (netdata == NULL) {
+		errno = EBADF;
+		return -1;
+	}
+
+	php_socket_t clisock = -1;
+	int error = 0;
+	php_sockaddr_storage sa;
+	socklen_t sl = sizeof(sa);
+
+
+	// Ensure socket is in non-blocking mode for async operations
+	if (netdata->is_blocked && !netdata->nonblocking_applied) {
+		if (UNEXPECTED(!network_async_set_socket_blocking(netdata->socket, false, netdata))) {
+			goto return_error;
+		}
+	}
+
+	const int events_count = network_async_await_stream_socket(netdata, PHP_POLLREADABLE, timeout);
+
+	if (EXPECTED(events_count > 0)) {
+		// Socket is ready for accept, try again
+		clisock = accept(netdata->socket, (struct sockaddr*)&sa, &sl);
+	} else if (events_count == 0) {
+		error = PHP_TIMEOUT_ERROR_VALUE;
+	} else if (events_count == -1) {
+		error = errno; // errno set by network_async_await_stream_socket
+	}
+
+	// Handle successful accept() (either first try or after waiting)
+	if (ZEND_VALID_SOCKET(clisock)) {
+		php_network_populate_name_from_sockaddr((struct sockaddr*)&sa, sl,
+				textaddr,
+				addr, addrlen);
+
+#ifdef TCP_NODELAY
+		if (tcp_nodelay) {
+			setsockopt(clisock, IPPROTO_TCP, TCP_NODELAY, (char*)&tcp_nodelay, sizeof(tcp_nodelay));
+		}
+#endif
+	} else {
+		error = php_socket_errno();
+	}
+
+return_error:
+
+	if (error_code) {
+		*error_code = error;
+	}
+	if (error_string) {
+		if(EG(exception)) {
+			zval rv;
+			const zval *message =
+					zend_read_property_ex(EG(exception)->ce, EG(exception), zend_known_strings[ZEND_STR_MESSAGE], 0, &rv);
+
+			if (message != NULL && Z_TYPE_P(message) == IS_STRING) {
+				*error_string = Z_STR_P(message);
+			}
+		} else {
+			*error_string = php_socket_error_str(error);
+		}
+	}
+
+	return clisock;
+}
+
+/**
+ * Async version of php_network_connect_socket
+ * Connects to a remote address using the modern async system
+ *
+ * @param stream        Socket stream
+ * @param sockfd        Socket file descriptor (from stream)
+ * @param addr          Remote socket address to connect to
+ * @param addrlen       Length of address structure
+ * @param asynchronous  Whether to make an async connection
+ * @param timeout       Connect timeout
+ * @param error_string  Output: error message string
+ * @param error_code    Output: error code
+ * @return              0 on success, -1 on error
+ */
+ZEND_API int network_async_connect_socket(php_netstream_data_t *netdata, php_socket_t sockfd,
+		const struct sockaddr *addr,
+		socklen_t addrlen,
+		int asynchronous,
+		struct timeval *timeout,
+		zend_string **error_string,
+		int *error_code)
+{
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+
+	if (coroutine == NULL) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	if (netdata == NULL) {
+		errno = EBADF;
+		return -1;
+	}
+
+	php_non_blocking_flags_t orig_flags;
+	int n;
+	int error = 0;
+	socklen_t len;
+	int ret = 0;
+
+	SET_SOCKET_BLOCKING_MODE(sockfd, orig_flags);
+
+	if ((n = connect(sockfd, addr, addrlen)) != 0) {
+		error = php_socket_errno();
+
+		if (error_code) {
+			*error_code = error;
+		}
+
+		if (error != EINPROGRESS) {
+			if (error_string) {
+				*error_string = php_socket_error_str(error);
+			}
+
+			return -1;
+		}
+		if (asynchronous && error == EINPROGRESS) {
+			/* this is fine by us */
+			return 0;
+		}
+	}
+
+	if (n == 0) {
+		goto ok;
+	}
+
+# ifdef PHP_WIN32
+	/* The documentation for connect() says in case of non-blocking connections
+	 * the select function reports success in the writefds set and failure in
+	 * the exceptfds set. Indeed, using PHP_POLLREADABLE results in select
+	 * failing only due to the timeout and not immediately as would be
+	 * expected when a connection is actively refused. This way,
+	 * php_pollfd_for will return a mask with POLLOUT if the connection
+	 * is successful and with POLLPRI otherwise. */
+	int events = POLLOUT|POLLPRI;
+#else
+	int events = PHP_POLLREADABLE|POLLOUT;
+#endif
+
+	// Use the modern async await mechanism instead of php_pollfd_for loop
+	n = network_async_await_stream_socket(netdata, events, timeout);
+
+	if (n < 0) {
+		error = errno;
+		ret = -1;
+	} else if (n == 0) {
+		error = PHP_TIMEOUT_ERROR_VALUE;
+	} else {
+		len = sizeof(error);
+		/* BSD-derived systems set errno correctly.
+		 * Solaris returns -1 from getsockopt in case of error. */
+		if (getsockopt(sockfd, SOL_SOCKET, SO_ERROR, (char*)&error, &len) != 0) {
+			ret = -1;
+		}
+	}
+
+ok:
+	if (!asynchronous) {
+		/* back to blocking mode */
+		RESTORE_SOCKET_BLOCKING_MODE(sockfd, orig_flags);
+	}
+
+	if (error_code) {
+		*error_code = error;
+	}
+
+	if (error) {
+		ret = -1;
+		if (error_string) {
+			*error_string = php_socket_error_str(error);
+		}
+	}
+	return ret;
+}
 
 ///////////////////////////////////////////////////////////////
 /// DNS API Implementation
@@ -746,6 +1419,8 @@ static void dns_nameinfo_callback_resolve(
 
 		if (dns_callback->hostname_result != NULL) {
 			*(dns_callback->hostname_result) = dns_event->hostname;
+			// Should be free by the caller using zend_string_release (php_network_gethostbyaddr_async)
+			zend_string_addref(dns_event->hostname);
 		}
 
 		ZVAL_TRUE(&coroutine->waker->result);
@@ -783,7 +1458,7 @@ ZEND_API int php_network_getaddrinfo_async(const char *node, const char *service
 
 	dns_callback_t *callback = ecalloc(1, sizeof(dns_callback_t));
 	callback->callback.coroutine = coroutine;
-	callback->callback.base.ref_count = 1;
+	callback->callback.base.ref_count = 0;
 	callback->callback.base.callback = dns_callback_resolve;
 	callback->result = res;
 
@@ -867,7 +1542,7 @@ ZEND_API struct hostent* php_network_gethostbyname_async(const char *name)
 	hints.ai_socktype = SOCK_STREAM;
 
 	struct addrinfo *result = NULL;
-	
+
 	if (php_network_getaddrinfo_async(name, NULL, &hints, &result) != 0) {
 		return NULL;
 	}
@@ -966,7 +1641,7 @@ ZEND_API zend_string* php_network_gethostbyaddr_async(const char *ip)
 	zend_string *hostname_result = NULL;
 	dns_callback_t *callback = ecalloc(1, sizeof(dns_callback_t));
 	callback->callback.coroutine = coroutine;
-	callback->callback.base.ref_count = 1;
+	callback->callback.base.ref_count = 0;
 	callback->callback.base.callback = dns_nameinfo_callback_resolve;
 	callback->hostname_result = &hostname_result;
 
@@ -986,16 +1661,16 @@ ZEND_API zend_string* php_network_gethostbyaddr_async(const char *ip)
 
 	IF_EXCEPTION_GOTO_ERROR;
 
-	if (hostname_result != NULL) {
-		zend_string_addref(hostname_result);
-	}
-
 	if (Z_TYPE(coroutine->waker->result) == IS_TRUE) {
 		zend_async_waker_clean(coroutine);
 		return hostname_result;
 	}
 
 error:
+	if (hostname_result != NULL) {
+		zend_string_release(hostname_result);
+	}
+
 	zend_async_waker_clean(coroutine);
 	dns_handle_exception_and_errno();
 	return NULL;
@@ -1003,7 +1678,7 @@ error:
 
 /**
  * Asynchronous network address resolution implementation for coroutine contexts.
- * 
+ *
  * This function resolves a hostname to multiple socket addresses, similar to
  * the standard getaddrinfo() but compatible with the async coroutine system.
  */
@@ -1075,3 +1750,65 @@ ZEND_API int php_network_getaddresses_async(const char *host, int socktype, stru
 ///////////////////////////////////////////////////////////////
 /// DNS API Implementation END
 ///////////////////////////////////////////////////////////////
+
+/**
+ * Get or create async event for php_netstream_data_t.
+ *
+ * This function provides direct access to async events for network streams
+ * without going through the stream layer, avoiding circular dependencies.
+ *
+ * @param netdata   Network stream data structure
+ * @param events    Event mask (ASYNC_READABLE, ASYNC_WRITABLE, etc.)
+ * @return          Poll-proxy event handle, or NULL on error
+ */
+ZEND_API zend_async_poll_proxy_t* php_netstream_get_async_event(php_netstream_data_t *netdata, async_poll_event events)
+{
+	ZEND_ASSERT(netdata != NULL && "netdata must not be NULL");
+
+	// Create base poll event if needed
+	if (netdata->poll_event == NULL) {
+		netdata->poll_event = ZEND_ASYNC_NEW_SOCKET_EVENT(netdata->socket, 0);
+		if (UNEXPECTED(netdata->poll_event == NULL)) {
+			return NULL;
+		}
+
+		// Start the event immediately for efficiency
+		if (netdata->poll_event) {
+			netdata->poll_event->base.start(&netdata->poll_event->base);
+			if (UNEXPECTED(EG(exception) != NULL)) {
+				return NULL;
+			}
+		}
+	}
+
+	// Mask of events covered by read_event (PHP_POLLREADABLE)
+	#define READ_EVENT_MASK (ASYNC_READABLE | ASYNC_DISCONNECT)
+
+	// Return cached read event if it matches
+	if (netdata->read_event && (events & READ_EVENT_MASK) == events) {
+		return netdata->read_event;
+	}
+
+	// Return cached write event if it matches
+	if (netdata->write_event && events == ASYNC_WRITABLE) {
+		return netdata->write_event;
+	}
+
+	// Create new proxy for any events
+	zend_async_poll_proxy_t *proxy = ZEND_ASYNC_NEW_POLL_PROXY_EVENT(netdata->poll_event, events);
+	if (UNEXPECTED(proxy == NULL)) {
+		return NULL;
+	}
+
+	// Cache proxy for reuse
+	if (netdata->read_event == NULL && (events & READ_EVENT_MASK) == events) {
+		netdata->read_event = proxy;
+	} else if (netdata->write_event == NULL && events == ASYNC_WRITABLE) {
+		netdata->write_event = proxy;
+	} else {
+		// Don't cache non-standard event combinations
+		proxy->base.ref_count = 0;
+	}
+
+	return proxy;
+}

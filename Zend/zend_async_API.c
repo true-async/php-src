@@ -153,6 +153,7 @@ zend_async_reactor_execute_t zend_async_reactor_execute_fn = NULL;
 zend_async_reactor_loop_alive_t zend_async_reactor_loop_alive_fn = NULL;
 zend_async_new_socket_event_t zend_async_new_socket_event_fn = NULL;
 zend_async_new_poll_event_t zend_async_new_poll_event_fn = NULL;
+zend_async_new_poll_proxy_event_t zend_async_new_poll_proxy_event_fn = NULL;
 zend_async_new_timer_event_t zend_async_new_timer_event_fn = NULL;
 zend_async_new_signal_event_t zend_async_new_signal_event_fn = NULL;
 zend_async_new_process_event_t zend_async_new_process_event_fn = NULL;
@@ -316,6 +317,7 @@ ZEND_API bool zend_async_reactor_register(char *module, bool allow_override,
 		zend_async_reactor_loop_alive_t reactor_loop_alive_fn,
 		zend_async_new_socket_event_t new_socket_event_fn,
 		zend_async_new_poll_event_t new_poll_event_fn,
+		zend_async_new_poll_proxy_event_t new_poll_proxy_event_fn,
 		zend_async_new_timer_event_t new_timer_event_fn,
 		zend_async_new_signal_event_t new_signal_event_fn,
 		zend_async_new_process_event_t new_process_event_fn,
@@ -350,6 +352,7 @@ ZEND_API bool zend_async_reactor_register(char *module, bool allow_override,
 
 	zend_async_new_socket_event_fn = new_socket_event_fn;
 	zend_async_new_poll_event_fn = new_poll_event_fn;
+	zend_async_new_poll_proxy_event_fn = new_poll_proxy_event_fn;
 	zend_async_new_timer_event_fn = new_timer_event_fn;
 	zend_async_new_signal_event_fn = new_signal_event_fn;
 
@@ -429,7 +432,7 @@ ZEND_API zend_async_event_callback_t *zend_async_event_callback_new(
 	zend_async_event_callback_t *event_callback
 			= ecalloc(1, size != 0 ? size : sizeof(zend_async_event_callback_t));
 
-	event_callback->ref_count = 1;
+	event_callback->ref_count = 0;
 	event_callback->callback = callback;
 	event_callback->dispose = event_callback_dispose;
 
@@ -448,7 +451,7 @@ ZEND_API zend_coroutine_event_callback_t *zend_async_coroutine_callback_new(
 	zend_coroutine_event_callback_t *coroutine_callback
 			= ecalloc(1, size != 0 ? size : sizeof(zend_coroutine_event_callback_t));
 
-	coroutine_callback->base.ref_count = 1;
+	coroutine_callback->base.ref_count = 0;
 	coroutine_callback->base.callback = callback;
 	coroutine_callback->coroutine = coroutine;
 	coroutine_callback->base.dispose = coroutine_event_callback_dispose;
@@ -768,13 +771,10 @@ ZEND_API void zend_async_resume_when(zend_coroutine_t *coroutine, zend_async_eve
 		const bool trans_event, zend_async_event_callback_fn callback,
 		zend_coroutine_event_callback_t *event_callback)
 {
-	zend_exception_save();
-
-	bool locally_allocated_callback = false;
+	bool callback_should_dispose = false;
 
 	if (UNEXPECTED(ZEND_ASYNC_EVENT_IS_CLOSED(event))) {
 		zend_throw_error(NULL, "The event cannot be used after it has been terminated");
-		zend_exception_restore();
 		return;
 	}
 
@@ -785,17 +785,19 @@ ZEND_API void zend_async_resume_when(zend_coroutine_t *coroutine, zend_async_eve
 			event->dispose(event);
 		}
 
-		zend_exception_restore();
 		return;
 	}
 
 	if (event_callback == NULL) {
 		event_callback = emalloc(sizeof(zend_coroutine_event_callback_t));
-		event_callback->base.ref_count = 1;
+		event_callback->base.ref_count = 0;
 		event_callback->base.callback = callback;
 		event_callback->base.dispose = coroutine_event_callback_dispose;
 		event_callback->event = event;
-		locally_allocated_callback = true;
+		callback_should_dispose = true;
+	} else if (event_callback->base.ref_count == 0) {
+		// Refcount is 0 means someone is transfer of ownership
+		callback_should_dispose = true;
 	}
 
 	// Set up the default dispose function if not set
@@ -808,17 +810,13 @@ ZEND_API void zend_async_resume_when(zend_coroutine_t *coroutine, zend_async_eve
 		event_callback->event = event;
 	}
 
-	if (event_callback->base.ref_count == 0) {
-		event_callback->base.ref_count = 1;
-	}
-
-	ZEND_ASSERT(event_callback->base.ref_count > 0 && "Callback ref_count must be greater than 0.");
 
 	event_callback->coroutine = coroutine;
 	event->add_callback(event, &event_callback->base);
 
 	if (UNEXPECTED(EG(exception) != NULL)) {
-		if (locally_allocated_callback) {
+		if (callback_should_dispose) {
+			event_callback->base.ref_count = 1;
 			event_callback->base.dispose(&event_callback->base, event);
 		}
 
@@ -826,7 +824,6 @@ ZEND_API void zend_async_resume_when(zend_coroutine_t *coroutine, zend_async_eve
 			event->dispose(event);
 		}
 
-		zend_exception_restore();
 		return;
 	}
 
@@ -857,7 +854,8 @@ ZEND_API void zend_async_resume_when(zend_coroutine_t *coroutine, zend_async_eve
 				event_callback->coroutine = NULL;
 				event->del_callback(event, &event_callback->base);
 
-				if (locally_allocated_callback) {
+				if (callback_should_dispose) {
+					event_callback->base.ref_count = 1;
 					event_callback->base.dispose(&event_callback->base, event);
 				}
 
@@ -873,8 +871,6 @@ ZEND_API void zend_async_resume_when(zend_coroutine_t *coroutine, zend_async_eve
 			}
 		}
 	}
-
-	zend_exception_restore();
 }
 
 ZEND_API void zend_async_waker_callback_resolve(zend_async_event_t *event,
@@ -882,24 +878,10 @@ ZEND_API void zend_async_waker_callback_resolve(zend_async_event_t *event,
 {
 	zend_coroutine_t *coroutine = ((zend_coroutine_event_callback_t *) callback)->coroutine;
 
-	if (exception == NULL && coroutine->waker != NULL) {
-
-		if (coroutine->waker->triggered_events == NULL) {
-			coroutine->waker->triggered_events = (HashTable *) emalloc(sizeof(HashTable));
-			zend_hash_init(
-					coroutine->waker->triggered_events, 2, NULL, waker_triggered_events_dtor, 0);
-		}
-
-		if (EXPECTED(zend_hash_index_add_ptr(
-							 coroutine->waker->triggered_events, (zend_ulong) event, event)
-					!= NULL)) {
-			ZEND_ASYNC_EVENT_ADD_REF(event);
-		}
-
+	if (exception == NULL && coroutine->waker != NULL
+		&& ZEND_ASYNC_EVENT_WILL_ZVAL_RESULT(event) && result != NULL) {
 		// Copy the result to the waker if it is not NULL
-		if (ZEND_ASYNC_EVENT_WILL_ZVAL_RESULT(event) && result != NULL) {
-			ZVAL_COPY(&coroutine->waker->result, result);
-		}
+		ZVAL_COPY(&coroutine->waker->result, result);
 	}
 
 	if (exception != NULL) {

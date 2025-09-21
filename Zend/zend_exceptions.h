@@ -44,11 +44,40 @@ ZEND_API void zend_exception_set_previous(zend_object *exception, zend_object *a
 ZEND_API void zend_exception_save(void);
 ZEND_API void zend_exception_restore(void);
 
+static zend_always_inline void zend_exception_save_fast(
+		zend_object **exception_ptr,
+		zend_object **prev_exception_ptr
+)
+{
+	if (UNEXPECTED(*prev_exception_ptr)) {
+		zend_exception_set_previous(*exception_ptr, *prev_exception_ptr);
+	}
+	if (UNEXPECTED(*exception_ptr)) {
+		*prev_exception_ptr = *exception_ptr;
+	}
+	*exception_ptr = NULL;
+}
+
+static zend_always_inline void zend_exception_restore_fast(
+		zend_object **exception_ptr,
+		zend_object **prev_exception_ptr
+)
+{
+	if (UNEXPECTED(*prev_exception_ptr)) {
+		if (*exception_ptr) {
+			zend_exception_set_previous(*exception_ptr, *prev_exception_ptr);
+		} else {
+			*exception_ptr = *prev_exception_ptr;
+		}
+		*prev_exception_ptr = NULL;
+	}
+}
+
 ZEND_API ZEND_COLD void zend_throw_exception_internal(zend_object *exception);
 
 void zend_register_default_exception(void);
 
-ZEND_API zend_class_entry *zend_get_exception_base(zend_object *object);
+ZEND_API zend_class_entry *zend_get_exception_base(const zend_object *object);
 
 ZEND_API void zend_register_default_classes(void);
 

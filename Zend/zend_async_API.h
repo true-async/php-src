@@ -19,9 +19,9 @@
 #include "zend_fibers.h"
 #include "zend_globals.h"
 
-#define ZEND_ASYNC_API "TrueAsync API v0.5.0"
+#define ZEND_ASYNC_API "TrueAsync API v0.6.0"
 #define ZEND_ASYNC_API_VERSION_MAJOR 0
-#define ZEND_ASYNC_API_VERSION_MINOR 5
+#define ZEND_ASYNC_API_VERSION_MINOR 6
 #define ZEND_ASYNC_API_VERSION_PATCH 0
 
 #define ZEND_ASYNC_API_VERSION_NUMBER \
@@ -63,13 +63,33 @@ typedef HANDLE zend_file_descriptor_t;
 typedef DWORD zend_process_id_t;
 typedef HANDLE zend_process_t;
 typedef SOCKET zend_socket_t;
+#define INVALID_IO_DESCRIPTOR INVALID_HANDLE_VALUE
 #else
 typedef int zend_file_descriptor_t;
 typedef pid_t zend_process_id_t;
 typedef pid_t zend_process_t;
 typedef int zend_socket_t;
 #define ZEND_FD_NULL 0
+#define INVALID_IO_DESCRIPTOR -1;
 #endif
+
+typedef enum {
+	IO_DESCRIPTOR_FD = 1,
+	IO_DESCRIPTOR_SOCKET,
+	IO_DESCRIPTOR_PROCESS
+} io_descriptor_type;
+
+/**
+ * A union that can be used as a VOID* in operations that return input/output descriptors.
+ */
+typedef struct io_descriptor_s {
+	union {
+		zend_file_descriptor_t fd;
+		zend_socket_t socket;
+		zend_process_t process;
+	};
+	io_descriptor_type type;
+} io_descriptor_t;
 
 /**
  * php_exec
@@ -181,6 +201,7 @@ typedef void (*zend_async_event_dispose_t)(zend_async_event_t *event);
 typedef zend_string *(*zend_async_event_info_t)(zend_async_event_t *event);
 
 typedef struct _zend_async_poll_event_s zend_async_poll_event_t;
+typedef struct _zend_async_poll_proxy_s zend_async_poll_proxy_t;
 typedef struct _zend_async_timer_event_s zend_async_timer_event_t;
 typedef struct _zend_async_signal_event_s zend_async_signal_event_t;
 typedef struct _zend_async_filesystem_event_s zend_async_filesystem_event_t;
@@ -237,6 +258,8 @@ typedef zend_async_poll_event_t *(*zend_async_new_socket_event_t)(
 		zend_socket_t socket, async_poll_event events, size_t extra_size);
 typedef zend_async_poll_event_t *(*zend_async_new_poll_event_t)(zend_file_descriptor_t fh,
 		zend_socket_t socket, async_poll_event events, size_t extra_size);
+typedef zend_async_poll_proxy_t *(*zend_async_new_poll_proxy_event_t)(
+		zend_async_poll_event_t *poll_event, async_poll_event events, size_t extra_size);
 typedef zend_async_timer_event_t *(*zend_async_new_timer_event_t)(const zend_ulong timeout,
 		const zend_ulong nanoseconds, const bool is_periodic, size_t extra_size);
 typedef zend_async_signal_event_t *(*zend_async_new_signal_event_t)(int signum, size_t extra_size);
@@ -508,6 +531,7 @@ typedef struct {
 
 // Flag indicating that the event has a zend_object reference by extra_offset.
 #define ZEND_ASYNC_EVENT_F_OBJ_REF (1u << 8) /* has zend_object ref */
+#define ZEND_ASYNC_EVENT_F_CLOSE_FD (1u << 9) /* close file descriptor after event cleanup */
 
 #define ZEND_ASYNC_EVENT_REFERENCE_PREFIX ((uint32_t) 0x80) /* prefix for reference structures */
 
@@ -553,6 +577,10 @@ typedef struct {
 	((ev)->flags &= ~ZEND_ASYNC_EVENT_F_EXCEPTION_HANDLED)
 
 #define ZEND_ASYNC_EVENT_WITH_OBJECT_REF(ev) ((ev)->flags |= ZEND_ASYNC_EVENT_F_OBJ_REF)
+
+#define ZEND_ASYNC_EVENT_SET_CLOSE_FD(ev) ((ev)->flags |= ZEND_ASYNC_EVENT_F_CLOSE_FD)
+#define ZEND_ASYNC_EVENT_CLR_CLOSE_FD(ev) ((ev)->flags &= ~ZEND_ASYNC_EVENT_F_CLOSE_FD)
+#define ZEND_ASYNC_EVENT_SHOULD_CLOSE_FD(ev) (((ev)->flags & ZEND_ASYNC_EVENT_F_CLOSE_FD) != 0)
 
 // Convert awaitable Zend object to zend_async_event_t pointer
 #define ZEND_ASYNC_EVENT_IS_REFERENCE(ptr) \
@@ -646,6 +674,7 @@ static zend_always_inline void zend_async_callbacks_push(
 				vector->data, vector->capacity, sizeof(zend_async_event_callback_t *), 0);
 	}
 
+	callback->ref_count++;
 	vector->data[vector->length++] = callback;
 }
 
@@ -656,6 +685,13 @@ struct _zend_async_poll_event_s {
 		zend_file_descriptor_t file;
 		zend_socket_t socket;
 	};
+	async_poll_event events;
+	async_poll_event triggered_events;
+};
+
+struct _zend_async_poll_proxy_s {
+	zend_async_event_t base;
+	zend_async_poll_event_t *poll_event;
 	async_poll_event events;
 	async_poll_event triggered_events;
 };
@@ -951,6 +987,7 @@ struct _zend_async_waker_s {
 };
 
 #define ZEND_ASYNC_WAKER_WAITING(waker) ((waker)->status < ZEND_ASYNC_WAKER_RESULT)
+#define ZEND_ASYNC_WAKER_CLEAN_EVENTS(waker) (zend_hash_clean(&waker->events))
 
 /**
  * Coroutine destructor. Called when the coroutine needs to clean up all its data.
@@ -1336,6 +1373,7 @@ ZEND_API extern zend_async_reactor_execute_t zend_async_reactor_execute_fn;
 ZEND_API extern zend_async_reactor_loop_alive_t zend_async_reactor_loop_alive_fn;
 ZEND_API extern zend_async_new_socket_event_t zend_async_new_socket_event_fn;
 ZEND_API extern zend_async_new_poll_event_t zend_async_new_poll_event_fn;
+ZEND_API extern zend_async_new_poll_proxy_event_t zend_async_new_poll_proxy_event_fn;
 ZEND_API extern zend_async_new_timer_event_t zend_async_new_timer_event_fn;
 ZEND_API extern zend_async_new_signal_event_t zend_async_new_signal_event_fn;
 ZEND_API extern zend_async_new_process_event_t zend_async_new_process_event_fn;
@@ -1384,6 +1422,7 @@ ZEND_API bool zend_async_reactor_register(char *module, bool allow_override,
 		zend_async_reactor_loop_alive_t reactor_loop_alive_fn,
 		zend_async_new_socket_event_t new_socket_event_fn,
 		zend_async_new_poll_event_t new_poll_event_fn,
+		zend_async_new_poll_proxy_event_t new_poll_proxy_event_fn,
 		zend_async_new_timer_event_t new_timer_event_fn,
 		zend_async_new_signal_event_t new_signal_event_fn,
 		zend_async_new_process_event_t new_process_event_fn,
@@ -1565,6 +1604,10 @@ END_EXTERN_C()
 	zend_async_new_poll_event_fn(fh, socket, events, 0)
 #define ZEND_ASYNC_NEW_POLL_EVENT_EX(fh, socket, events, extra_size) \
 	zend_async_new_poll_event_fn(fh, socket, events, extra_size)
+#define ZEND_ASYNC_NEW_POLL_PROXY_EVENT(poll_event, events) \
+	zend_async_new_poll_proxy_event_fn(poll_event, events, 0)
+#define ZEND_ASYNC_NEW_POLL_PROXY_EVENT_EX(poll_event, events, extra_size) \
+	zend_async_new_poll_proxy_event_fn(poll_event, events, extra_size)
 #define ZEND_ASYNC_NEW_TIMER_EVENT(timeout, is_periodic) \
 	zend_async_new_timer_event_fn(timeout, 0, is_periodic, 0)
 #define ZEND_ASYNC_NEW_TIMER_EVENT_EX(timeout, is_periodic, extra_size) \

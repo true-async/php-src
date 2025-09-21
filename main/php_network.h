@@ -274,6 +274,9 @@ typedef struct {
 } php_sockaddr_storage;
 #endif
 
+struct _php_netstream_data_t;
+typedef struct _php_netstream_data_t php_netstream_data_t;
+
 BEGIN_EXTERN_C()
 PHPAPI int php_network_getaddresses(const char *host, int socktype, struct sockaddr ***sal, zend_string **error_string);
 PHPAPI void php_network_freeaddresses(struct sockaddr **sal);
@@ -281,6 +284,12 @@ PHPAPI void php_network_freeaddresses(struct sockaddr **sal);
 PHPAPI php_socket_t php_network_connect_socket_to_host(const char *host, unsigned short port,
 		int socktype, int asynchronous, struct timeval *timeout, zend_string **error_string,
 		int *error_code, const char *bindto, unsigned short bindport, long sockopts
+		);
+
+PHPAPI php_socket_t php_network_connect_socket_to_host_ex(const char *host, unsigned short port,
+		int socktype, int asynchronous, struct timeval *timeout, zend_string **error_string,
+		int *error_code, const char *bindto, unsigned short bindport, long sockopts,
+		php_netstream_data_t *netdata
 		);
 
 PHPAPI int php_network_connect_socket(php_socket_t sockfd,
@@ -326,12 +335,15 @@ END_EXTERN_C()
 
 struct _php_netstream_data_t	{
 	php_socket_t socket;
-	char is_blocked;
+	bool is_blocked;
+	bool timeout_event;
 	struct timeval timeout;
-	char timeout_event;
 	size_t ownsize;
+	bool nonblocking_applied;
+	zend_async_poll_event_t *poll_event;
+	zend_async_poll_proxy_t *read_event;
+	zend_async_poll_proxy_t *write_event;
 };
-typedef struct _php_netstream_data_t php_netstream_data_t;
 PHPAPI extern const php_stream_ops php_stream_socket_ops;
 extern const php_stream_ops php_stream_generic_socket_ops;
 #define PHP_STREAM_IS_SOCKET	(&php_stream_socket_ops)

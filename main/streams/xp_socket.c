@@ -71,9 +71,8 @@ static ssize_t php_sockop_write(php_stream *stream, const char *buf, size_t coun
 	else
 		ptimeout = &sock->timeout;
 
-	if (ZEND_ASYNC_IS_ACTIVE && sock->is_blocked) {
-		network_async_set_socket_blocking(sock->socket, false);
-		if (UNEXPECTED(EG(exception) != NULL)) {
+	if (ZEND_ASYNC_IS_ACTIVE && sock->is_blocked && !sock->nonblocking_applied) {
+		if (UNEXPECTED(!network_async_set_socket_blocking(sock->socket, false, sock))) {
 			/* If we are in async context and an exception was thrown, we should not continue. */
 			return -1;
 		}
@@ -89,23 +88,35 @@ retry:
 			if (sock->is_blocked) {
 				int retval;
 
-				sock->timeout_event = 0;
+				sock->timeout_event = false;
 
-				do {
-					retval = php_pollfd_for(sock->socket, POLLOUT, ptimeout);
+				if (ZEND_ASYNC_IS_ACTIVE) {
+					retval = network_async_await_stream_socket(sock, POLLOUT, ptimeout);
 
 					if (retval == 0) {
-						sock->timeout_event = 1;
-						break;
-					}
-
-					if (retval > 0) {
+						sock->timeout_event = true;
+					} else if (retval > 0) {
 						/* writable now; retry */
 						goto retry;
 					}
+					// On error, retval is -1 and errno is already set
+				} else {
+					do {
+						retval = php_pollfd_for(sock->socket, POLLOUT, ptimeout);
 
-					err = php_socket_errno();
-				} while (err == EINTR);
+						if (retval == 0) {
+							sock->timeout_event = true;
+							break;
+						}
+
+						if (retval > 0) {
+							/* writable now; retry */
+							goto retry;
+						}
+
+						err = php_socket_errno();
+					} while (err == EINTR);
+				}
 			} else {
 				/* EWOULDBLOCK/EAGAIN is not an error for a non-blocking stream.
 				 * Report zero byte write instead. */
@@ -116,22 +127,14 @@ retry:
 		if (!(stream->flags & PHP_STREAM_FLAG_SUPPRESS_ERRORS)) {
 			estr = php_socket_strerror(err, NULL, 0);
 			php_error_docref(NULL, E_NOTICE,
-				"Send of " ZEND_LONG_FMT " bytes failed with errno=%d %s",
-				(zend_long)count, err, estr);
+				"Send of %zu bytes failed with errno=%d %s",
+				count, err, estr);
 			efree(estr);
 		}
 	}
 
 	if (didwrite > 0) {
 		php_stream_notify_progress_increment(PHP_STREAM_CONTEXT(stream), didwrite, 0);
-	}
-
-	if (ZEND_ASYNC_IS_ACTIVE && sock->is_blocked) {
-		network_async_set_socket_blocking(sock->socket, true);
-		if (UNEXPECTED(EG(exception) != NULL)) {
-			/* If we are in async context and an exception was thrown, we should not continue. */
-			return -1;
-		}
 	}
 
 	return didwrite;
@@ -146,7 +149,7 @@ static void php_sock_stream_wait_for_data(php_stream *stream, php_netstream_data
 		return;
 	}
 
-	sock->timeout_event = 0;
+	sock->timeout_event = false;
 
 	if (has_buffered_data) {
 		/* If there is already buffered data, use no timeout. */
@@ -159,17 +162,26 @@ static void php_sock_stream_wait_for_data(php_stream *stream, php_netstream_data
 		ptimeout = &sock->timeout;
 	}
 
-	while(1) {
-		retval = php_pollfd_for(sock->socket, PHP_POLLREADABLE, ptimeout);
+	if (ZEND_ASYNC_IS_ACTIVE) {
+		retval = network_async_await_stream_socket(sock, PHP_POLLREADABLE, ptimeout);
 
-		if (retval == 0)
-			sock->timeout_event = 1;
+		if (retval == 0) {
+			sock->timeout_event = true;
+		}
+		// On error or success, retval is already set correctly
+	} else {
+		while(1) {
+			retval = php_pollfd_for(sock->socket, PHP_POLLREADABLE, ptimeout);
 
-		if (retval >= 0)
-			break;
+			if (retval == 0)
+				sock->timeout_event = true;
 
-		if (php_socket_errno() != EINTR)
-			break;
+			if (retval >= 0)
+				break;
+
+			if (php_socket_errno() != EINTR)
+				break;
+		}
 	}
 }
 
@@ -254,14 +266,60 @@ static int php_sockop_close(php_stream *stream, int close_handle)
 			 * We use a small timeout which should encourage the OS to send the data,
 			 * but at the same time avoid hanging indefinitely.
 			 * */
-			do {
-				n = php_pollfd_for_ms(sock->socket, POLLOUT, 500);
-			} while (n == -1 && php_socket_errno() == EINTR);
+			if (ZEND_ASYNC_IS_ACTIVE) {
+				struct timeval tv = {0, 500000}; // 500ms
+				network_async_await_stream_socket(sock, POLLOUT, &tv);
+			} else {
+				do {
+					n = php_pollfd_for_ms(sock->socket, POLLOUT, 500);
+				} while (n == -1 && php_socket_errno() == EINTR);
+			}
 #endif
-			closesocket(sock->socket);
-			sock->socket = SOCK_ERR;
-		}
 
+			/**
+			 * If we are in an async context and there is an active EventLoop, we should not close the
+			 * socket immediately, because there might be pending operations for this socket in the loop.
+			 * Instead, we transfer the ownership of the descriptor to the EventLoop which will close it
+			 * once all pending operations are finished.
+			 */
+			if (sock->poll_event) {
+				/* Dispose proxy events first */
+				if (sock->read_event) {
+					sock->read_event->base.dispose(&sock->read_event->base);
+					sock->read_event = NULL;
+				}
+				if (sock->write_event) {
+					sock->write_event->base.dispose(&sock->write_event->base);
+					sock->write_event = NULL;
+				}
+
+				sock->poll_event->socket = sock->socket;
+
+				/* Set flag to close descriptor after EventLoop leanup */
+				ZEND_ASYNC_EVENT_SET_CLOSE_FD(&sock->poll_event->base);
+				sock->socket = SOCK_ERR;
+				sock->poll_event->base.dispose(&sock->poll_event->base);
+				sock->poll_event = NULL;
+			} else {
+				// Just the socket close ourselves immediately
+				closesocket(sock->socket);
+				sock->socket = SOCK_ERR;
+			}
+		}
+	} else {
+		/* Cleanup async event handles before freeing socket structure */
+		if (sock->read_event) {
+			sock->read_event->base.dispose(&sock->read_event->base);
+			sock->read_event = NULL;
+		}
+		if (sock->write_event) {
+			sock->write_event->base.dispose(&sock->write_event->base);
+			sock->write_event = NULL;
+		}
+		if (sock->poll_event) {
+			sock->poll_event->base.dispose(&sock->poll_event->base);
+			sock->poll_event = NULL;
+		}
 	}
 
 	pefree(sock, php_stream_is_persistent(stream));
@@ -289,11 +347,44 @@ static int php_sockop_stat(php_stream *stream, php_stream_statbuf *ssb)
 #endif
 }
 
+static inline int sock_async_poll(php_netstream_data_t *sock, async_poll_event poll_events)
+{
+	if (!sock->is_blocked || !ZEND_ASYNC_IS_ACTIVE) {
+		return 1; /* nothing to do */
+	}
+
+	if (UNEXPECTED(!sock->nonblocking_applied)) {
+		if (UNEXPECTED(!network_async_set_socket_blocking(sock->socket, false, sock))) {
+			return -1;
+		}
+	}
+
+	struct timeval *timeout = (sock->timeout.tv_sec == -1) ? NULL : &sock->timeout;
+
+	const int poll_result = network_async_await_stream_socket(sock, poll_events, timeout);
+
+	if (UNEXPECTED(poll_result <= 0)) {
+		if (poll_result == 0 && timeout) {
+			sock->timeout_event = true;
+		}
+		return poll_result;
+	}
+
+	return 1; /* ready to proceed */
+}
+
 static inline int sock_sendto(php_netstream_data_t *sock, const char *buf, size_t buflen, int flags,
 		struct sockaddr *addr, socklen_t addrlen
 		)
 {
 	int ret;
+
+	/* Setup async and poll for writability */
+	ret = sock_async_poll(sock, POLLOUT);
+	if (UNEXPECTED(ret <= 0)) {
+		return ret;
+	}
+
 	if (addr) {
 		ret = sendto(sock->socket, buf, XP_SOCK_BUF_SIZE(buflen), flags, addr, XP_SOCK_BUF_SIZE(addrlen));
 
@@ -313,6 +404,12 @@ static inline int sock_recvfrom(php_netstream_data_t *sock, char *buf, size_t bu
 {
 	int ret;
 	int want_addr = textaddr || addr;
+
+	/* Setup async and poll for readability */
+	ret = sock_async_poll(sock, PHP_POLLREADABLE);
+	if (UNEXPECTED(ret <= 0)) {
+		return ret;
+	}
 
 	if (want_addr) {
 		php_sockaddr_storage sa;
@@ -382,7 +479,9 @@ static int php_sockop_set_option(php_stream *stream, int option, int value, void
 						!(stream->flags & PHP_STREAM_FLAG_NO_IO) &&
 						((MSG_DONTWAIT != 0) || !sock->is_blocked)
 					) ||
-					php_pollfd_for(sock->socket, PHP_POLLREADABLE|POLLPRI, &tv) > 0
+					(ZEND_ASYNC_IS_ACTIVE ?
+						network_async_await_stream_socket(sock, PHP_POLLREADABLE|POLLPRI, &tv) > 0 :
+						php_pollfd_for(sock->socket, PHP_POLLREADABLE|POLLPRI, &tv) > 0)
 				) {
 					/* the poll() call was skipped if the socket is non-blocking (or MSG_DONTWAIT is available) and if the timeout is zero */
 #ifdef PHP_WIN32
@@ -416,7 +515,7 @@ static int php_sockop_set_option(php_stream *stream, int option, int value, void
 
 		case PHP_STREAM_OPTION_READ_TIMEOUT:
 			sock->timeout = *(struct timeval*)ptrparam;
-			sock->timeout_event = 0;
+			sock->timeout_event = false;
 			return PHP_STREAM_OPTION_RETURN_OK;
 
 		case PHP_STREAM_OPTION_META_DATA_API:
@@ -506,6 +605,63 @@ static int php_sockop_set_option(php_stream *stream, int option, int value, void
 				default:
 					break;
 			}
+
+			break;
+
+		case PHP_STREAM_OPTION_ASYNC_EVENT_HANDLE:
+			if (!sock) {
+				return PHP_STREAM_OPTION_RETURN_NOTIMPL;
+			}
+
+			zend_async_poll_event_t **handle_ptr = (zend_async_poll_event_t **)ptrparam;
+
+			// Create base poll event if needed
+			if (sock->poll_event == NULL) {
+				sock->poll_event = ZEND_ASYNC_NEW_SOCKET_EVENT(sock->socket, 0);
+				if (UNEXPECTED(EG(exception) != NULL)) {
+					return PHP_STREAM_OPTION_RETURN_ERR;
+				}
+
+				// We add the IO descriptor event to the EventLoop without waiting
+				// for the Waker to initiate work, in order to save on system calls.
+				sock->poll_event->base.start(&sock->poll_event->base);
+
+				if (UNEXPECTED(EG(exception) != NULL)) {
+					return PHP_STREAM_OPTION_RETURN_ERR;
+				}
+			}
+
+			// Mask of events covered by read_event (PHP_POLLREADABLE)
+			#define READ_EVENT_MASK (ASYNC_READABLE | ASYNC_DISCONNECT)
+
+			if (sock->read_event && (value & READ_EVENT_MASK) == value) {
+				*handle_ptr = (zend_async_poll_event_t*)sock->read_event;
+				return PHP_STREAM_OPTION_RETURN_OK;
+			}
+
+			if (value == ASYNC_WRITABLE && sock->write_event) {
+				*handle_ptr = (zend_async_poll_event_t*)sock->write_event;
+				return PHP_STREAM_OPTION_RETURN_OK;
+			}
+
+			// Create new proxy for any events
+			zend_async_poll_proxy_t *proxy = ZEND_ASYNC_NEW_POLL_PROXY_EVENT(sock->poll_event, value);
+			if (UNEXPECTED(EG(exception) != NULL)) {
+				return PHP_STREAM_OPTION_RETURN_ERR;
+			}
+
+			*handle_ptr = (zend_async_poll_event_t*)proxy;
+
+			// Cache event-proxy for reuse
+			if ((value & READ_EVENT_MASK) == value) {
+				sock->read_event = proxy;
+			} else if (value == ASYNC_WRITABLE) {
+				sock->write_event = proxy;
+			} else {
+				proxy->base.ref_count = 0;
+			}
+
+			return PHP_STREAM_OPTION_RETURN_OK;
 	}
 
 	return PHP_STREAM_OPTION_RETURN_NOTIMPL;
@@ -783,11 +939,19 @@ static inline int php_tcp_sockop_connect(php_stream *stream, php_netstream_data_
 
 		parse_unix_address(xparam, &unix_addr);
 
-		ret = php_network_connect_socket(sock->socket,
+		if (ZEND_ASYNC_IS_ACTIVE) {
+			ret = network_async_connect_socket(sock, sock->socket,
 				(const struct sockaddr *)&unix_addr, (socklen_t) XtOffsetOf(struct sockaddr_un, sun_path) + xparam->inputs.namelen,
 				xparam->op == STREAM_XPORT_OP_CONNECT_ASYNC, xparam->inputs.timeout,
 				xparam->want_errortext ? &xparam->outputs.error_text : NULL,
 				&err);
+		} else {
+			ret = php_network_connect_socket(sock->socket,
+				(const struct sockaddr *)&unix_addr, (socklen_t) XtOffsetOf(struct sockaddr_un, sun_path) + xparam->inputs.namelen,
+				xparam->op == STREAM_XPORT_OP_CONNECT_ASYNC, xparam->inputs.timeout,
+				xparam->want_errortext ? &xparam->outputs.error_text : NULL,
+				&err);
+		}
 
 		xparam->outputs.error_code = err;
 
@@ -838,7 +1002,7 @@ static inline int php_tcp_sockop_connect(php_stream *stream, php_netstream_data_
 	 * want the default to be TCP sockets so that the openssl extension can
 	 * re-use this code. */
 
-	sock->socket = php_network_connect_socket_to_host(host, portno,
+	sock->socket = php_network_connect_socket_to_host_ex(host, portno,
 			stream->ops == &php_stream_udp_socket_ops ? SOCK_DGRAM : SOCK_STREAM,
 			xparam->op == STREAM_XPORT_OP_CONNECT_ASYNC,
 			xparam->inputs.timeout,
@@ -846,7 +1010,8 @@ static inline int php_tcp_sockop_connect(php_stream *stream, php_netstream_data_
 			&err,
 			bindto,
 			bindport,
-			sockopts
+			sockopts,
+			sock
 			);
 
 	ret = sock->socket == -1 ? -1 : 0;
@@ -874,7 +1039,6 @@ out:
 static inline int php_tcp_sockop_accept(php_stream *stream, php_netstream_data_t *sock,
 		php_stream_xport_param *xparam STREAMS_DC)
 {
-	int clisock;
 	bool nodelay = 0;
 	zval *tmpzval = NULL;
 
@@ -886,23 +1050,40 @@ static inline int php_tcp_sockop_accept(php_stream *stream, php_netstream_data_t
 		nodelay = 1;
 	}
 
-	clisock = php_network_accept_incoming(sock->socket,
-		xparam->want_textaddr ? &xparam->outputs.textaddr : NULL,
-		xparam->want_addr ? &xparam->outputs.addr : NULL,
-		xparam->want_addr ? &xparam->outputs.addrlen : NULL,
-		xparam->inputs.timeout,
-		xparam->want_errortext ? &xparam->outputs.error_text : NULL,
-		&xparam->outputs.error_code,
-		nodelay);
+	php_socket_t clisock;
 
-	if (clisock >= 0) {
+	if (ZEND_ASYNC_IS_ACTIVE) {
+		clisock = network_async_accept_incoming(sock,
+			xparam->want_textaddr ? &xparam->outputs.textaddr : NULL,
+			xparam->want_addr ? &xparam->outputs.addr : NULL,
+			xparam->want_addr ? &xparam->outputs.addrlen : NULL,
+			xparam->inputs.timeout,
+			xparam->want_errortext ? &xparam->outputs.error_text : NULL,
+			&xparam->outputs.error_code,
+			nodelay);
+	} else {
+		clisock = php_network_accept_incoming(sock->socket,
+			xparam->want_textaddr ? &xparam->outputs.textaddr : NULL,
+			xparam->want_addr ? &xparam->outputs.addr : NULL,
+			xparam->want_addr ? &xparam->outputs.addrlen : NULL,
+			xparam->inputs.timeout,
+			xparam->want_errortext ? &xparam->outputs.error_text : NULL,
+			&xparam->outputs.error_code,
+			nodelay);
+	}
+
+	if (ZEND_VALID_SOCKET(clisock)) {
 		php_netstream_data_t *clisockdata = (php_netstream_data_t*) emalloc(sizeof(*clisockdata));
 
 		memcpy(clisockdata, sock, sizeof(*clisockdata));
 		clisockdata->socket = clisock;
+		clisockdata->poll_event = NULL;
+		clisockdata->read_event = NULL;
+		clisockdata->write_event = NULL;
+		clisockdata->nonblocking_applied = false;
 #ifdef __linux__
 		/* O_NONBLOCK is not inherited on Linux */
-		clisockdata->is_blocked = 1;
+		clisockdata->is_blocked = true;
 #endif
 
 		xparam->outputs.client = php_stream_alloc_rel(stream->ops, clisockdata, NULL, "r+");
@@ -980,9 +1161,13 @@ PHPAPI php_stream *php_stream_generic_socket_factory(const char *proto, size_t p
 	sock = pemalloc(sizeof(php_netstream_data_t), persistent_id ? 1 : 0);
 	memset(sock, 0, sizeof(php_netstream_data_t));
 
-	sock->is_blocked = 1;
+	sock->is_blocked = true;
 	sock->timeout.tv_sec = FG(default_socket_timeout);
 	sock->timeout.tv_usec = 0;
+	sock->nonblocking_applied = false;
+	sock->poll_event = NULL;
+	sock->read_event = NULL;
+	sock->write_event = NULL;
 
 	/* we don't know the socket until we have determined if we are binding or
 	 * connecting */

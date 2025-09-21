@@ -321,6 +321,10 @@ static void _close_pgsql_plink(zend_resource *rsrc)
 
 static void _php_pgsql_notice_handler(void *l, const char *message)
 {
+	if (l == NULL) {
+		/* This connection does not currently have a valid context, ignore this notice */
+		return;
+	}
 	if (PGG(ignore_notices)) {
 		return;
 	}
@@ -352,6 +356,11 @@ static int _rollback_transactions(zval *el)
 	}
 
 	link = (PGconn *) rsrc->ptr;
+
+	/* unset notice processor if we initially did set it */
+	if (PQsetNoticeProcessor(link, NULL, NULL) == _php_pgsql_notice_handler) {
+		PQsetNoticeProcessor(link, _php_pgsql_notice_handler, NULL);
+	}
 
 	if (PQsetnonblocking(link, 0)) {
 		php_error_docref("ref.pgsql", E_NOTICE, "Cannot set connection to blocking mode");
@@ -6253,7 +6262,6 @@ PHP_FUNCTION(pg_select)
 	PGconn *pg_link;
 	zend_string *sql = NULL;
 
-	/* TODO Document result_type param on php.net (apparently it was added in PHP 7.1) */
 	ZEND_PARSE_PARAMETERS_START(2, 5)
 		Z_PARAM_OBJECT_OF_CLASS(pgsql_link, pgsql_link_ce)
 		Z_PARAM_PATH_STR(table)
@@ -6389,7 +6397,7 @@ PHP_FUNCTION(pg_socket_poll)
 		Z_PARAM_LONG(ts)
 	ZEND_PARSE_PARAMETERS_END();
 
-	if (php_stream_cast(stream, PHP_STREAM_AS_SOCKETD, (void **)&socket, 0)) {
+	if (UNEXPECTED(php_stream_cast(stream, PHP_STREAM_AS_SOCKETD, (void **)&socket, 0) == FAILURE)) {
 		zend_argument_type_error(1, "invalid resource socket");
 		RETURN_THROWS();
 	}
