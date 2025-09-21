@@ -297,7 +297,24 @@ static bool php_accept_connect(php_socket *in_sock, php_socket *out_sock, struct
 		flags |= SOCK_NONBLOCK;
 	}
 
-	out_sock->bsd_socket = accept4(in_sock->bsd_socket, la, la_len, flags);
+	if (in_sock->blocking && ZEND_ASYNC_IS_ACTIVE && network_async_ensure_socket_nonblocking(in_sock->bsd_socket)) {
+		out_sock->bsd_socket = accept4(in_sock->bsd_socket, la, la_len, flags);
+
+		while (out_sock->bsd_socket == -1 && IS_EAGAIN_OR_EWOULDBLOCK(errno)) {
+			network_async_wait_socket(in_sock->bsd_socket, ASYNC_READABLE, 0);
+
+			if (EG(exception) != NULL) {
+				out_sock->bsd_socket = INVALID_SOCKET;
+				zend_clear_exception();
+				PHP_SOCKET_ERROR(out_sock, "unable to accept incoming connection", errno);
+				return 0;
+			}
+
+			out_sock->bsd_socket = accept4(in_sock->bsd_socket, la, la_len, flags);
+		}
+	} else {
+		out_sock->bsd_socket = accept4(in_sock->bsd_socket, la, la_len, flags);
+	}
 
 	if (IS_INVALID_SOCKET(out_sock)) {
 		PHP_SOCKET_ERROR(out_sock, "unable to accept incoming connection", errno);
