@@ -298,7 +298,7 @@ static bool php_accept_connect(php_socket *in_sock, php_socket *out_sock, struct
 	}
 
 	/*
-	 * This code requires optimization:
+	 * TODO: This code requires optimization:
 	 * Caching the POLL descriptor
 	 * Properly setting the socket to non-blocking mode, with fewer calls
 	*/
