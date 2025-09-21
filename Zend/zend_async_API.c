@@ -810,7 +810,6 @@ ZEND_API void zend_async_resume_when(zend_coroutine_t *coroutine, zend_async_eve
 		event_callback->event = event;
 	}
 
-	ZEND_ASSERT(event_callback->base.ref_count >= 0 && "Callback ref_count must be non-negative.");
 
 	event_callback->coroutine = coroutine;
 	event->add_callback(event, &event_callback->base);
