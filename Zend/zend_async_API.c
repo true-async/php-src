@@ -1106,7 +1106,7 @@ static HashTable *zend_async_context_key_names = NULL;
 static MUTEX_T zend_async_context_mutex = NULL;
 #endif
 
-void zend_async_init_internal_context_api(void)
+ZEND_API void zend_async_init_internal_context_api(void)
 {
 #ifdef ZTS
 	zend_async_context_mutex = tsrm_mutex_alloc();
@@ -1117,7 +1117,7 @@ void zend_async_init_internal_context_api(void)
 			1); // No destructor - we don't own the strings
 }
 
-uint32_t zend_async_internal_context_key_alloc(const char *key_name)
+ZEND_API uint32_t zend_async_internal_context_key_alloc(const char *key_name)
 {
 #ifdef ZTS
 	tsrm_mutex_lock(zend_async_context_mutex);
@@ -1151,7 +1151,7 @@ uint32_t zend_async_internal_context_key_alloc(const char *key_name)
 	return key;
 }
 
-const char *zend_async_internal_context_key_name(uint32_t key)
+ZEND_API const char *zend_async_internal_context_key_name(uint32_t key)
 {
 	if (zend_async_context_key_names == NULL) {
 		return NULL;
@@ -1170,7 +1170,7 @@ const char *zend_async_internal_context_key_name(uint32_t key)
 	return name;
 }
 
-zval *zend_async_internal_context_find(zend_coroutine_t *coroutine, uint32_t key)
+ZEND_API zval *zend_async_internal_context_find(zend_coroutine_t *coroutine, uint32_t key)
 {
 	if (coroutine == NULL || coroutine->internal_context == NULL) {
 		return NULL;
@@ -1179,7 +1179,7 @@ zval *zend_async_internal_context_find(zend_coroutine_t *coroutine, uint32_t key
 	return zend_hash_index_find(coroutine->internal_context, key);
 }
 
-void zend_async_internal_context_set(zend_coroutine_t *coroutine, uint32_t key, zval *value)
+ZEND_API void zend_async_internal_context_set(zend_coroutine_t *coroutine, uint32_t key, zval *value)
 {
 	if (coroutine == NULL) {
 		return;
@@ -1196,7 +1196,7 @@ void zend_async_internal_context_set(zend_coroutine_t *coroutine, uint32_t key, 
 	zend_hash_index_update(coroutine->internal_context, key, &copy);
 }
 
-bool zend_async_internal_context_unset(zend_coroutine_t *coroutine, uint32_t key)
+ZEND_API bool zend_async_internal_context_unset(zend_coroutine_t *coroutine, uint32_t key)
 {
 	if (coroutine == NULL || coroutine->internal_context == NULL) {
 		return false;
@@ -1205,7 +1205,7 @@ bool zend_async_internal_context_unset(zend_coroutine_t *coroutine, uint32_t key
 	return zend_hash_index_del(coroutine->internal_context, key) == SUCCESS;
 }
 
-void zend_async_coroutine_internal_context_dispose(zend_coroutine_t *coroutine)
+ZEND_API void zend_async_coroutine_internal_context_dispose(zend_coroutine_t *coroutine)
 {
 	if (coroutine->internal_context != NULL) {
 		zend_array_release(coroutine->internal_context);
@@ -1213,7 +1213,7 @@ void zend_async_coroutine_internal_context_dispose(zend_coroutine_t *coroutine)
 	}
 }
 
-void zend_async_internal_context_api_shutdown(void)
+ZEND_API void zend_async_internal_context_api_shutdown(void)
 {
 #ifdef ZTS
 	if (zend_async_context_mutex != NULL) {
@@ -1236,7 +1236,7 @@ void zend_async_internal_context_api_shutdown(void)
 #endif
 }
 
-void zend_async_coroutine_internal_context_init(zend_coroutine_t *coroutine)
+ZEND_API void zend_async_coroutine_internal_context_init(zend_coroutine_t *coroutine)
 {
 	coroutine->internal_context = NULL;
 }
