@@ -154,11 +154,11 @@ extends ``zend_async_timer_event_t`` as follows:
    } async_timer_event_t;
 
    // Initialize callbacks for the event
-   event->event.base.add_callback = libuv_add_callback;
-   event->event.base.del_callback = libuv_remove_callback;
-   event->event.base.start = libuv_timer_start;
-   event->event.base.stop = libuv_timer_stop;
-   event->event.base.dispose = libuv_timer_dispose;
+   event->event.base.add_callback = php_add_callback;
+   event->event.base.del_callback = php_remove_callback;
+   event->event.base.start = php_timer_start;
+   event->event.base.stop = php_timer_stop;
+   event->event.base.dispose = php_timer_dispose;
 
 Every extended event defines its own ``start``, ``stop`` and ``dispose`` functions. The dispose
 handler must release all resources associated with the event and is called when the reference count
@@ -167,7 +167,7 @@ that memory gets freed in the ``uv_close`` callback.
 
 .. code:: c
 
-   static void libuv_timer_dispose(zend_async_event_t *event)
+   static void php_timer_dispose(zend_async_event_t *event)
    {
        if (ZEND_ASYNC_EVENT_REF(event) > 1) {
            ZEND_ASYNC_EVENT_DEL_REF(event);
@@ -182,7 +182,7 @@ that memory gets freed in the ``uv_close`` callback.
        zend_async_callbacks_free(event);
 
        async_timer_event_t *timer = (async_timer_event_t *)event;
-       uv_close((uv_handle_t *)&timer->uv_handle, libuv_close_handle_cb);
+       uv_close((uv_handle_t *)&timer->uv_handle, php_close_handle_cb);
    }
 
 If ``ZEND_ASYNC_EVENT_F_NO_FREE_MEMORY`` is set the dispose handler must not free the event memory
