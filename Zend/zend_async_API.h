@@ -598,7 +598,7 @@ typedef struct {
 					: (zend_object *) ((char *) (ev) + (ev)->zend_object_offset))
 
 // Get refcount of the event object
-#define ZEND_ASYNC_EVENT_REF(ev) \
+#define ZEND_ASYNC_EVENT_REFCOUNT(ev) \
 	(ZEND_ASYNC_EVENT_IS_ZEND_OBJ(ev) ? GC_REFCOUNT(ZEND_ASYNC_EVENT_TO_OBJECT(ev)) \
 									  : (ev)->ref_count)
 
