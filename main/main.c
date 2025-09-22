@@ -1981,6 +1981,8 @@ void php_request_shutdown(void *dummy)
 		zend_call_destructors();
 	} zend_end_try();
 
+	// Before PHP shuts down completely,
+	// control is passed to the coroutines one last time (if any remain).
 	ZEND_ASYNC_RUN_SCHEDULER_AFTER_MAIN();
 
 	/* 3. Flush all output buffers */
