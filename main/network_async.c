@@ -1618,6 +1618,7 @@ ZEND_API zend_string* php_network_gethostbyaddr_async(const char *ip)
 	}
 
 	struct sockaddr_storage ss = {0};
+	zend_string *hostname_result = NULL;
 
 	if (inet_pton(AF_INET, ip, &((struct sockaddr_in*)&ss)->sin_addr) == 1) {
 		struct sockaddr_in *a4 = (struct sockaddr_in*)&ss;
@@ -1638,7 +1639,6 @@ ZEND_API zend_string* php_network_gethostbyaddr_async(const char *ip)
 		goto error;
 	}
 
-	zend_string *hostname_result = NULL;
 	dns_callback_t *callback = ecalloc(1, sizeof(dns_callback_t));
 	callback->callback.coroutine = coroutine;
 	callback->callback.base.ref_count = 0;
