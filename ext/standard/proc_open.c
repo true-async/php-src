@@ -1599,41 +1599,30 @@ static zend_long async_wait_process(zend_process_t process_h, const zend_ulong t
 	}
 #endif
 
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+	if (UNEXPECTED(coroutine == NULL)) {
+		return -1;
+	}
+
+	if (UNEXPECTED(zend_async_waker_new_with_timeout(coroutine, timeout, NULL) == NULL)) {
+		return -1;
+	}
+
 	zend_async_process_event_t *event = ZEND_ASYNC_NEW_PROCESS_EVENT(process_h);
 	if (UNEXPECTED(event == NULL)) {
 		return -1;
 	}
 
-	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
-	if (UNEXPECTED(coroutine == NULL)) {
-		ZEND_ASYNC_EVENT_RELEASE(&event->base);
-		return -1;
-	}
-
-	zend_async_waker_t *waker = timeout > 0 
-		? zend_async_waker_new_with_timeout(coroutine, timeout, NULL)
-		: zend_async_waker_new(coroutine);
-
-	if (UNEXPECTED(waker == NULL)) {
-		ZEND_ASYNC_EVENT_RELEASE(&event->base);
-		return -1;
-	}
-
-	zend_coroutine_event_callback_t *callback = zend_async_coroutine_callback_new(
-		coroutine, zend_async_waker_callback_resolve, 0
-	);
-
-	if (UNEXPECTED(callback == NULL)) {
-		zend_async_waker_clean(coroutine);
-		ZEND_ASYNC_EVENT_RELEASE(&event->base);
-		return -1;
-	}
-
-	zend_async_resume_when(coroutine, &event->base, true, zend_async_waker_callback_resolve, callback);
+	zend_async_resume_when(coroutine, &event->base, false, zend_async_waker_callback_resolve, NULL);
 
 	ZEND_ASYNC_SUSPEND();
 
-	zend_long exit_code = event->exit_code;
+	const zend_long exit_code = event->exit_code;
+	ZEND_ASYNC_EVENT_RELEASE(&event->base);
+
+	if (UNEXPECTED(EG(exception))) {
+		return -1;
+	}
 
 	return exit_code;
 }
