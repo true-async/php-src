@@ -55,6 +55,10 @@ PHP 8.5 UPGRADE NOTES
   . Destructing non-array values (other than NULL) using [] or list() now
     emits a warning.
     RFC: https://wiki.php.net/rfc/warnings-php-8-5#destructuring_non-array_values
+  . A warning is now emitted when casting floats (or strings that look like
+    floats) to int if they cannot be represented as one. This affects explicit
+    int casts and implicit int casts.
+    RFC: https://wiki.php.net/rfc/warnings-php-8-5#casting_out_of_range_floats_to_int
 
 - BZ2:
   . bzcompress() now throws a ValueError when $block_size is not between
@@ -83,6 +87,9 @@ PHP 8.5 UPGRADE NOTES
 - LDAP:
   . ldap_get_option() and ldap_set_option() now throw a ValueError when
     passing an invalid option.
+
+- MBstring:
+  . Unicode data tables have been updated to Unicode 17.0
 
 - MySQLi:
   . Calling the mysqli constructor on an already-constructed object
@@ -410,6 +417,10 @@ PHP 8.5 UPGRADE NOTES
     deprecated. This is because the associated timezone is ignored and always
     uses GMT.
     RFC: https://wiki.php.net/rfc/deprecations_php_8_5#deprecate_date_rfc7231_and_datetimeinterfacerfc7231
+  . The __wakeup() magic method of DateTimeInterface, DateTime,
+    DateTimeImmutable, DateTimeZone, DateInterval, and DatePeriod has been
+    deprecated in favour of the __unserialize() magic method.
+    Related to RFC: https://wiki.php.net/rfc/deprecations_php_8_5#deprecate_the_sleep_and_wakeup_magic_methods
 
 - FileInfo:
   . The finfo_close() function has been deprecated.
@@ -434,6 +445,17 @@ PHP 8.5 UPGRADE NOTES
     Errors should either be checked manually or exceptions should be enabled
     by using the intl.use_exceptions INI setting.
     RFC: https://wiki.php.net/rfc/deprecations_php_8_5#deprecate_intlerror_level_ini_setting
+
+- LDAP:
+  - Specific Oracle Instant Client calls and constants have been deprecated.
+    List of affected calls:
+        ldap_connect with wallet support()
+        ldap_connect_wallet()
+    List of affected constants:
+        GSLC_SSL_NO_UATH
+        GSLC_SSL_ONEWAY_UATH
+        GSLC_SSL_TWOWAY_UATH
+    https://wiki.php.net/rfc/deprecations_php_8_5#deprecate_building_ext_ldap_against_oracle_ldap
 
 - MySQLi:
   . The mysqli_execute() alias function has been deprecated.
@@ -552,6 +574,9 @@ PHP 8.5 UPGRADE NOTES
   . Passing integers outside the interval [0, 255] to chr() is now deprecated.
     This is because a byte can only hold a value within this interval.
     RFC: https://wiki.php.net/rfc/deprecations_php_8_5#deprecate_passing_integers_outside_the_interval_0_255_to_chr
+  . Passing a string which is not a single byte to ord() is now deprecated,
+    this is indicative of a bug.
+    RFC: https://wiki.php.net/rfc/deprecations_php_8_5#deprecate_passing_string_which_are_not_one_byte_long_to_ord
   . Relying locally predefined variable $http_response_header is deprecated.
     Instead one should call the http_get_last_response_headers() function.
     RFC: https://wiki.php.net/rfc/deprecations_php_8_5#deprecate_the_http_response_header_predefined_variable

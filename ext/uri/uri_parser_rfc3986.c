@@ -40,7 +40,7 @@ static void *php_uri_parser_rfc3986_memory_manager_reallocarray(UriMemoryManager
 	return safe_erealloc(ptr, nmemb, size, 0);
 }
 
-static void php_uri_parser_rfc3986_memory_manager_free(UriMemoryManager *memory_manager, void *ptr)
+static void php_uri_parser_rfc3986_memory_manager_destroy(UriMemoryManager *memory_manager, void *ptr)
 {
 	efree(ptr);
 }
@@ -50,7 +50,7 @@ static const UriMemoryManager php_uri_parser_rfc3986_memory_manager = {
 	.calloc = php_uri_parser_rfc3986_memory_manager_calloc,
 	.realloc = php_uri_parser_rfc3986_memory_manager_realloc,
 	.reallocarray = php_uri_parser_rfc3986_memory_manager_reallocarray,
-	.free = php_uri_parser_rfc3986_memory_manager_free,
+	.free = php_uri_parser_rfc3986_memory_manager_destroy,
 	.userData = NULL,
 };
 
@@ -86,29 +86,27 @@ ZEND_ATTRIBUTE_NONNULL static UriUriA *get_normalized_uri(php_uri_parser_rfc3986
 	return &uriparser_uris->normalized_uri;
 }
 
-ZEND_ATTRIBUTE_NONNULL static UriUriA *get_uri_for_reading(php_uri_parser_rfc3986_uris *uriparser_uris, uri_component_read_mode_t read_mode)
+ZEND_ATTRIBUTE_NONNULL static UriUriA *get_uri_for_reading(php_uri_parser_rfc3986_uris *uriparser_uris, php_uri_component_read_mode read_mode)
 {
 	switch (read_mode) {
-		case URI_COMPONENT_READ_RAW:
+		case PHP_URI_COMPONENT_READ_MODE_RAW:
 			return &uriparser_uris->uri;
-		case URI_COMPONENT_READ_NORMALIZED_ASCII:
+		case PHP_URI_COMPONENT_READ_MODE_NORMALIZED_ASCII:
 			ZEND_FALLTHROUGH;
-		case URI_COMPONENT_READ_NORMALIZED_UNICODE:
+		case PHP_URI_COMPONENT_READ_MODE_NORMALIZED_UNICODE:
 			return get_normalized_uri(uriparser_uris);
 		EMPTY_SWITCH_DEFAULT_CASE()
 	}
 }
 
-ZEND_ATTRIBUTE_NONNULL static UriUriA *get_uri_for_writing(uri_internal_t *internal_uri)
+ZEND_ATTRIBUTE_NONNULL static UriUriA *get_uri_for_writing(php_uri_parser_rfc3986_uris *uriparser_uris)
 {
-	php_uri_parser_rfc3986_uris *uriparser_uris = internal_uri->uri;
-
 	return &uriparser_uris->uri;
 }
 
-ZEND_ATTRIBUTE_NONNULL static zend_result php_uri_parser_rfc3986_scheme_read(const uri_internal_t *internal_uri, uri_component_read_mode_t read_mode, zval *retval)
+ZEND_ATTRIBUTE_NONNULL static zend_result php_uri_parser_rfc3986_scheme_read(void *uri, php_uri_component_read_mode read_mode, zval *retval)
 {
-	const UriUriA *uriparser_uri = get_uri_for_reading(internal_uri->uri, read_mode);
+	const UriUriA *uriparser_uri = get_uri_for_reading(uri, read_mode);
 
 	if (has_text_range(&uriparser_uri->scheme)) {
 		ZVAL_STRINGL(retval, uriparser_uri->scheme.first, get_text_range_length(&uriparser_uri->scheme));
@@ -119,9 +117,9 @@ ZEND_ATTRIBUTE_NONNULL static zend_result php_uri_parser_rfc3986_scheme_read(con
 	return SUCCESS;
 }
 
-static zend_result php_uri_parser_rfc3986_scheme_write(struct uri_internal_t *internal_uri, zval *value, zval *errors)
+static zend_result php_uri_parser_rfc3986_scheme_write(void *uri, zval *value, zval *errors)
 {
-	UriUriA *uriparser_uri = get_uri_for_writing(internal_uri);
+	UriUriA *uriparser_uri = get_uri_for_writing(uri);
 	int result;
 
 	if (Z_TYPE_P(value) == IS_NULL) {
@@ -138,14 +136,14 @@ static zend_result php_uri_parser_rfc3986_scheme_write(struct uri_internal_t *in
 			return FAILURE;
 		default:
 			/* This should be unreachable in practice. */
-			zend_throw_exception(uri_invalid_uri_exception_ce, "Failed to update the scheme", 0);
+			zend_throw_exception(uri_error_ce, "Failed to update the scheme", 0);
 			return FAILURE;
 	}
 }
 
-ZEND_ATTRIBUTE_NONNULL zend_result php_uri_parser_rfc3986_userinfo_read(const uri_internal_t *internal_uri, uri_component_read_mode_t read_mode, zval *retval)
+ZEND_ATTRIBUTE_NONNULL zend_result php_uri_parser_rfc3986_userinfo_read(void *uri, php_uri_component_read_mode read_mode, zval *retval)
 {
-	const UriUriA *uriparser_uri = get_uri_for_reading(internal_uri->uri, read_mode);
+	const UriUriA *uriparser_uri = get_uri_for_reading(uri, read_mode);
 
 	if (has_text_range(&uriparser_uri->userInfo)) {
 		ZVAL_STRINGL(retval, uriparser_uri->userInfo.first, get_text_range_length(&uriparser_uri->userInfo));
@@ -156,9 +154,9 @@ ZEND_ATTRIBUTE_NONNULL zend_result php_uri_parser_rfc3986_userinfo_read(const ur
 	return SUCCESS;
 }
 
-zend_result php_uri_parser_rfc3986_userinfo_write(struct uri_internal_t *internal_uri, zval *value, zval *errors)
+zend_result php_uri_parser_rfc3986_userinfo_write(void *uri, zval *value, zval *errors)
 {
-	UriUriA *uriparser_uri = get_uri_for_writing(internal_uri);
+	UriUriA *uriparser_uri = get_uri_for_writing(uri);
 	int result;
 
 	if (Z_TYPE_P(value) == IS_NULL) {
@@ -178,14 +176,14 @@ zend_result php_uri_parser_rfc3986_userinfo_write(struct uri_internal_t *interna
 			return FAILURE;
 		default:
 			/* This should be unreachable in practice. */
-			zend_throw_exception(uri_invalid_uri_exception_ce, "Failed to update the userinfo", 0);
+			zend_throw_exception(uri_error_ce, "Failed to update the userinfo", 0);
 			return FAILURE;
 	}
 }
 
-ZEND_ATTRIBUTE_NONNULL static zend_result php_uri_parser_rfc3986_username_read(const uri_internal_t *internal_uri, uri_component_read_mode_t read_mode, zval *retval)
+ZEND_ATTRIBUTE_NONNULL static zend_result php_uri_parser_rfc3986_username_read(void *uri, php_uri_component_read_mode read_mode, zval *retval)
 {
-	const UriUriA *uriparser_uri = get_uri_for_reading(internal_uri->uri, read_mode);
+	const UriUriA *uriparser_uri = get_uri_for_reading(uri, read_mode);
 
 	if (has_text_range(&uriparser_uri->userInfo)) {
 		size_t length = get_text_range_length(&uriparser_uri->userInfo);
@@ -205,9 +203,9 @@ ZEND_ATTRIBUTE_NONNULL static zend_result php_uri_parser_rfc3986_username_read(c
 	return SUCCESS;
 }
 
-ZEND_ATTRIBUTE_NONNULL static zend_result php_uri_parser_rfc3986_password_read(const uri_internal_t *internal_uri, uri_component_read_mode_t read_mode, zval *retval)
+ZEND_ATTRIBUTE_NONNULL static zend_result php_uri_parser_rfc3986_password_read(void *uri, php_uri_component_read_mode read_mode, zval *retval)
 {
-	const UriUriA *uriparser_uri = get_uri_for_reading(internal_uri->uri, read_mode);
+	const UriUriA *uriparser_uri = get_uri_for_reading(uri, read_mode);
 
 	if (has_text_range(&uriparser_uri->userInfo)) {
 		const char *c = memchr(uriparser_uri->userInfo.first, ':', get_text_range_length(&uriparser_uri->userInfo));
@@ -224,9 +222,9 @@ ZEND_ATTRIBUTE_NONNULL static zend_result php_uri_parser_rfc3986_password_read(c
 	return SUCCESS;
 }
 
-ZEND_ATTRIBUTE_NONNULL static zend_result php_uri_parser_rfc3986_host_read(const uri_internal_t *internal_uri, uri_component_read_mode_t read_mode, zval *retval)
+ZEND_ATTRIBUTE_NONNULL static zend_result php_uri_parser_rfc3986_host_read(void *uri, php_uri_component_read_mode read_mode, zval *retval)
 {
-	const UriUriA *uriparser_uri = get_uri_for_reading(internal_uri->uri, read_mode);
+	const UriUriA *uriparser_uri = get_uri_for_reading(uri, read_mode);
 
 	if (has_text_range(&uriparser_uri->hostText)) {
 		if (uriparser_uri->hostData.ip6 != NULL || uriparser_uri->hostData.ipFuture.first != NULL) {
@@ -248,9 +246,9 @@ ZEND_ATTRIBUTE_NONNULL static zend_result php_uri_parser_rfc3986_host_read(const
 	return SUCCESS;
 }
 
-static zend_result php_uri_parser_rfc3986_host_write(struct uri_internal_t *internal_uri, zval *value, zval *errors)
+static zend_result php_uri_parser_rfc3986_host_write(void *uri, zval *value, zval *errors)
 {
-	UriUriA *uriparser_uri = get_uri_for_writing(internal_uri);
+	UriUriA *uriparser_uri = get_uri_for_writing(uri);
 	int result;
 
 	if (Z_TYPE_P(value) == IS_NULL) {
@@ -273,7 +271,7 @@ static zend_result php_uri_parser_rfc3986_host_write(struct uri_internal_t *inte
 			return FAILURE;
 		default:
 			/* This should be unreachable in practice. */
-			zend_throw_exception(uri_invalid_uri_exception_ce, "Failed to update the host", 0);
+			zend_throw_exception(uri_error_ce, "Failed to update the host", 0);
 			return FAILURE;
 	}
 }
@@ -296,9 +294,9 @@ ZEND_ATTRIBUTE_NONNULL static zend_long port_str_to_zend_long_checked(const char
 	return (zend_long)result;
 }
 
-ZEND_ATTRIBUTE_NONNULL static zend_result php_uri_parser_rfc3986_port_read(const uri_internal_t *internal_uri, uri_component_read_mode_t read_mode, zval *retval)
+ZEND_ATTRIBUTE_NONNULL static zend_result php_uri_parser_rfc3986_port_read(void *uri, php_uri_component_read_mode read_mode, zval *retval)
 {
-	const UriUriA *uriparser_uri = get_uri_for_reading(internal_uri->uri, read_mode);
+	const UriUriA *uriparser_uri = get_uri_for_reading(uri, read_mode);
 
 	if (has_text_range(&uriparser_uri->portText) && get_text_range_length(&uriparser_uri->portText) > 0) {
 		ZVAL_LONG(retval, port_str_to_zend_long_checked(uriparser_uri->portText.first, get_text_range_length(&uriparser_uri->portText)));
@@ -309,9 +307,9 @@ ZEND_ATTRIBUTE_NONNULL static zend_result php_uri_parser_rfc3986_port_read(const
 	return SUCCESS;
 }
 
-static zend_result php_uri_parser_rfc3986_port_write(struct uri_internal_t *internal_uri, zval *value, zval *errors)
+static zend_result php_uri_parser_rfc3986_port_write(void *uri, zval *value, zval *errors)
 {
-	UriUriA *uriparser_uri = get_uri_for_writing(internal_uri);
+	UriUriA *uriparser_uri = get_uri_for_writing(uri);
 	int result;
 
 	if (Z_TYPE_P(value) == IS_NULL) {
@@ -333,14 +331,14 @@ static zend_result php_uri_parser_rfc3986_port_write(struct uri_internal_t *inte
 			return FAILURE;
 		default:
 			/* This should be unreachable in practice. */
-			zend_throw_exception(uri_invalid_uri_exception_ce, "Failed to update the port", 0);
+			zend_throw_exception(uri_error_ce, "Failed to update the port", 0);
 			return FAILURE;
 	}
 }
 
-ZEND_ATTRIBUTE_NONNULL static zend_result php_uri_parser_rfc3986_path_read(const uri_internal_t *internal_uri, uri_component_read_mode_t read_mode, zval *retval)
+ZEND_ATTRIBUTE_NONNULL static zend_result php_uri_parser_rfc3986_path_read(void *uri, php_uri_component_read_mode read_mode, zval *retval)
 {
-	const UriUriA *uriparser_uri = get_uri_for_reading(internal_uri->uri, read_mode);
+	const UriUriA *uriparser_uri = get_uri_for_reading(uri, read_mode);
 
 	if (uriparser_uri->pathHead != NULL) {
 		smart_str str = {0};
@@ -366,9 +364,9 @@ ZEND_ATTRIBUTE_NONNULL static zend_result php_uri_parser_rfc3986_path_read(const
 	return SUCCESS;
 }
 
-static zend_result php_uri_parser_rfc3986_path_write(struct uri_internal_t *internal_uri, zval *value, zval *errors)
+static zend_result php_uri_parser_rfc3986_path_write(void *uri, zval *value, zval *errors)
 {
-	UriUriA *uriparser_uri = get_uri_for_writing(internal_uri);
+	UriUriA *uriparser_uri = get_uri_for_writing(uri);
 	int result;
 
 	if (Z_STRLEN_P(value) == 0) {
@@ -385,14 +383,14 @@ static zend_result php_uri_parser_rfc3986_path_write(struct uri_internal_t *inte
 			return FAILURE;
 		default:
 			/* This should be unreachable in practice. */
-			zend_throw_exception(uri_invalid_uri_exception_ce, "Failed to update the path", 0);
+			zend_throw_exception(uri_error_ce, "Failed to update the path", 0);
 			return FAILURE;
 	}
 }
 
-ZEND_ATTRIBUTE_NONNULL static zend_result php_uri_parser_rfc3986_query_read(const uri_internal_t *internal_uri, uri_component_read_mode_t read_mode, zval *retval)
+ZEND_ATTRIBUTE_NONNULL static zend_result php_uri_parser_rfc3986_query_read(void *uri, php_uri_component_read_mode read_mode, zval *retval)
 {
-	const UriUriA *uriparser_uri = get_uri_for_reading(internal_uri->uri, read_mode);
+	const UriUriA *uriparser_uri = get_uri_for_reading(uri, read_mode);
 
 	if (has_text_range(&uriparser_uri->query)) {
 		ZVAL_STRINGL(retval, uriparser_uri->query.first, get_text_range_length(&uriparser_uri->query));
@@ -403,9 +401,9 @@ ZEND_ATTRIBUTE_NONNULL static zend_result php_uri_parser_rfc3986_query_read(cons
 	return SUCCESS;
 }
 
-static zend_result php_uri_parser_rfc3986_query_write(struct uri_internal_t *internal_uri, zval *value, zval *errors)
+static zend_result php_uri_parser_rfc3986_query_write(void *uri, zval *value, zval *errors)
 {
-	UriUriA *uriparser_uri = get_uri_for_writing(internal_uri);
+	UriUriA *uriparser_uri = get_uri_for_writing(uri);
 	int result;
 
 	if (Z_TYPE_P(value) == IS_NULL) {
@@ -422,14 +420,14 @@ static zend_result php_uri_parser_rfc3986_query_write(struct uri_internal_t *int
 			return FAILURE;
 		default:
 			/* This should be unreachable in practice. */
-			zend_throw_exception(uri_invalid_uri_exception_ce, "Failed to update the query", 0);
+			zend_throw_exception(uri_error_ce, "Failed to update the query", 0);
 			return FAILURE;
 	}
 }
 
-ZEND_ATTRIBUTE_NONNULL static zend_result php_uri_parser_rfc3986_fragment_read(const uri_internal_t *internal_uri, uri_component_read_mode_t read_mode, zval *retval)
+ZEND_ATTRIBUTE_NONNULL static zend_result php_uri_parser_rfc3986_fragment_read(void *uri, php_uri_component_read_mode read_mode, zval *retval)
 {
-	const UriUriA *uriparser_uri = get_uri_for_reading(internal_uri->uri, read_mode);
+	const UriUriA *uriparser_uri = get_uri_for_reading(uri, read_mode);
 
 	if (has_text_range(&uriparser_uri->fragment)) {
 		ZVAL_STRINGL(retval, uriparser_uri->fragment.first, get_text_range_length(&uriparser_uri->fragment));
@@ -440,9 +438,9 @@ ZEND_ATTRIBUTE_NONNULL static zend_result php_uri_parser_rfc3986_fragment_read(c
 	return SUCCESS;
 }
 
-static zend_result php_uri_parser_rfc3986_fragment_write(struct uri_internal_t *internal_uri, zval *value, zval *errors)
+static zend_result php_uri_parser_rfc3986_fragment_write(void *uri, zval *value, zval *errors)
 {
-	UriUriA *uriparser_uri = get_uri_for_writing(internal_uri);
+	UriUriA *uriparser_uri = get_uri_for_writing(uri);
 	int result;
 
 	if (Z_TYPE_P(value) == IS_NULL) {
@@ -459,7 +457,7 @@ static zend_result php_uri_parser_rfc3986_fragment_write(struct uri_internal_t *
 			return FAILURE;
 		default:
 			/* This should be unreachable in practice. */
-			zend_throw_exception(uri_invalid_uri_exception_ce, "Failed to update the fragment", 0);
+			zend_throw_exception(uri_error_ce, "Failed to update the fragment", 0);
 			return FAILURE;
 	}
 }
@@ -486,7 +484,7 @@ php_uri_parser_rfc3986_uris *php_uri_parser_rfc3986_parse_ex(const char *uri_str
 					break;
 				default:
 					/* This should be unreachable in practice. */
-					zend_throw_exception(uri_invalid_uri_exception_ce, "Failed to parse the specified URI", 0);
+					zend_throw_exception(uri_error_ce, "Failed to parse the specified URI", 0);
 					break;
 			}
 		}
@@ -508,7 +506,7 @@ php_uri_parser_rfc3986_uris *php_uri_parser_rfc3986_parse_ex(const char *uri_str
 						break;
 					default:
 						/* This should be unreachable in practice. */
-						zend_throw_exception(uri_invalid_uri_exception_ce, "Failed to resolve the specified URI against the base URI", 0);
+						zend_throw_exception(uri_error_ce, "Failed to resolve the specified URI against the base URI", 0);
 						break;
 				}
 			}
@@ -564,12 +562,12 @@ ZEND_ATTRIBUTE_NONNULL static void *php_uri_parser_rfc3986_clone(void *uri)
 	return new_uriparser_uris;
 }
 
-ZEND_ATTRIBUTE_NONNULL static zend_string *php_uri_parser_rfc3986_to_string(void *uri, uri_recomposition_mode_t recomposition_mode, bool exclude_fragment)
+ZEND_ATTRIBUTE_NONNULL static zend_string *php_uri_parser_rfc3986_to_string(void *uri, php_uri_recomposition_mode recomposition_mode, bool exclude_fragment)
 {
 	php_uri_parser_rfc3986_uris *uriparser_uris = uri;
 	const UriUriA *uriparser_uri;
 
-	if (recomposition_mode == URI_RECOMPOSITION_RAW_ASCII || recomposition_mode == URI_RECOMPOSITION_RAW_UNICODE) {
+	if (recomposition_mode == PHP_URI_RECOMPOSITION_MODE_RAW_ASCII || recomposition_mode == PHP_URI_RECOMPOSITION_MODE_RAW_UNICODE) {
 		uriparser_uri = &uriparser_uris->uri;
 	} else {
 		uriparser_uri = get_normalized_uri(uriparser_uris);
@@ -595,7 +593,7 @@ ZEND_ATTRIBUTE_NONNULL static zend_string *php_uri_parser_rfc3986_to_string(void
 	return uri_string;
 }
 
-static void php_uri_parser_rfc3986_free(void *uri)
+static void php_uri_parser_rfc3986_destroy(void *uri)
 {
 	php_uri_parser_rfc3986_uris *uriparser_uris = uri;
 
@@ -609,20 +607,20 @@ static void php_uri_parser_rfc3986_free(void *uri)
 	efree(uriparser_uris);
 }
 
-const uri_parser_t php_uri_parser_rfc3986 = {
+const php_uri_parser php_uri_parser_rfc3986 = {
 	.name = PHP_URI_PARSER_RFC3986,
-	.parse_uri = php_uri_parser_rfc3986_parse,
-	.clone_uri = php_uri_parser_rfc3986_clone,
-	.uri_to_string = php_uri_parser_rfc3986_to_string,
-	.free_uri = php_uri_parser_rfc3986_free,
+	.parse = php_uri_parser_rfc3986_parse,
+	.clone = php_uri_parser_rfc3986_clone,
+	.to_string = php_uri_parser_rfc3986_to_string,
+	.destroy = php_uri_parser_rfc3986_destroy,
 	{
-		.scheme = {.read_func = php_uri_parser_rfc3986_scheme_read, .write_func = php_uri_parser_rfc3986_scheme_write},
-		.username = {.read_func = php_uri_parser_rfc3986_username_read, .write_func = NULL},
-		.password = {.read_func = php_uri_parser_rfc3986_password_read, .write_func = NULL},
-		.host = {.read_func = php_uri_parser_rfc3986_host_read, .write_func = php_uri_parser_rfc3986_host_write},
-		.port = {.read_func = php_uri_parser_rfc3986_port_read, .write_func = php_uri_parser_rfc3986_port_write},
-		.path = {.read_func = php_uri_parser_rfc3986_path_read, .write_func = php_uri_parser_rfc3986_path_write},
-		.query = {.read_func = php_uri_parser_rfc3986_query_read, .write_func = php_uri_parser_rfc3986_query_write},
-		.fragment = {.read_func = php_uri_parser_rfc3986_fragment_read, .write_func = php_uri_parser_rfc3986_fragment_write},
+		.scheme = {.read = php_uri_parser_rfc3986_scheme_read, .write = php_uri_parser_rfc3986_scheme_write},
+		.username = {.read = php_uri_parser_rfc3986_username_read, .write = NULL},
+		.password = {.read = php_uri_parser_rfc3986_password_read, .write = NULL},
+		.host = {.read = php_uri_parser_rfc3986_host_read, .write = php_uri_parser_rfc3986_host_write},
+		.port = {.read = php_uri_parser_rfc3986_port_read, .write = php_uri_parser_rfc3986_port_write},
+		.path = {.read = php_uri_parser_rfc3986_path_read, .write = php_uri_parser_rfc3986_path_write},
+		.query = {.read = php_uri_parser_rfc3986_query_read, .write = php_uri_parser_rfc3986_query_write},
+		.fragment = {.read = php_uri_parser_rfc3986_fragment_read, .write = php_uri_parser_rfc3986_fragment_write},
 	}
 };

@@ -4186,14 +4186,18 @@ static zend_result zend_compile_func_chr(znode *result, const zend_ast_list *arg
 }
 /* }}} */
 
-static zend_result zend_compile_func_ord(znode *result, zend_ast_list *args) /* {{{ */
+static zend_result zend_compile_func_ord(znode *result, const zend_ast_list *args) /* {{{ */
 {
-	if (args->children == 1 &&
-	    args->child[0]->kind == ZEND_AST_ZVAL &&
-	    Z_TYPE_P(zend_ast_get_zval(args->child[0])) == IS_STRING) {
-
+	zval *str;
+	if (
+		args->children == 1
+		&& args->child[0]->kind == ZEND_AST_ZVAL
+		&& (str = zend_ast_get_zval(args->child[0]))
+		&& Z_TYPE_P(str) == IS_STRING
+		&& Z_STRLEN_P(str) == 1
+	) {
 		result->op_type = IS_CONST;
-		ZVAL_LONG(&result->u.constant, (unsigned char)Z_STRVAL_P(zend_ast_get_zval(args->child[0]))[0]);
+		ZVAL_LONG(&result->u.constant, (unsigned char)Z_STRVAL_P(str)[0]);
 		return SUCCESS;
 	} else {
 		return FAILURE;
@@ -7004,7 +7008,7 @@ static void zend_compile_declare(zend_ast *ast) /* {{{ */
 		} else if (zend_string_equals_literal_ci(name, "strict_types")) {
 			zval value_zv;
 
-			if (FAILURE == zend_is_first_statement(ast, /* allow_nop */ 0)) {
+			if (FAILURE == zend_is_first_statement(ast, /* allow_nop */ true)) {
 				zend_error_noreturn(E_COMPILE_ERROR, "strict_types declaration must be "
 					"the very first statement in the script");
 			}
@@ -9355,7 +9359,7 @@ static void zend_compile_class_decl(znode *result, zend_ast *ast, bool toplevel)
 		zend_error(E_DEPRECATED, "The __sleep() serialization magic method has been deprecated."
 			" Implement __serialize() instead (or in addition, if support for old PHP versions is necessary)");
 	}
-	if (UNEXPECTED(zend_hash_exists(&ce->function_table, ZSTR_KNOWN(ZEND_STR_WAKEUP)) && ce->__unserialize == NULL)) {
+	if (ce->__unserialize == NULL && zend_hash_exists(&ce->function_table, ZSTR_KNOWN(ZEND_STR_WAKEUP))) {
 		zend_error(E_DEPRECATED, "The __wakeup() serialization magic method has been deprecated."
 			" Implement __unserialize() instead (or in addition, if support for old PHP versions is necessary)");
 	}
@@ -9935,14 +9939,14 @@ ZEND_API bool zend_is_op_long_compatible(const zval *op)
 	}
 
 	if (Z_TYPE_P(op) == IS_DOUBLE
-		&& !zend_is_long_compatible(Z_DVAL_P(op), zend_dval_to_lval(Z_DVAL_P(op)))) {
+		&& !zend_is_long_compatible(Z_DVAL_P(op), zend_dval_to_lval_silent(Z_DVAL_P(op)))) {
 		return false;
 	}
 
 	if (Z_TYPE_P(op) == IS_STRING) {
 		double dval = 0;
 		uint8_t is_num = is_numeric_str_function(Z_STR_P(op), NULL, &dval);
-		if (is_num == 0 || (is_num == IS_DOUBLE && !zend_is_long_compatible(dval, zend_dval_to_lval(dval)))) {
+		if (is_num == 0 || (is_num == IS_DOUBLE && !zend_is_long_compatible(dval, zend_dval_to_lval_silent(dval)))) {
 			return false;
 		}
 	}
@@ -9991,11 +9995,23 @@ ZEND_API bool zend_binary_op_produces_error(uint32_t opcode, const zval *op1, co
 		return 1;
 	}
 
-	if ((opcode == ZEND_MOD && zval_get_long(op2) == 0)
-			|| (opcode == ZEND_DIV && zval_get_double(op2) == 0.0)) {
+	/* Operation which cast float/float-strings to integers might produce incompatible float to int errors */
+	if (opcode == ZEND_SL || opcode == ZEND_SR || opcode == ZEND_BW_OR
+			|| opcode == ZEND_BW_AND || opcode == ZEND_BW_XOR) {
+		return !zend_is_op_long_compatible(op1) || !zend_is_op_long_compatible(op2);
+	}
+
+	if (opcode == ZEND_DIV && zval_get_double(op2) == 0.0) {
 		/* Division by zero throws an error. */
 		return 1;
 	}
+
+	/* Mod is an operation that will cast float/float-strings to integers which might
+	   produce float to int incompatible errors, and also cannot be divided by 0 */
+	if (opcode == ZEND_MOD) {
+		return  !zend_is_op_long_compatible(op1) || !zend_is_op_long_compatible(op2) || zval_get_long(op2) == 0;
+	}
+
 	if ((opcode == ZEND_POW) && zval_get_double(op1) == 0 && zval_get_double(op2) < 0) {
 		/* 0 ** (<0) throws a division by zero error. */
 		return 1;
@@ -10003,12 +10019,6 @@ ZEND_API bool zend_binary_op_produces_error(uint32_t opcode, const zval *op1, co
 	if ((opcode == ZEND_SL || opcode == ZEND_SR) && zval_get_long(op2) < 0) {
 		/* Shift by negative number throws an error. */
 		return 1;
-	}
-
-	/* Operation which cast float/float-strings to integers might produce incompatible float to int errors */
-	if (opcode == ZEND_SL || opcode == ZEND_SR || opcode == ZEND_BW_OR
-			|| opcode == ZEND_BW_AND || opcode == ZEND_BW_XOR || opcode == ZEND_MOD) {
-		return !zend_is_op_long_compatible(op1) || !zend_is_op_long_compatible(op2);
 	}
 
 	return 0;
@@ -10162,7 +10172,7 @@ static bool zend_try_ct_eval_array(zval *result, zend_ast *ast) /* {{{ */
 					zend_symtable_update(Z_ARRVAL_P(result), Z_STR_P(key), value);
 					break;
 				case IS_DOUBLE: {
-					zend_long lval = zend_dval_to_lval(Z_DVAL_P(key));
+					zend_long lval = zend_dval_to_lval_silent(Z_DVAL_P(key));
 					/* Incompatible float will generate an error, leave this to run-time */
 					if (!zend_is_long_compatible(Z_DVAL_P(key), lval)) {
 						zval_ptr_dtor_nogc(value);
@@ -12053,6 +12063,9 @@ bool zend_try_ct_eval_cast(zval *result, uint32_t type, zval *op1)
 			ZVAL_BOOL(result, zval_is_true(op1));
 			return true;
 		case IS_LONG:
+			if (Z_TYPE_P(op1) == IS_DOUBLE && !ZEND_DOUBLE_FITS_LONG(Z_DVAL_P((op1)))) {
+				return false;
+			}
 			ZVAL_LONG(result, zval_get_long(op1));
 			return true;
 		case IS_DOUBLE:

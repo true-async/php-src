@@ -6,10 +6,68 @@ PHP                                                                        NEWS
   . Fixed bug GH-19765 (object_properties_load() bypasses readonly property
     checks). (timwolla)
   . The __sleep() and __wakeup() magic methods have been deprecated. (Girgias)
+  . Fixed hard_timeout with --enable-zend-max-execution-timers. (Appla)
+  . Fixed bug GH-19839 (Incorrect HASH_FLAG_HAS_EMPTY_IND flag on userland
+    array). (ilutov)
+  . Fixed bug GH-19823 (register_argc_argv deprecation emitted twice when
+    using OPcache). (timwolla)
+  . Fixed bug GH-19480 (error_log php.ini cannot be unset when open_basedir is
+    configured). (nielsdos)
+  . Fixed bug GH-19719 (Allow empty statements before declare(strict_types)).
+    (nielsdos)
+  . Casting floats that are not representable as ints now emits a warning.
+    (Girgias)
+
+- Curl:
+  . Fix cloning of CURLOPT_POSTFIELDS when using the clone operator instead
+    of the curl_copy_handle() function to clone a CurlHandle. (timwolla)
+
+- Date:
+  . Fixed GH-17159: "P" format for ::createFromFormat swallows string literals.
+    (nielsdos)
+  . The __wakeup() magic method of DateTimeInterface, DateTime,
+    DateTimeImmutable, DateTimeZone, DateInterval, and DatePeriod has been
+    deprecated in favour of the __unserialize() magic method. (Girgias)
+
+- Exif:
+  . Fix OSS-Fuzz #442954659 (zero-size box in HEIF file causes infinite loop).
+    (nielsdos)
+  . Fix OSS-Fuzz #442954659 (Crash in exif_scan_HEIF_header). (nielsdos)
+  . Various hardening fixes to HEIF parsing. (nielsdos)
+
+- FPM:
+  . Fixed GH-8157 (post_max_size evaluates .user.ini too late in php-fpm).
+    (Jakub Zelenka)
+
+- Iconv:
+  . Extends the ICONV_CONST preprocessor for illumos/solaris. (jMichaelA)
+
+- Opcache:
+  . Fixed bug GH-19669 (assertion failure in zend_jit_trace_type_to_info_ex).
+    (Arnaud)
+
+- MBstring:
+  . Updated Unicode data tables to Unicode 17.0. (Yuya Hamada)
+
+- Standard:
+  . Passing strings which are not one byte long to ord() is now deprecated.
+    (Girgias)
+  . Fixed bug GH-19801 (leaks in var_dump() and debug_zval_dump()).
+    (alexandre-daubois)
+  . Fixed GH-14402 (SplPriorityQueue, SplMinHeap, and SplMaxHeap lost their
+    data on serialize()). (alexandre-daubois)
 
 - URI:
   . Fixed bug GH-19780 (InvalidUrlException should check $errors argument).
     (nielsdos)
+  . Prevent modifying Uri\WhatWg\Url and Uri\Rfc3986\Uri objects by manually
+    calling __construct() or __unserialize(). (timwolla)
+  . Add new Uri\UriError exception that is thrown for internal error
+    conditions. (timwolla)
+  . Further clean up the internal API. (timwolla)
+  . Fixed bug GH-19892 (Refcounting on zend_empty_array). (ilutov, timwolla)
+  . Fixed handling of port numbers > 65535 with the internal
+    `php_uri_parse_to_struct()` API. (timwolla)
 
 - Windows:
   . Fix GH-19722 (_get_osfhandle asserts in debug mode when given a socket).

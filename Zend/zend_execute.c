@@ -1732,10 +1732,13 @@ try_again:
 			zend_illegal_string_offset(dim, type);
 			return 0;
 		}
+		case IS_DOUBLE:
+			/* Suppress potential double warning */
+			zend_error(E_WARNING, "String offset cast occurred");
+			return zend_dval_to_lval_silent(Z_DVAL_P(dim));
 		case IS_UNDEF:
 			ZVAL_UNDEFINED_OP2();
 			ZEND_FALLTHROUGH;
-		case IS_DOUBLE:
 		case IS_NULL:
 		case IS_FALSE:
 		case IS_TRUE:
@@ -2668,21 +2671,18 @@ static zend_never_inline uint8_t slow_index_convert(HashTable *ht, const zval *d
 			value->str = ZSTR_EMPTY_ALLOC();
 			return IS_STRING;
 		case IS_DOUBLE:
-			value->lval = zend_dval_to_lval(Z_DVAL_P(dim));
-			if (!zend_is_long_compatible(Z_DVAL_P(dim), value->lval)) {
-				/* The array may be destroyed while throwing the notice.
-				 * Temporarily increase the refcount to detect this situation. */
-				if (!(GC_FLAGS(ht) & IS_ARRAY_IMMUTABLE)) {
-					GC_ADDREF(ht);
-				}
-				zend_incompatible_double_to_long_error(Z_DVAL_P(dim));
-				if (!(GC_FLAGS(ht) & IS_ARRAY_IMMUTABLE) && !GC_DELREF(ht)) {
-					zend_array_destroy(ht);
-					return IS_NULL;
-				}
-				if (EG(exception)) {
-					return IS_NULL;
-				}
+			/* The array may be destroyed while throwing the notice.
+			 * Temporarily increase the refcount to detect this situation. */
+			if (!(GC_FLAGS(ht) & IS_ARRAY_IMMUTABLE)) {
+				GC_ADDREF(ht);
+			}
+			value->lval = zend_dval_to_lval_safe(Z_DVAL_P(dim));
+			if (!(GC_FLAGS(ht) & IS_ARRAY_IMMUTABLE) && !GC_DELREF(ht)) {
+				zend_array_destroy(ht);
+				return IS_NULL;
+			}
+			if (EG(exception)) {
+				return IS_NULL;
 			}
 			return IS_LONG;
 		case IS_RESOURCE:
@@ -2753,23 +2753,20 @@ static zend_never_inline uint8_t slow_index_convert_w(HashTable *ht, const zval 
 			value->str = ZSTR_EMPTY_ALLOC();
 			return IS_STRING;
 		case IS_DOUBLE:
-			value->lval = zend_dval_to_lval(Z_DVAL_P(dim));
-			if (!zend_is_long_compatible(Z_DVAL_P(dim), value->lval)) {
-				/* The array may be destroyed while throwing the notice.
-				 * Temporarily increase the refcount to detect this situation. */
-				if (!(GC_FLAGS(ht) & IS_ARRAY_IMMUTABLE)) {
-					GC_ADDREF(ht);
+			/* The array may be destroyed while throwing the notice.
+			 * Temporarily increase the refcount to detect this situation. */
+			if (!(GC_FLAGS(ht) & IS_ARRAY_IMMUTABLE)) {
+				GC_ADDREF(ht);
+			}
+			value->lval = zend_dval_to_lval_safe(Z_DVAL_P(dim));
+			if (!(GC_FLAGS(ht) & IS_ARRAY_IMMUTABLE) && GC_DELREF(ht) != 1) {
+				if (!GC_REFCOUNT(ht)) {
+					zend_array_destroy(ht);
 				}
-				zend_incompatible_double_to_long_error(Z_DVAL_P(dim));
-				if (!(GC_FLAGS(ht) & IS_ARRAY_IMMUTABLE) && GC_DELREF(ht) != 1) {
-					if (!GC_REFCOUNT(ht)) {
-						zend_array_destroy(ht);
-					}
-					return IS_NULL;
-				}
-				if (EG(exception)) {
-					return IS_NULL;
-				}
+				return IS_NULL;
+			}
+			if (EG(exception)) {
+				return IS_NULL;
 			}
 			return IS_LONG;
 		case IS_RESOURCE:
@@ -3129,6 +3126,11 @@ try_string_offset:
 							return;
 						}
 					}
+					/* To prevent double warning */
+					if (Z_TYPE_P(dim) == IS_DOUBLE) {
+						offset = zend_dval_to_lval_silent(Z_DVAL_P(dim));
+						goto out;
+					}
 					break;
 				case IS_REFERENCE:
 					dim = Z_REFVAL_P(dim);
@@ -3239,7 +3241,17 @@ static zend_never_inline zval* ZEND_FASTCALL zend_find_array_dim_slow(HashTable 
 	zend_ulong hval;
 
 	if (Z_TYPE_P(offset) == IS_DOUBLE) {
+		/* The array may be destroyed while throwing a warning in case the float is not representable as an int.
+		 * Temporarily increase the refcount to detect this situation. */
+		GC_TRY_ADDREF(ht);
 		hval = zend_dval_to_lval_safe(Z_DVAL_P(offset));
+		if (!(GC_FLAGS(ht) & IS_ARRAY_IMMUTABLE) && !GC_DELREF(ht)) {
+			zend_array_destroy(ht);
+			return NULL;
+		}
+		if (EG(exception)) {
+			return NULL;
+		}
 num_idx:
 		return zend_hash_index_find(ht, hval);
 	} else if (Z_TYPE_P(offset) == IS_NULL) {
@@ -3378,7 +3390,17 @@ num_key:
 		key = Z_REFVAL_P(key);
 		goto try_again;
 	} else if (Z_TYPE_P(key) == IS_DOUBLE) {
+		/* The array may be destroyed while throwing a warning in case the float is not representable as an int.
+		 * Temporarily increase the refcount to detect this situation. */
+		GC_TRY_ADDREF(ht);
 		hval = zend_dval_to_lval_safe(Z_DVAL_P(key));
+		if (!(GC_FLAGS(ht) & IS_ARRAY_IMMUTABLE) && !GC_DELREF(ht)) {
+			zend_array_destroy(ht);
+			return false;
+		}
+		if (EG(exception)) {
+			return false;
+		}
 		goto num_key;
 	} else if (Z_TYPE_P(key) == IS_FALSE) {
 		hval = 0;
@@ -5440,7 +5462,12 @@ static zend_never_inline zend_result ZEND_FASTCALL zend_quick_check_constant(
 
 static zend_always_inline uint32_t zend_get_arg_offset_by_name(
 		zend_function *fbc, zend_string *arg_name, void **cache_slot) {
-	if (EXPECTED(*cache_slot == fbc)) {
+	/* Due to closures, the `fbc` address isn't unique if the memory address is reused.
+	 * The argument info will be however and uniquely positions the arguments.
+	 * We do support NULL arg_info, so we have to distinguish that from an uninitialized cache slot. */
+	void *unique_id = (void *) ((uintptr_t) fbc->common.arg_info | 1);
+
+	if (EXPECTED(*cache_slot == unique_id)) {
 		return *(uintptr_t *)(cache_slot + 1);
 	}
 
@@ -5449,10 +5476,12 @@ static zend_always_inline uint32_t zend_get_arg_offset_by_name(
 	if (EXPECTED(fbc->type == ZEND_USER_FUNCTION)
 			|| EXPECTED(fbc->common.fn_flags & ZEND_ACC_USER_ARG_INFO)) {
 		for (uint32_t i = 0; i < num_args; i++) {
-			zend_arg_info *arg_info = &fbc->op_array.arg_info[i];
+			zend_arg_info *arg_info = &fbc->common.arg_info[i];
 			if (zend_string_equals(arg_name, arg_info->name)) {
-				*cache_slot = fbc;
-				*(uintptr_t *)(cache_slot + 1) = i;
+				if (fbc->type == ZEND_USER_FUNCTION && (!fbc->op_array.refcount || !(fbc->op_array.fn_flags & ZEND_ACC_CLOSURE))) {
+					*cache_slot = unique_id;
+					*(uintptr_t *)(cache_slot + 1) = i;
+				}
 				return i;
 			}
 		}
@@ -5462,7 +5491,7 @@ static zend_always_inline uint32_t zend_get_arg_offset_by_name(
 			zend_internal_arg_info *arg_info = &fbc->internal_function.arg_info[i];
 			size_t len = strlen(arg_info->name);
 			if (zend_string_equals_cstr(arg_name, arg_info->name, len)) {
-				*cache_slot = fbc;
+				*cache_slot = unique_id;
 				*(uintptr_t *)(cache_slot + 1) = i;
 				return i;
 			}
@@ -5470,8 +5499,13 @@ static zend_always_inline uint32_t zend_get_arg_offset_by_name(
 	}
 
 	if (fbc->common.fn_flags & ZEND_ACC_VARIADIC) {
-		*cache_slot = fbc;
-		*(uintptr_t *)(cache_slot + 1) = fbc->common.num_args;
+		if ((fbc->type == ZEND_USER_FUNCTION
+		  && (!fbc->op_array.refcount || !(fbc->op_array.fn_flags & ZEND_ACC_CLOSURE)))
+		 || (fbc->type == ZEND_INTERNAL_FUNCTION
+		  && !(fbc->common.fn_flags & ZEND_ACC_USER_ARG_INFO))) {
+			*cache_slot = unique_id;
+			*(uintptr_t *)(cache_slot + 1) = fbc->common.num_args;
+		}
 		return fbc->common.num_args;
 	}
 

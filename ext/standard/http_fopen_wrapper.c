@@ -393,12 +393,12 @@ static php_stream *php_stream_url_wrap_http_ex(php_stream_wrapper *wrapper,
 		return NULL;
 	}
 
-	const uri_parser_t *uri_parser = php_stream_context_get_uri_parser("http", context);
+	const php_uri_parser *uri_parser = php_stream_context_get_uri_parser("http", context);
 	if (uri_parser == NULL) {
 		zend_value_error("%s(): Provided stream context has invalid value for the \"uri_parser_class\" option", get_active_function_name());
 		return NULL;
 	}
-	resource = php_uri_parse_to_struct(uri_parser, path, strlen(path), URI_COMPONENT_READ_RAW, true);
+	resource = php_uri_parse_to_struct(uri_parser, path, strlen(path), PHP_URI_COMPONENT_READ_MODE_RAW, true);
 	if (resource == NULL) {
 		return NULL;
 	}
@@ -446,7 +446,7 @@ static php_stream *php_stream_url_wrap_http_ex(php_stream_wrapper *wrapper,
 			use_proxy = 1;
 			transport_string = zend_string_copy(Z_STR_P(tmpzval));
 		} else {
-			transport_string = zend_strpprintf(0, "%s://%s:%d", use_ssl ? "ssl" : "tcp", ZSTR_VAL(resource->host), resource->port);
+			transport_string = zend_strpprintf(0, "%s://%s:" ZEND_LONG_FMT, use_ssl ? "ssl" : "tcp", ZSTR_VAL(resource->host), resource->port);
 		}
 	}
 
@@ -1083,7 +1083,7 @@ finish:
 					header_info.location = NULL;
 				}
 				if ((use_ssl && resource->port != 443) || (!use_ssl && resource->port != 80)) {
-					spprintf(&new_path, 0, "%s://%s:%d%s", ZSTR_VAL(resource->scheme),
+					spprintf(&new_path, 0, "%s://%s:" ZEND_LONG_FMT "%s", ZSTR_VAL(resource->scheme),
 							ZSTR_VAL(resource->host), resource->port, loc_path);
 				} else {
 					spprintf(&new_path, 0, "%s://%s%s", ZSTR_VAL(resource->scheme),
@@ -1097,7 +1097,7 @@ finish:
 
 			php_uri_struct_free(resource);
 			/* check for invalid redirection URLs */
-			if ((resource = php_uri_parse_to_struct(uri_parser, new_path, strlen(new_path), URI_COMPONENT_READ_RAW, true)) == NULL) {
+			if ((resource = php_uri_parse_to_struct(uri_parser, new_path, strlen(new_path), PHP_URI_COMPONENT_READ_MODE_RAW, true)) == NULL) {
 				php_stream_wrapper_log_error(wrapper, options, "Invalid redirect URL! %s", new_path);
 				efree(new_path);
 				goto out;
