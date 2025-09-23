@@ -479,8 +479,15 @@ static zend_always_inline zend_async_waker_trigger_t *waker_trigger_create(
 		initial_capacity = 2;
 	}
 
+#ifdef __cplusplus
+	// Account for the [1] element already included in sizeof()
+	size_t total_size = sizeof(zend_async_waker_trigger_t)
+			+ (initial_capacity - 1) * sizeof(zend_async_event_callback_t *);
+#else
+	// Flexible array member doesn't contribute to sizeof()
 	size_t total_size = sizeof(zend_async_waker_trigger_t)
 			+ initial_capacity * sizeof(zend_async_event_callback_t *);
+#endif
 	zend_async_waker_trigger_t *trigger = (zend_async_waker_trigger_t *) emalloc(total_size);
 
 	trigger->length = 0;
