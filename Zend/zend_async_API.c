@@ -26,6 +26,12 @@ zend_async_globals_t zend_async_globals_api = { 0 };
 
 #define ASYNC_THROW_ERROR(error) zend_throw_error(NULL, error);
 
+static zend_always_inline zend_ulong ptr_to_index(void *ptr)
+{
+	zend_ulong key = (zend_ulong) ptr;
+	return (key >> 3) | (key << ((sizeof(key) * 8) - 3));
+}
+
 /* Forward declarations */
 static void zend_async_main_handlers_shutdown(void);
 
@@ -473,8 +479,15 @@ static zend_always_inline zend_async_waker_trigger_t *waker_trigger_create(
 		initial_capacity = 2;
 	}
 
+#ifdef __cplusplus
+	// Account for the [1] element already included in sizeof()
+	size_t total_size = sizeof(zend_async_waker_trigger_t)
+			+ (initial_capacity - 1) * sizeof(zend_async_event_callback_t *);
+#else
+	// Flexible array member doesn't contribute to sizeof()
 	size_t total_size = sizeof(zend_async_waker_trigger_t)
 			+ initial_capacity * sizeof(zend_async_event_callback_t *);
+#endif
 	zend_async_waker_trigger_t *trigger = (zend_async_waker_trigger_t *) emalloc(total_size);
 
 	trigger->length = 0;
@@ -715,11 +728,9 @@ void coroutine_event_callback_dispose(
 			((zend_coroutine_event_callback_t *) callback)->event = NULL;
 
 			// Find the trigger for this event
-			// @todo zend_rotr3
-			zval *trigger_zval = zend_hash_index_find(&waker->events, (zend_ulong) event);
+			zend_async_waker_trigger_t *trigger = zend_hash_index_find_ptr(&waker->events, ptr_to_index(event));
 
-			if (trigger_zval != NULL) {
-				zend_async_waker_trigger_t *trigger = Z_PTR_P(trigger_zval);
+			if (trigger != NULL) {
 
 				// Remove only this specific callback from the trigger
 				for (uint32_t i = 0; i < trigger->length; i++) {
@@ -732,10 +743,10 @@ void coroutine_event_callback_dispose(
 
 				// If no more callbacks in trigger, remove the entire event
 				if (trigger->length == 0) {
-					zend_hash_index_del(&waker->events, (zend_ulong) event);
+					zend_hash_index_del(&waker->events, ptr_to_index(event));
 
 					if (waker->triggered_events != NULL) {
-						zend_hash_index_del(waker->triggered_events, (zend_ulong) event);
+						zend_hash_index_del(waker->triggered_events, ptr_to_index(event));
 					}
 				}
 			}
@@ -758,7 +769,7 @@ ZEND_API void zend_async_waker_add_triggered_event(
 	}
 
 	if (EXPECTED(zend_hash_index_add_ptr(
-						 coroutine->waker->triggered_events, (zend_ulong) event, event)
+						 coroutine->waker->triggered_events, ptr_to_index(event), event)
 				!= NULL)) {
 		ZEND_ASYNC_EVENT_ADD_REF(event);
 	}
@@ -771,7 +782,7 @@ ZEND_API bool zend_async_waker_is_event_exists(
 		return false;
 	}
 
-	return zend_hash_index_find(&coroutine->waker->events, (zend_ulong) event) != NULL;
+	return zend_hash_index_find(&coroutine->waker->events, ptr_to_index(event)) != NULL;
 }
 
 ZEND_API void zend_async_resume_when(zend_coroutine_t *coroutine, zend_async_event_t *event,
@@ -835,7 +846,7 @@ ZEND_API void zend_async_resume_when(zend_coroutine_t *coroutine, zend_async_eve
 	}
 
 	if (EXPECTED(coroutine->waker != NULL)) {
-		zval *trigger_zval = zend_hash_index_find(&coroutine->waker->events, (zend_ulong) event);
+		zval *trigger_zval = zend_hash_index_find(&coroutine->waker->events, ptr_to_index(event));
 		zend_async_waker_trigger_t *trigger;
 
 		if (UNEXPECTED(trigger_zval != NULL)) {
@@ -850,7 +861,7 @@ ZEND_API void zend_async_resume_when(zend_coroutine_t *coroutine, zend_async_eve
 			trigger = waker_trigger_add_callback(trigger, &event_callback->base);
 
 			if (UNEXPECTED(zend_hash_index_add_ptr(
-								   &coroutine->waker->events, (zend_ulong) event, trigger)
+								   &coroutine->waker->events, ptr_to_index(event), trigger)
 						== NULL)) {
 				// This should not happen with new events, but handle gracefully
 				efree(trigger);
