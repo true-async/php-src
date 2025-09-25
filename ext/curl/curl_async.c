@@ -164,17 +164,17 @@ void curl_async_shutdown(void)
 /// SINGLE CURL SECTION
 ///////////////////////////////////////////////////////////////
 
-static void curl_async_event_add_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
+static bool curl_async_event_add_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
 {
-	zend_async_callbacks_push(event, callback);
+	return zend_async_callbacks_push(event, callback);
 }
 
-static void curl_async_event_remove_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
+static bool curl_async_event_remove_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
 {
-	zend_async_callbacks_remove(event, callback);
+	return zend_async_callbacks_remove(event, callback);
 }
 
-static void curl_async_event_start(zend_async_event_t *event)
+static bool curl_async_event_start(zend_async_event_t *event)
 {
 	curl_async_event_t *curl_event = (curl_async_event_t *) event;
 
@@ -183,7 +183,7 @@ static void curl_async_event_start(zend_async_event_t *event)
 			ZEND_ASYNC_GET_CE(ZEND_ASYNC_EXCEPTION_DEFAULT), 0, "Failed to register cURL event in the multi event list"
 		);
 		event->stop(event);
-		return;
+		return false;
 	}
 
 	if (curl_multi_handle == NULL) {
@@ -191,7 +191,7 @@ static void curl_async_event_start(zend_async_event_t *event)
 		if (curl_multi_handle == NULL) {
 			zend_throw_exception_ex(zend_ce_error, 0, "Failed to initialize cURL multi handle");
 			event->stop(event);
-			return;
+			return false;
 		}
 	}
 
@@ -200,8 +200,12 @@ static void curl_async_event_start(zend_async_event_t *event)
 	curl_multi_socket_action(curl_multi_handle, CURL_SOCKET_TIMEOUT, 0, &running_handles);
 
 	if (UNEXPECTED(EG(exception) != NULL)) {
-		event->stop(event);
+		if (!event->stop(event)) {
+			return false;
+		}
+		return false;
 	}
+	return true;
 }
 
 static void curl_async_event_stop(zend_async_event_t *event)
@@ -248,7 +252,9 @@ static curl_async_event_t * curl_async_event_ctor(CURL* curl)
 static void curl_async_event_dtor(zend_async_event_t *event)
 {
 	if (false == ZEND_ASYNC_EVENT_IS_CLOSED(event)) {
-		event->stop(event);
+		if (!event->stop(event)) {
+			// Optimized: ignore stop failure in destructor cleanup
+		}
 	}
 
 	zend_async_callbacks_free(event);
@@ -312,19 +318,15 @@ static int curl_socket_cb(CURL *curl, const curl_socket_t socket_fd, const int w
 
 		zend_async_poll_event_t *socket_event = ZEND_ASYNC_NEW_SOCKET_EVENT(socket_fd, events);
 
-		if (socket_event == NULL || EG(exception)) {
+		if (socket_event == NULL) {
 			return CURLM_BAD_SOCKET;
 		}
 
-		socket_event->base.add_callback(&socket_event->base, ZEND_ASYNC_EVENT_CALLBACK(curl_poll_callback));
-
-		if (EG(exception)) {
+		if (!socket_event->base.add_callback(&socket_event->base, ZEND_ASYNC_EVENT_CALLBACK(curl_poll_callback))) {
 			return CURLM_BAD_SOCKET;
 		}
 
-		socket_event->base.start(&socket_event->base);
-
-		if (EG(exception)) {
+		if (!socket_event->base.start(&socket_event->base)) {
 			// Cleanup on start failure
 			socket_event->base.dispose(&socket_event->base);
 			return CURLM_BAD_SOCKET;
@@ -389,17 +391,15 @@ static int curl_timer_cb(CURLM *multi, const long timeout_ms, void *user_p)
 	// Create new timer event
 	timer = ZEND_ASYNC_NEW_TIMER_EVENT(timeout_ms, false);
 
-	if (timer == NULL || EG(exception)) {
+	if (timer == NULL) {
 		return CURLM_INTERNAL_ERROR;
 	}
 
-	timer->base.add_callback(&timer->base, ZEND_ASYNC_EVENT_CALLBACK(timer_callback));
-	if (EG(exception)) {
+	if (!timer->base.add_callback(&timer->base, ZEND_ASYNC_EVENT_CALLBACK(timer_callback))) {
 		goto fail;
 	}
 
-	timer->base.start(&timer->base);
-	if (EG(exception)) {
+	if (!timer->base.start(&timer->base)) {
 		goto fail;
 	}
 
@@ -427,36 +427,30 @@ CURLcode curl_async_perform(CURL* curl)
 		return CURLE_FAILED_INIT;
 	}
 
-	zend_async_waker_new(coroutine);
-	if (UNEXPECTED(EG(exception))) {
+	if (!zend_async_waker_new(coroutine)) {
 		return CURLE_FAILED_INIT;
 	}
 
 	curl_async_event_t *curl_event = curl_async_event_ctor(curl);
 
-	if (UNEXPECTED(EG(exception))) {
+	if (UNEXPECTED(curl_event == NULL)) {
 		zend_async_waker_clean(coroutine);
 		return CURLE_FAILED_INIT;
 	}
 
-	zend_async_resume_when(
+	if (!zend_async_resume_when(
 		coroutine,
 		&curl_event->base,
 		true,
 		zend_async_waker_callback_resolve,
 		NULL
-	);
-
-	if (UNEXPECTED(EG(exception))) {
+	)) {
 		zend_async_waker_clean(coroutine);
 		return CURLE_FAILED_INIT;
 	}
 
 	// Suspend coroutine until curl completes
-	ZEND_ASYNC_SUSPEND();
-
-	// Check for exception
-	if (EG(exception)) {
+	if (!ZEND_ASYNC_SUSPEND()) {
 		zend_async_waker_clean(coroutine);
 		return CURLE_ABORTED_BY_CALLBACK;
 	}
@@ -497,14 +491,14 @@ typedef struct {
 	curl_async_multi_event_t *curl_m_event;
 } curl_multi_event_callback_t;
 
-static void curl_async_multi_event_add_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
+static bool curl_async_multi_event_add_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
 {
-	zend_async_callbacks_push(event, callback);
+	return zend_async_callbacks_push(event, callback);
 }
 
-static void curl_async_multi_event_remove_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
+static bool curl_async_multi_event_remove_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
 {
-	zend_async_callbacks_remove(event, callback);
+	return zend_async_callbacks_remove(event, callback);
 }
 
 static void curl_async_multi_event_start(zend_async_event_t *event)
@@ -557,9 +551,7 @@ static zend_always_inline bool curl_async_multi_event_init(php_curlm * curl_m)
 		return false;
 	}
 
-	async_event->base.start(&async_event->base);
-
-	if (UNEXPECTED(EG(exception))) {
+	if (!async_event->base.start(&async_event->base)) {
 		async_event->base.dispose(&async_event->base);
 		return false;
 	}
@@ -572,7 +564,9 @@ static zend_always_inline bool curl_async_multi_event_init(php_curlm * curl_m)
 static void curl_async_multi_event_dtor(zend_async_event_t *event)
 {
 	if (false == ZEND_ASYNC_EVENT_IS_CLOSED(event)) {
-		event->stop(event);
+		if (!event->stop(event)) {
+			// Optimized: ignore stop failure in multi-event destructor cleanup
+		}
 	}
 
 	curl_async_multi_event_t *curl_event = (curl_async_multi_event_t *) event;
@@ -639,7 +633,7 @@ static int multi_timer_cb(CURLM *multi, const long timeout_ms, void *user_p)
 	// Create new timer event
 	timer_event = ZEND_ASYNC_NEW_TIMER_EVENT(timeout_ms, false);
 
-	if (timer_event == NULL || EG(exception)) {
+	if (timer_event == NULL) {
 		return CURLM_INTERNAL_ERROR;
 	}
 
@@ -650,16 +644,13 @@ static int multi_timer_cb(CURLM *multi, const long timeout_ms, void *user_p)
 	// Initialize the callback with the event reference
 	async_event_callback->curl_m_event = async_event;
 
-	timer_event->base.add_callback(&timer_event->base, &async_event_callback->base);
-
-	if (UNEXPECTED(EG(exception))) {
+	if (!timer_event->base.add_callback(&timer_event->base, &async_event_callback->base)) {
 		timer_event->base.stop(&timer_event->base);
 		timer_event->base.dispose(&timer_event->base);
 		return CURLM_INTERNAL_ERROR;
 	}
 
-	timer_event->base.start(&timer_event->base);
-	if (UNEXPECTED(EG(exception))) {
+	if (!timer_event->base.start(&timer_event->base)) {
 		timer_event->base.stop(&timer_event->base);
 		timer_event->base.dispose(&timer_event->base);
 		return CURLM_INTERNAL_ERROR;
@@ -748,7 +739,7 @@ static int multi_socket_cb(CURL *curl, const curl_socket_t socket_fd, const int 
 
 		socket_event = ZEND_ASYNC_NEW_SOCKET_EVENT(socket_fd, events);
 
-		if (socket_event == NULL || EG(exception)) {
+		if (socket_event == NULL) {
 			return -1;
 		}
 
@@ -762,18 +753,14 @@ static int multi_socket_cb(CURL *curl, const curl_socket_t socket_fd, const int 
 		poll_callback->curl_m_event = async_event;
 
 		// Register callback
-		socket_event->base.add_callback(&socket_event->base, &poll_callback->base);
-
-		if (UNEXPECTED(EG(exception))) {
+		if (!socket_event->base.add_callback(&socket_event->base, &poll_callback->base)) {
 			// Cleanup on callback registration failure
 			zend_hash_index_del(&async_event->poll_list, socket_fd);
 			poll_callback->base.dispose(&poll_callback->base, NULL);
 			return CURLM_BAD_SOCKET;
 		}
 
-		socket_event->base.start(&socket_event->base);
-
-		if (UNEXPECTED(EG(exception))) {
+		if (!socket_event->base.start(&socket_event->base)) {
 			// Cleanup on start failure
 			zend_hash_index_del(&async_event->poll_list, socket_fd);
 			poll_callback->base.dispose(&poll_callback->base, NULL);
@@ -882,7 +869,9 @@ CURLMcode curl_async_select(php_curlm * curl_m, int timeout_ms, int* numfds)
 	curl_multi_socket_action(multi_handle, CURL_SOCKET_TIMEOUT, 0, &running_handles);
 
 	// Suspend coroutine until events are ready
-	ZEND_ASYNC_SUSPEND();
+	if (!ZEND_ASYNC_SUSPEND()) {
+		return CURLM_INTERNAL_ERROR;
+	}
 
 	// Clear timeout exception if it occurred
 	if (UNEXPECTED(EG(exception))) {

@@ -292,9 +292,7 @@ ZEND_API int network_async_await_stream_socket(php_netstream_data_t *netdata, as
 	ZVAL_LONG(&coroutine->waker->result, 0);
 
 	// Suspend until event or timeout
-	ZEND_ASYNC_SUSPEND();
-
-	if (UNEXPECTED(EG(exception) != NULL)) {
+	if (!ZEND_ASYNC_SUSPEND()) {
 		zend_async_waker_clean(coroutine);
 		handle_exception_and_errno();
 		return -1;
@@ -738,7 +736,7 @@ ZEND_API int php_select_async(php_socket_t max_fd, fd_set *rfds, fd_set *wfds, f
 		zend_async_poll_event_t * poll_event = ZEND_ASYNC_NEW_POLL_EVENT(i, 0, events);
 #endif
 
-		if (UNEXPECTED(EG(exception) != NULL)) {
+		if (UNEXPECTED(poll_event == NULL)) {
 			errno = ENOMEM;
 			result = -1;
 			goto cleanup;
@@ -1451,7 +1449,7 @@ ZEND_API int php_network_getaddrinfo_async(const char *node, const char *service
 
 	zend_async_dns_addrinfo_t *dns_event = ZEND_ASYNC_GETADDRINFO(node, service, hints);
 
-	if (UNEXPECTED(EG(exception) != NULL || dns_event == NULL)) {
+	if (UNEXPECTED(dns_event == NULL)) {
 		errno = ENOMEM;
 		goto error;
 	}
@@ -1635,7 +1633,7 @@ ZEND_API zend_string* php_network_gethostbyaddr_async(const char *ip)
 
 	zend_async_dns_nameinfo_t *dns_event = ZEND_ASYNC_GETNAMEINFO((struct sockaddr*)&ss, 0);
 
-	if (UNEXPECTED(EG(exception) != NULL || dns_event == NULL)) {
+	if (UNEXPECTED(dns_event == NULL)) {
 		goto error;
 	}
 
