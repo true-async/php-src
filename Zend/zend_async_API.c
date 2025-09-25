@@ -1218,10 +1218,10 @@ ZEND_API zval *zend_async_internal_context_find(zend_coroutine_t *coroutine, uin
 	return zend_hash_index_find(coroutine->internal_context, key);
 }
 
-ZEND_API void zend_async_internal_context_set(zend_coroutine_t *coroutine, uint32_t key, zval *value)
+ZEND_API bool zend_async_internal_context_set(zend_coroutine_t *coroutine, uint32_t key, zval *value)
 {
 	if (coroutine == NULL) {
-		return;
+		return false;
 	}
 
 	// Initialize internal_context if needed
@@ -1233,6 +1233,7 @@ ZEND_API void zend_async_internal_context_set(zend_coroutine_t *coroutine, uint3
 	zval copy;
 	ZVAL_COPY(&copy, value);
 	zend_hash_index_update(coroutine->internal_context, key, &copy);
+	return true;
 }
 
 ZEND_API bool zend_async_internal_context_unset(zend_coroutine_t *coroutine, uint32_t key)
@@ -1585,11 +1586,11 @@ ZEND_API bool zend_coroutine_remove_switch_handler(
 	return true;
 }
 
-ZEND_API void zend_coroutine_call_switch_handlers(
+ZEND_API bool zend_coroutine_call_switch_handlers(
 		zend_coroutine_t *coroutine, bool is_enter, bool is_finishing)
 {
 	if (!coroutine->switch_handlers || coroutine->switch_handlers->length == 0) {
-		return;
+		return true;
 	}
 
 	zend_coroutine_switch_handlers_vector_t *vector = coroutine->switch_handlers;
@@ -1626,6 +1627,8 @@ ZEND_API void zend_coroutine_call_switch_handlers(
 		vector->capacity = 0;
 		efree(vector);
 	}
+
+	return true;
 }
 
 ///////////////////////////////////////////////////////////////
@@ -1635,14 +1638,14 @@ ZEND_API void zend_coroutine_call_switch_handlers(
 static zend_coroutine_switch_handlers_vector_t global_main_coroutine_start_handlers
 		= { 0, 0, NULL, false };
 
-ZEND_API void zend_async_add_main_coroutine_start_handler(zend_coroutine_switch_handler_fn handler)
+ZEND_API bool zend_async_add_main_coroutine_start_handler(zend_coroutine_switch_handler_fn handler)
 {
 	zend_coroutine_switch_handlers_vector_t *vector = &global_main_coroutine_start_handlers;
 
 	/* Check for duplicate handler */
 	for (uint32_t i = 0; i < vector->length; i++) {
 		if (vector->data[i].handler == handler) {
-			return;
+			return false;
 		}
 	}
 
@@ -1657,6 +1660,7 @@ ZEND_API void zend_async_add_main_coroutine_start_handler(zend_coroutine_switch_
 	/* Add handler */
 	vector->data[vector->length].handler = handler;
 	vector->length++;
+	return true;
 }
 
 ZEND_API bool zend_async_call_main_coroutine_start_handlers(zend_coroutine_t *main_coroutine)
