@@ -481,7 +481,7 @@ CURLcode curl_async_perform(CURL* curl)
 ///    - multi_timer_cb → creates timer event
 /// 7. When socket ready or timer fires → notify Waker
 /// 8. Coroutine resumes
-/// 
+///
 /// ⚠️ IMPORTANT: Multiple coroutines can simultaneously wait on same php_curlm!
 ///              Each select() creates its own Waker, but all use same curl_multi_event
 ///////////////////////////////////////////////////////////////
@@ -501,15 +501,14 @@ static bool curl_async_multi_event_remove_callback(zend_async_event_t *event, ze
 	return zend_async_callbacks_remove(event, callback);
 }
 
-static void curl_async_multi_event_start(zend_async_event_t *event)
+static bool curl_async_multi_event_start(zend_async_event_t *event)
 {
+	return true;
 }
 
-static void curl_async_multi_event_stop(zend_async_event_t *event)
+static bool curl_async_multi_event_stop(zend_async_event_t *event)
 {
-	if (UNEXPECTED(ZEND_ASYNC_EVENT_IS_CLOSED(event))) {
-		return; // Event is already closed, nothing to do
-	}
+	return true;
 }
 
 static zend_string * curl_async_multi_event_info(zend_async_event_t *event)
@@ -517,7 +516,7 @@ static zend_string * curl_async_multi_event_info(zend_async_event_t *event)
 	return zend_string_init("CURL Multi Async Event", sizeof("CURL Multi Async Event") - 1, 0);
 }
 
-static void curl_async_multi_event_dtor(zend_async_event_t *event);
+static bool curl_async_multi_event_dtor(zend_async_event_t *event);
 
 static curl_async_multi_event_t * curl_async_multi_event_ctor(php_curlm * curl_m)
 {
@@ -561,12 +560,10 @@ static zend_always_inline bool curl_async_multi_event_init(php_curlm * curl_m)
 	return true;
 }
 
-static void curl_async_multi_event_dtor(zend_async_event_t *event)
+static bool curl_async_multi_event_dtor(zend_async_event_t *event)
 {
 	if (false == ZEND_ASYNC_EVENT_IS_CLOSED(event)) {
-		if (!event->stop(event)) {
-			// Optimized: ignore stop failure in multi-event destructor cleanup
-		}
+		event->stop(event);
 	}
 
 	curl_async_multi_event_t *curl_event = (curl_async_multi_event_t *) event;
@@ -596,6 +593,8 @@ static void curl_async_multi_event_dtor(zend_async_event_t *event)
 	zend_async_callbacks_free(event);
 
 	efree(curl_event);
+
+	return true;
 }
 
 static void multi_timer_callback(
