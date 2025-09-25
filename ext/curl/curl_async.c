@@ -200,18 +200,16 @@ static bool curl_async_event_start(zend_async_event_t *event)
 	curl_multi_socket_action(curl_multi_handle, CURL_SOCKET_TIMEOUT, 0, &running_handles);
 
 	if (UNEXPECTED(EG(exception) != NULL)) {
-		if (!event->stop(event)) {
-			return false;
-		}
+		event->stop(event);
 		return false;
 	}
 	return true;
 }
 
-static void curl_async_event_stop(zend_async_event_t *event)
+static bool curl_async_event_stop(zend_async_event_t *event)
 {
 	if (UNEXPECTED(ZEND_ASYNC_EVENT_IS_CLOSED(event))) {
-		return; // Event is already closed, nothing to do
+		return true; // Event is already closed, nothing to do
 	}
 
 	curl_async_event_t *curl_event = (curl_async_event_t *) event;
@@ -223,6 +221,8 @@ static void curl_async_event_stop(zend_async_event_t *event)
 		curl_multi_remove_handle(curl_multi_handle, curl_event->curl);
 		curl_event->curl = NULL;
 	}
+
+	return true;
 }
 
 static zend_string * curl_async_event_info(zend_async_event_t *event)
@@ -230,7 +230,7 @@ static zend_string * curl_async_event_info(zend_async_event_t *event)
 	return zend_string_init("CURL Async Event", sizeof("CURL Async Event") - 1, 0);
 }
 
-static void curl_async_event_dtor(zend_async_event_t *event);
+static bool curl_async_event_dtor(zend_async_event_t *event);
 
 static curl_async_event_t * curl_async_event_ctor(CURL* curl)
 {
@@ -249,12 +249,10 @@ static curl_async_event_t * curl_async_event_ctor(CURL* curl)
 	return curl_event;
 }
 
-static void curl_async_event_dtor(zend_async_event_t *event)
+static bool curl_async_event_dtor(zend_async_event_t *event)
 {
 	if (false == ZEND_ASYNC_EVENT_IS_CLOSED(event)) {
-		if (!event->stop(event)) {
-			// Optimized: ignore stop failure in destructor cleanup
-		}
+		event->stop(event);
 	}
 
 	zend_async_callbacks_free(event);
@@ -262,6 +260,8 @@ static void curl_async_event_dtor(zend_async_event_t *event)
 	curl_async_event_t *curl_event = (curl_async_event_t *) event;
 
 	efree(curl_event);
+
+	return true;
 }
 
 static void curl_poll_callback(
