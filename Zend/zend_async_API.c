@@ -42,17 +42,20 @@ static zend_coroutine_t *spawn(
 	return NULL;
 }
 
-static void suspend(bool from_main)
+static bool suspend(bool from_main)
 {
+	return false;
 }
 
-static void enqueue_coroutine(zend_coroutine_t *coroutine)
+static bool enqueue_coroutine(zend_coroutine_t *coroutine)
 {
 	ASYNC_THROW_ERROR("Async API is not enabled");
+	return false;
 }
 
-static void void_stub(void)
+static bool bool_stub(void)
 {
+	return true;
 }
 
 static zend_array *get_coroutines_stub(void)
@@ -91,8 +94,9 @@ static zend_object *new_channel_obj_stub(zend_async_channel_t *channel)
 	return NULL;
 }
 
-static void add_microtask_stub(zend_async_microtask_t *microtask)
+static bool add_microtask_stub(zend_async_microtask_t *microtask)
 {
+	return true;
 }
 
 static zend_array *get_awaiting_info_stub(zend_coroutine_t *coroutine)
@@ -137,8 +141,8 @@ zend_async_enqueue_coroutine_t zend_async_enqueue_coroutine_fn = enqueue_corouti
 zend_async_resume_t zend_async_resume_fn = NULL;
 zend_async_cancel_t zend_async_cancel_fn = NULL;
 zend_async_spawn_and_throw_t zend_async_spawn_and_throw_fn = spawn_and_throw;
-zend_async_shutdown_t zend_async_shutdown_fn = void_stub;
-zend_async_engine_shutdown_t zend_async_engine_shutdown_fn = void_stub;
+zend_async_shutdown_t zend_async_shutdown_fn = bool_stub;
+zend_async_engine_shutdown_t zend_async_engine_shutdown_fn = bool_stub;
 zend_async_get_coroutines_t zend_async_get_coroutines_fn = get_coroutines_stub;
 zend_async_add_microtask_t zend_async_add_microtask_fn = add_microtask_stub;
 zend_async_get_awaiting_info_t zend_async_get_awaiting_info_fn = get_awaiting_info_stub;
@@ -530,7 +534,9 @@ static void waker_events_dtor(zval *item)
 	// Remove all callbacks from the event
 	for (uint32_t i = 0; i < trigger->length; i++) {
 		if (trigger->data[i] != NULL) {
-			event->del_callback(event, trigger->data[i]);
+			if (!event->del_callback(event, trigger->data[i])) {
+				// Optimized: ignore del_callback failure in destructor
+			}
 		}
 	}
 
@@ -785,7 +791,7 @@ ZEND_API bool zend_async_waker_is_event_exists(
 	return zend_hash_index_find(&coroutine->waker->events, ptr_to_index(event)) != NULL;
 }
 
-ZEND_API void zend_async_resume_when(zend_coroutine_t *coroutine, zend_async_event_t *event,
+ZEND_API bool zend_async_resume_when(zend_coroutine_t *coroutine, zend_async_event_t *event,
 		const bool trans_event, zend_async_event_callback_fn callback,
 		zend_coroutine_event_callback_t *event_callback)
 {
@@ -793,17 +799,19 @@ ZEND_API void zend_async_resume_when(zend_coroutine_t *coroutine, zend_async_eve
 
 	if (UNEXPECTED(ZEND_ASYNC_EVENT_IS_CLOSED(event))) {
 		zend_throw_error(NULL, "The event cannot be used after it has been terminated");
-		return;
+		return false;
 	}
 
 	if (UNEXPECTED(callback == NULL && event_callback == NULL)) {
 		zend_error(E_WARNING, "Callback cannot be NULL");
 
 		if (trans_event) {
-			event->dispose(event);
+			if (!event->dispose(event)) {
+				return false;
+			}
 		}
 
-		return;
+		return false;
 	}
 
 	if (event_callback == NULL) {
@@ -839,10 +847,12 @@ ZEND_API void zend_async_resume_when(zend_coroutine_t *coroutine, zend_async_eve
 		}
 
 		if (trans_event) {
-			event->dispose(event);
+			if (!event->dispose(event)) {
+				return false;
+			}
 		}
 
-		return;
+		return false;
 	}
 
 	if (EXPECTED(coroutine->waker != NULL)) {
@@ -867,10 +877,16 @@ ZEND_API void zend_async_resume_when(zend_coroutine_t *coroutine, zend_async_eve
 				efree(trigger);
 
 				event_callback->coroutine = NULL;
-				event->del_callback(event, &event_callback->base);
+				if (!event->del_callback(event, &event_callback->base)) {
+					// Optimized: del_callback failure in error path
+					return false;
+				}
 
 				event_callback->coroutine = NULL;
-				event->del_callback(event, &event_callback->base);
+				if (!event->del_callback(event, &event_callback->base)) {
+					// Optimized: del_callback failure in error path
+					return false;
+				}
 
 				if (callback_should_dispose) {
 					event_callback->base.ref_count = 1;
@@ -878,10 +894,13 @@ ZEND_API void zend_async_resume_when(zend_coroutine_t *coroutine, zend_async_eve
 				}
 
 				if (trans_event) {
-					event->dispose(event);
+					if (!event->dispose(event)) {
+						return false;
+					}
 				}
 
 				zend_throw_error(NULL, "Failed to add event to the waker");
+				return false;
 			} else {
 				if (false == trans_event) {
 					ZEND_ASYNC_EVENT_ADD_REF(event);
@@ -889,6 +908,8 @@ ZEND_API void zend_async_resume_when(zend_coroutine_t *coroutine, zend_async_eve
 			}
 		}
 	}
+
+	return true;
 }
 
 ZEND_API void zend_async_waker_callback_resolve(zend_async_event_t *event,
@@ -1197,10 +1218,10 @@ ZEND_API zval *zend_async_internal_context_find(zend_coroutine_t *coroutine, uin
 	return zend_hash_index_find(coroutine->internal_context, key);
 }
 
-ZEND_API void zend_async_internal_context_set(zend_coroutine_t *coroutine, uint32_t key, zval *value)
+ZEND_API bool zend_async_internal_context_set(zend_coroutine_t *coroutine, uint32_t key, zval *value)
 {
 	if (coroutine == NULL) {
-		return;
+		return false;
 	}
 
 	// Initialize internal_context if needed
@@ -1212,6 +1233,7 @@ ZEND_API void zend_async_internal_context_set(zend_coroutine_t *coroutine, uint3
 	zval copy;
 	ZVAL_COPY(&copy, value);
 	zend_hash_index_update(coroutine->internal_context, key, &copy);
+	return true;
 }
 
 ZEND_API bool zend_async_internal_context_unset(zend_coroutine_t *coroutine, uint32_t key)
@@ -1300,7 +1322,7 @@ static zend_always_inline void zend_async_callbacks_adjust_iterator(
 /* Public API implementations */
 
 /* Remove a specific callback; order is NOT preserved, but iterator is safely adjusted */
-ZEND_API void zend_async_callbacks_remove(
+ZEND_API bool zend_async_callbacks_remove(
 		zend_async_event_t *event, zend_async_event_callback_t *callback)
 {
 	zend_async_callbacks_vector_t *vector = &event->callbacks;
@@ -1313,9 +1335,10 @@ ZEND_API void zend_async_callbacks_remove(
 			// O(1) removal: move last element to current position
 			vector->data[i] = vector->length > 0 ? vector->data[--vector->length] : NULL;
 			callback->dispose(callback, event);
-			return;
+			return true;
 		}
 	}
+	return false; // callback not found
 }
 
 /* Call all callbacks with safe iterator tracking to handle concurrent modifications */
@@ -1563,11 +1586,11 @@ ZEND_API bool zend_coroutine_remove_switch_handler(
 	return true;
 }
 
-ZEND_API void zend_coroutine_call_switch_handlers(
+ZEND_API bool zend_coroutine_call_switch_handlers(
 		zend_coroutine_t *coroutine, bool is_enter, bool is_finishing)
 {
 	if (!coroutine->switch_handlers || coroutine->switch_handlers->length == 0) {
-		return;
+		return true;
 	}
 
 	zend_coroutine_switch_handlers_vector_t *vector = coroutine->switch_handlers;
@@ -1604,6 +1627,8 @@ ZEND_API void zend_coroutine_call_switch_handlers(
 		vector->capacity = 0;
 		efree(vector);
 	}
+
+	return true;
 }
 
 ///////////////////////////////////////////////////////////////
@@ -1613,14 +1638,14 @@ ZEND_API void zend_coroutine_call_switch_handlers(
 static zend_coroutine_switch_handlers_vector_t global_main_coroutine_start_handlers
 		= { 0, 0, NULL, false };
 
-ZEND_API void zend_async_add_main_coroutine_start_handler(zend_coroutine_switch_handler_fn handler)
+ZEND_API bool zend_async_add_main_coroutine_start_handler(zend_coroutine_switch_handler_fn handler)
 {
 	zend_coroutine_switch_handlers_vector_t *vector = &global_main_coroutine_start_handlers;
 
 	/* Check for duplicate handler */
 	for (uint32_t i = 0; i < vector->length; i++) {
 		if (vector->data[i].handler == handler) {
-			return;
+			return false;
 		}
 	}
 
@@ -1635,14 +1660,15 @@ ZEND_API void zend_async_add_main_coroutine_start_handler(zend_coroutine_switch_
 	/* Add handler */
 	vector->data[vector->length].handler = handler;
 	vector->length++;
+	return true;
 }
 
-ZEND_API void zend_async_call_main_coroutine_start_handlers(zend_coroutine_t *main_coroutine)
+ZEND_API bool zend_async_call_main_coroutine_start_handlers(zend_coroutine_t *main_coroutine)
 {
 	zend_coroutine_switch_handlers_vector_t *global_vector = &global_main_coroutine_start_handlers;
 
-	if (global_vector->length == 0) {
-		return;
+	if (UNEXPECTED(global_vector->length == 0)) {
+		return true;
 	}
 
 	/* Initialize main coroutine switch handlers if needed */
@@ -1657,6 +1683,8 @@ ZEND_API void zend_async_call_main_coroutine_start_handlers(zend_coroutine_t *ma
 
 	/* Now call the standard switch handlers function which will handle removal logic */
 	zend_coroutine_call_switch_handlers(main_coroutine, true, false);
+
+	return EG(exception) == NULL;
 }
 
 /* Global cleanup function - called during PHP shutdown */
