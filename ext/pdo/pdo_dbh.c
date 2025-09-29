@@ -1190,7 +1190,7 @@ PHP_METHOD(PDO, query)
 	pdo_stmt_t *stmt;
 	zend_string *statement;
 	zend_long fetch_mode;
-	bool fetch_mode_is_null = 1;
+	bool fetch_mode_is_null = true;
 	zval *args = NULL;
 	uint32_t num_args = 0;
 	pdo_dbh_object_t *dbh_obj = Z_PDO_OBJECT_P(ZEND_THIS);
@@ -1594,7 +1594,7 @@ static void pdo_dbh_free_storage(zend_object *std)
 		dbh->methods->persistent_shutdown(dbh);
 	}
 	zend_object_std_dtor(std);
-	dbh_free(dbh, 0);
+	dbh_free(dbh, false);
 }
 
 zend_object *pdo_dbh_new(zend_class_entry *ce)
@@ -1618,7 +1618,7 @@ ZEND_RSRC_DTOR_FUNC(php_pdo_pdbh_dtor) /* {{{ */
 {
 	if (res->ptr) {
 		pdo_dbh_t *dbh = (pdo_dbh_t*)res->ptr;
-		dbh_free(dbh, 1);
+		dbh_free(dbh, true);
 		res->ptr = NULL;
 	}
 }

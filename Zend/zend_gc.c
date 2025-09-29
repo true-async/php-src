@@ -538,10 +538,10 @@ static void root_buffer_dtor(zend_gc_globals *gc_globals)
 
 static void gc_globals_ctor_ex(zend_gc_globals *gc_globals)
 {
-	gc_globals->gc_enabled = 0;
-	gc_globals->gc_active = 0;
-	gc_globals->gc_protected = 1;
-	gc_globals->gc_full = 0;
+	gc_globals->gc_enabled = false;
+	gc_globals->gc_active = false;
+	gc_globals->gc_protected = true;
+	gc_globals->gc_full = false;
 
 	gc_globals->buf = NULL;
 	gc_globals->unused = GC_INVALID;
@@ -2299,7 +2299,7 @@ rerun_gc:
 			 * modify any refcounts, so we have no real way to detect this situation
 			 * short of rerunning full GC tracing. What we do instead is to only run
 			 * destructors at this point and automatically re-run GC afterwards. */
-			context->should_rerun_gc = 1;
+			context->should_rerun_gc = true;
 
 			/* Mark all roots for which a dtor will be invoked as DTOR_GARBAGE. Additionally
 			 * color them purple. This serves a double purpose: First, they should be
@@ -2441,7 +2441,7 @@ continue_calling_destructors:
 	 * up. We do this only once: If we encounter more destructors on the second run, we'll not
 	 * run GC another time. */
 	if (context->should_rerun_gc && !context->did_rerun_gc) {
-		context->did_rerun_gc = 1;
+		context->did_rerun_gc = true;
 		goto rerun_gc;
 	}
 
