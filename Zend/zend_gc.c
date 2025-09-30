@@ -1911,7 +1911,11 @@ static zend_always_inline zend_result gc_call_destructors(uint32_t idx, uint32_t
 				obj->handlers->dtor_obj(obj);
 				GC_TRACE_REF(obj, "returned from destructor");
 				GC_DELREF(obj);
-				if (UNEXPECTED((fiber != NULL && GC_G(dtor_fiber) != fiber) || coroutine != *current_coroutine_ptr)) {
+				if (UNEXPECTED((coroutine == NULL && coroutine != *current_coroutine_ptr))) {
+					// special case: called from main coroutine and activate async context
+					GC_G(gc_coroutine) = *current_coroutine_ptr;
+				}
+				if (UNEXPECTED((fiber != NULL && GC_G(dtor_fiber) != fiber) || (coroutine != NULL && coroutine != *current_coroutine_ptr))) {
 					/* We resumed after suspension */
 					gc_check_possible_root((zend_refcounted*)&obj->gc);
 					return FAILURE;
@@ -2397,6 +2401,7 @@ finish:
 	GC_G(gc_active) = 0;
 
 	GC_G(collector_time) += zend_hrtime() - start_time;
+	GC_G(gc_coroutine) = NULL;
 	return total_count;
 }
 
