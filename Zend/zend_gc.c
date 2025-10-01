@@ -2092,6 +2092,8 @@ static zend_coroutine_t* gc_spawn_destructors_coroutine(void)
 
 	coroutine->internal_entry = gc_destructors_coroutine;
 	coroutine->event.info = gc_destructors_info;
+	coroutine->extended_data = NULL;
+	coroutine->extended_dispose = gc_destructors_coroutine_dispose;
 	GC_G(dtor_coroutine) = coroutine;
 
 	return coroutine;
@@ -2402,6 +2404,7 @@ finish:
 
 	GC_G(collector_time) += zend_hrtime() - start_time;
 	GC_G(gc_coroutine) = NULL;
+	GC_G(gc_scope) = NULL;
 	return total_count;
 }
 
