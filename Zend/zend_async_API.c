@@ -151,6 +151,7 @@ zend_async_new_future_t zend_async_new_future_fn = new_future_stub;
 zend_async_new_channel_t zend_async_new_channel_fn = new_channel_stub;
 zend_async_new_future_obj_t zend_async_new_future_obj_fn = new_future_obj_stub;
 zend_async_new_channel_obj_t zend_async_new_channel_obj_fn = new_channel_obj_stub;
+zend_async_scheduler_launch_t zend_async_scheduler_launch_fn = bool_stub;
 
 /* GROUP API */
 zend_async_new_group_t zend_async_new_group_fn = new_group_stub;
@@ -261,6 +262,7 @@ ZEND_API int zend_async_get_api_version_number(void)
 }
 
 ZEND_API bool zend_async_scheduler_register(char *module, bool allow_override,
+		zend_async_scheduler_launch_t scheduler_launch_fn,
 		zend_async_new_coroutine_t new_coroutine_fn, zend_async_new_scope_t new_scope_fn,
 		zend_async_new_context_t new_context_fn, zend_async_spawn_t spawn_fn,
 		zend_async_suspend_t suspend_fn, zend_async_enqueue_coroutine_t enqueue_coroutine_fn,
@@ -293,6 +295,7 @@ ZEND_API bool zend_async_scheduler_register(char *module, bool allow_override,
 
 	scheduler_module_name = module;
 
+	zend_async_scheduler_launch_fn = scheduler_launch_fn;
 	zend_async_new_coroutine_fn = new_coroutine_fn;
 	zend_async_new_scope_fn = new_scope_fn;
 	zend_async_new_context_fn = new_context_fn;

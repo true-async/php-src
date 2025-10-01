@@ -19,9 +19,9 @@
 #include "zend_fibers.h"
 #include "zend_globals.h"
 
-#define ZEND_ASYNC_API "TrueAsync API v0.6.0"
+#define ZEND_ASYNC_API "TrueAsync API v0.7.0"
 #define ZEND_ASYNC_API_VERSION_MAJOR 0
-#define ZEND_ASYNC_API_VERSION_MINOR 6
+#define ZEND_ASYNC_API_VERSION_MINOR 7
 #define ZEND_ASYNC_API_VERSION_PATCH 0
 
 #define ZEND_ASYNC_API_VERSION_NUMBER \
@@ -249,6 +249,8 @@ typedef zend_async_group_t *(*zend_async_new_group_t)(size_t extra_size);
 
 typedef zend_object *(*zend_async_new_future_obj_t)(zend_future_t *future);
 typedef zend_object *(*zend_async_new_channel_obj_t)(zend_async_channel_t *channel);
+
+typedef bool (*zend_async_scheduler_launch_t)(void);
 
 typedef bool (*zend_async_reactor_startup_t)(void);
 typedef bool (*zend_async_reactor_shutdown_t)(void);
@@ -1347,6 +1349,7 @@ ZEND_API extern zend_async_new_future_t zend_async_new_future_fn;
 ZEND_API extern zend_async_new_channel_t zend_async_new_channel_fn;
 ZEND_API extern zend_async_new_future_obj_t zend_async_new_future_obj_fn;
 ZEND_API extern zend_async_new_channel_obj_t zend_async_new_channel_obj_fn;
+ZEND_API extern zend_async_scheduler_launch_t zend_async_scheduler_launch_fn;
 
 /* GROUP API */
 ZEND_API extern zend_async_new_group_t zend_async_new_group_fn;
@@ -1409,6 +1412,7 @@ ZEND_API extern zend_async_queue_task_t zend_async_queue_task_fn;
 ZEND_API extern zend_async_new_trigger_event_t zend_async_new_trigger_event_fn;
 
 ZEND_API bool zend_async_scheduler_register(char *module, bool allow_override,
+		zend_async_scheduler_launch_t scheduler_launch_fn,
 		zend_async_new_coroutine_t new_coroutine_fn, zend_async_new_scope_t new_scope_fn,
 		zend_async_new_context_t new_context_fn, zend_async_spawn_t spawn_fn,
 		zend_async_suspend_t suspend_fn, zend_async_enqueue_coroutine_t enqueue_coroutine_fn,
@@ -1595,6 +1599,8 @@ END_EXTERN_C()
 #define ZEND_ASYNC_GET_AWAITING_INFO(coroutine) zend_async_get_awaiting_info_fn(coroutine)
 #define ZEND_ASYNC_GET_CE(type) zend_async_get_class_ce_fn(type)
 #define ZEND_ASYNC_GET_EXCEPTION_CE(type) zend_async_get_class_ce_fn(type)
+
+#define ZEND_ASYNC_SCHEDULER_LAUNCH() zend_async_scheduler_launch_fn()
 
 #define ZEND_ASYNC_REACTOR_IS_ENABLED() zend_async_reactor_is_enabled()
 #define ZEND_ASYNC_REACTOR_STARTUP() zend_async_reactor_startup_fn()
