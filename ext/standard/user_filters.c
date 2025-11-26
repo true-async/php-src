@@ -237,7 +237,7 @@ static php_stream_filter *user_filter_factory_create(const char *filtername,
 	len = strlen(filtername);
 
 	/* determine the classname/class entry */
-	if (NULL == (fdat = zend_hash_str_find_ptr(BG(user_filter_map), (char*)filtername, len))) {
+	if (NULL == (fdat = zend_hash_str_find_ptr(BG(user_filter_map), filtername, len))) {
 		char *period;
 
 		/* Userspace Filters using ambiguous wildcards could cause problems.
@@ -285,7 +285,7 @@ static php_stream_filter *user_filter_factory_create(const char *filtername,
 	filter = php_stream_filter_alloc(&userfilter_ops, NULL, 0);
 
 	/* filtername */
-	add_property_string(&obj, "filtername", (char*)filtername);
+	add_property_string(&obj, "filtername", filtername);
 
 	/* and the parameters, if any */
 	if (filterparams) {
@@ -301,9 +301,6 @@ static php_stream_filter *user_filter_factory_create(const char *filtername,
 
 	if (Z_TYPE(retval) != IS_UNDEF) {
 		if (Z_TYPE(retval) == IS_FALSE) {
-			/* User reported filter creation error "return false;" */
-			zval_ptr_dtor(&retval);
-
 			/* Kill the filter (safely) */
 			ZVAL_UNDEF(&filter->abstract);
 			php_stream_filter_free(filter);
@@ -404,16 +401,18 @@ static void php_stream_bucket_attach(int append, INTERNAL_FUNCTION_PARAMETERS)
 		memcpy(bucket->buf, Z_STRVAL_P(pzdata), bucket->buflen);
 	}
 
+	/* If the bucket is already on a brigade we have to unlink it first to keep the
+	 * linked list consistent. Furthermore, we can transfer the refcount in that case. */
+	if (bucket->brigade) {
+		php_stream_bucket_unlink(bucket);
+	} else {
+		bucket->refcount++;
+	}
+
 	if (append) {
 		php_stream_bucket_append(brigade, bucket);
 	} else {
 		php_stream_bucket_prepend(brigade, bucket);
-	}
-	/* This is a hack necessary to accommodate situations where bucket is appended to the stream
- 	 * multiple times. See bug35916.phpt for reference.
-	 */
-	if (bucket->refcount == 1) {
-		bucket->refcount++;
 	}
 }
 /* }}} */

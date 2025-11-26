@@ -505,8 +505,13 @@ php_socket_t php_network_bind_socket_to_local_addr(const char *host, unsigned po
 
 		/* attempt to bind */
 
-#ifdef SO_REUSEADDR
-		setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (char*)&sockoptval, sizeof(sockoptval));
+		if (sockopts & STREAM_SOCKOP_SO_REUSEADDR) {
+			setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (char*)&sockoptval, sizeof(sockoptval));
+		}
+#ifdef PHP_WIN32
+		else {
+			setsockopt(sock, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (char*)&sockoptval, sizeof(sockoptval));
+		}
 #endif
 #ifdef IPV6_V6ONLY
 		if (sockopts & STREAM_SOCKOP_IPV6_V6ONLY) {
@@ -516,7 +521,13 @@ php_socket_t php_network_bind_socket_to_local_addr(const char *host, unsigned po
 #endif
 #ifdef SO_REUSEPORT
 		if (sockopts & STREAM_SOCKOP_SO_REUSEPORT) {
+# ifdef SO_REUSEPORT_LB
+			/* Historically, SO_REUSEPORT on FreeBSD predates Linux version, however does not
+			 * involve load balancing grouping thus SO_REUSEPORT_LB is the genuine equivalent.*/
+			setsockopt(sock, SOL_SOCKET, SO_REUSEPORT_LB, (char*)&sockoptval, sizeof(sockoptval));
+# else
 			setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, (char*)&sockoptval, sizeof(sockoptval));
+# endif
 		}
 #endif
 #ifdef SO_BROADCAST
@@ -1081,6 +1092,28 @@ PHPAPI socklen_t php_sockaddr_size(php_sockaddr_storage *addr)
 }
 /* }}} */
 
+#ifdef PHP_WIN32
+char *php_socket_strerror_s(long err, char *buf, size_t bufsize)
+{
+	if (buf == NULL) {
+		char ebuf[1024];
+		errno_t res = strerror_s(ebuf, sizeof(ebuf), err);
+		if (res == 0) {
+			buf = estrdup(ebuf);
+		} else {
+			buf = estrdup("Unknown error");
+		}
+	} else {
+		errno_t res = strerror_s(buf, bufsize, err);
+		if (res != 0) {
+			strncpy(buf, "Unknown error", bufsize);
+			buf[bufsize?(bufsize-1):0] = 0;
+		}
+	}
+	return buf;
+}
+#endif
+
 /* Given a socket error code, if buf == NULL:
  *   emallocs storage for the error message and returns
  * else
@@ -1090,16 +1123,40 @@ PHPAPI socklen_t php_sockaddr_size(php_sockaddr_storage *addr)
 PHPAPI char *php_socket_strerror(long err, char *buf, size_t bufsize)
 {
 #ifndef PHP_WIN32
-	char *errstr;
-
-	errstr = strerror(err);
+# ifdef HAVE_STRERROR_R
+	if (buf == NULL) {
+		char ebuf[1024];
+#  ifdef STRERROR_R_CHAR_P
+		char *errstr = strerror_r(err, ebuf, sizeof(ebuf));
+		buf = estrdup(errstr);
+#  else
+		int res = (int) strerror_r(err, ebuf, sizeof(ebuf));
+		if (res == 0) {
+			buf = estrdup(ebuf);
+		} else {
+			buf = estrdup("Unknown error");
+		}
+#  endif
+	} else {
+#  ifdef STRERROR_R_CHAR_P
+		buf = strerror_r(err, buf, bufsize);
+#  else
+		int res = (int) strerror_r(err, buf, bufsize);
+		if (res != 0) {
+			strncpy(buf, "Unknown error", bufsize);
+			buf[bufsize?(bufsize-1):0] = 0;
+		}
+#  endif
+	}
+# else
+	char *errstr = strerror(err);
 	if (buf == NULL) {
 		buf = estrdup(errstr);
 	} else {
 		strncpy(buf, errstr, bufsize);
 		buf[bufsize?(bufsize-1):0] = 0;
 	}
-	return buf;
+# endif
 #else
 	char *sysbuf = php_win32_error_to_msg(err);
 	if (!sysbuf[0]) {
@@ -1114,9 +1171,8 @@ PHPAPI char *php_socket_strerror(long err, char *buf, size_t bufsize)
 	}
 
 	php_win32_error_msg_free(sysbuf);
-
-	return buf;
 #endif
+	return buf;
 }
 /* }}} */
 
@@ -1124,9 +1180,22 @@ PHPAPI char *php_socket_strerror(long err, char *buf, size_t bufsize)
 PHPAPI zend_string *php_socket_error_str(long err)
 {
 #ifndef PHP_WIN32
-	char *errstr;
-
-	errstr = strerror(err);
+# ifdef HAVE_STRERROR_R
+	char ebuf[1024];
+#  ifdef STRERROR_R_CHAR_P
+	char *errstr = strerror_r(err, ebuf, sizeof(ebuf));
+#  else
+	const char *errstr;
+	int res = (int) strerror_r(err, ebuf, sizeof(ebuf));
+	if (res == 0) {
+		errstr = ebuf;
+	} else {
+		errstr = "Unknown error";
+	}
+#  endif
+# else
+	char *errstr = strerror(err);
+# endif
 	return zend_string_init(errstr, strlen(errstr), 0);
 #else
 	zend_string *ret;

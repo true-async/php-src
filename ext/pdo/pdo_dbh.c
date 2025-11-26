@@ -805,7 +805,7 @@ PDO_API bool pdo_get_bool_param(bool *bval, const zval *value)
 			*bval = false;
 			return true;
 		case IS_LONG:
-			*bval = zval_is_true(value);
+			*bval = zend_is_true(value);
 			return true;
 		case IS_STRING: /* TODO Should string be allowed? */
 		default:
@@ -1394,7 +1394,7 @@ bool pdo_hash_methods(pdo_dbh_object_t *dbh_obj, int kind)
 		func.type = ZEND_INTERNAL_FUNCTION;
 		func.handler = funcs->handler;
 		func.function_name = zend_string_init(funcs->fname, strlen(funcs->fname), dbh->is_persistent);
-		func.scope = dbh_obj->std.ce;
+		func.scope = pdo_dbh_ce;
 		func.prototype = NULL;
 		ZEND_MAP_PTR(func.run_time_cache) = rt_cache_size ? pecalloc(rt_cache_size, 1, dbh->is_persistent) : NULL;
 		func.T = ZEND_OBSERVER_ENABLED;

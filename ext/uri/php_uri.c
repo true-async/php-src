@@ -111,14 +111,15 @@ PHPAPI const php_uri_parser *php_uri_get_parser(zend_string *uri_parser_name)
 
 ZEND_ATTRIBUTE_NONNULL PHPAPI php_uri_internal *php_uri_parse(const php_uri_parser *uri_parser, const char *uri_str, size_t uri_str_len, bool silent)
 {
-	php_uri_internal *internal_uri = emalloc(sizeof(*internal_uri));
-	internal_uri->parser = uri_parser;
-	internal_uri->uri = uri_parser->parse(uri_str, uri_str_len, NULL, NULL, silent);
+	void *uri = uri_parser->parse(uri_str, uri_str_len, NULL, NULL, silent);
 
-	if (UNEXPECTED(internal_uri->uri == NULL)) {
-		efree(internal_uri);
+	if (uri == NULL) {
 		return NULL;
 	}
+
+	php_uri_internal *internal_uri = emalloc(sizeof(*internal_uri));
+	internal_uri->parser = uri_parser;
+	internal_uri->uri = uri;
 
 	return internal_uri;
 }
@@ -376,7 +377,7 @@ static void create_rfc3986_uri(INTERNAL_FUNCTION_PARAMETERS, bool is_constructor
 	zend_object *base_url_object = NULL;
 
 	ZEND_PARSE_PARAMETERS_START(1, 2)
-		Z_PARAM_PATH_STR(uri_str)
+		Z_PARAM_STR(uri_str)
 		Z_PARAM_OPTIONAL
 		Z_PARAM_OBJ_OF_CLASS_OR_NULL(base_url_object, php_uri_ce_rfc3986_uri)
 	ZEND_PARSE_PARAMETERS_END();
@@ -489,7 +490,7 @@ static void create_whatwg_uri(INTERNAL_FUNCTION_PARAMETERS, bool is_constructor)
 	zval *errors = NULL;
 
 	ZEND_PARSE_PARAMETERS_START(1, 3)
-		Z_PARAM_PATH_STR(uri_str)
+		Z_PARAM_STR(uri_str)
 		Z_PARAM_OPTIONAL
 		Z_PARAM_OBJ_OF_CLASS_OR_NULL(base_url_object, php_uri_ce_whatwg_url)
 		Z_PARAM_ZVAL(errors)
@@ -552,7 +553,7 @@ PHP_METHOD(Uri_Rfc3986_Uri, withUserInfo)
 	zend_string *value;
 
 	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_PATH_STR_OR_NULL(value)
+		Z_PARAM_STR_OR_NULL(value)
 	ZEND_PARSE_PARAMETERS_END();
 
 	zval zv;
@@ -768,7 +769,7 @@ PHP_METHOD(Uri_Rfc3986_Uri, resolve)
 	zend_string *uri_str;
 
 	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_PATH_STR(uri_str)
+		Z_PARAM_STR(uri_str)
 	ZEND_PARSE_PARAMETERS_END();
 
 	php_uri_instantiate_uri(INTERNAL_FUNCTION_PARAM_PASSTHRU,
@@ -799,8 +800,7 @@ PHP_METHOD(Uri_Rfc3986_Uri, __serialize)
 	zend_hash_next_index_insert(Z_ARRVAL_P(return_value), &arr);
 
 	/* Serialize regular properties: second array */
-	ZVAL_ARR(&arr, uri_object->std.handlers->get_properties(&uri_object->std));
-	Z_TRY_ADDREF(arr);
+	ZVAL_EMPTY_ARRAY(&arr);
 	zend_hash_next_index_insert(Z_ARRVAL_P(return_value), &arr);
 }
 
@@ -839,7 +839,7 @@ static void uri_unserialize(INTERNAL_FUNCTION_PARAMETERS)
 		RETURN_THROWS();
 	}
 
-	zval *uri_zv = zend_hash_str_find_ind(Z_ARRVAL_P(arr), ZEND_STRL(PHP_URI_SERIALIZE_URI_FIELD_NAME));
+	zval *uri_zv = zend_hash_str_find(Z_ARRVAL_P(arr), ZEND_STRL(PHP_URI_SERIALIZE_URI_FIELD_NAME));
 	if (uri_zv == NULL || Z_TYPE_P(uri_zv) != IS_STRING) {
 		zend_throw_exception_ex(NULL, 0, "Invalid serialization data for %s object", ZSTR_VAL(uri_object->std.ce->name));
 		RETURN_THROWS();
@@ -956,7 +956,7 @@ PHP_METHOD(Uri_WhatWg_Url, resolve)
 	zval *errors = NULL;
 
 	ZEND_PARSE_PARAMETERS_START(1, 2)
-		Z_PARAM_PATH_STR(uri_str)
+		Z_PARAM_STR(uri_str)
 		Z_PARAM_OPTIONAL
 		Z_PARAM_ZVAL(errors)
 	ZEND_PARSE_PARAMETERS_END();
@@ -989,8 +989,7 @@ PHP_METHOD(Uri_WhatWg_Url, __serialize)
 	zend_hash_next_index_insert(Z_ARRVAL_P(return_value), &arr);
 
 	/* Serialize regular properties: second array */
-	ZVAL_ARR(&arr, this_object->std.handlers->get_properties(&this_object->std));
-	Z_ADDREF(arr);
+	ZVAL_EMPTY_ARRAY(&arr);
 	zend_hash_next_index_insert(Z_ARRVAL_P(return_value), &arr);
 }
 

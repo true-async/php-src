@@ -460,7 +460,7 @@ try_again:
 		if (request != buf) {
 			zend_string_release_ex(request, 0);
 		}
-		add_soap_fault(this_ptr, "HTTP", "Unable to parse URL", NULL, NULL, SOAP_GLOBAL(lang_en));
+		add_soap_fault(this_ptr, "HTTP", "Unable to parse URL", NULL, NULL, soap_lang_en);
 		smart_str_free(&soap_headers_z);
 		efree(http_msg);
 		return FALSE;
@@ -474,7 +474,7 @@ try_again:
 		if (request != buf) {
 			zend_string_release_ex(request, 0);
 		}
-		add_soap_fault(this_ptr, "HTTP", "Unknown protocol. Only http and https are allowed.", NULL, NULL, SOAP_GLOBAL(lang_en));
+		add_soap_fault(this_ptr, "HTTP", "Unknown protocol. Only http and https are allowed.", NULL, NULL, soap_lang_en);
 		smart_str_free(&soap_headers_z);
 		efree(http_msg);
 		return FALSE;
@@ -487,7 +487,7 @@ try_again:
 		if (request != buf) {
 			zend_string_release_ex(request, 0);
 		}
-		add_soap_fault(this_ptr, "HTTP", "SSL support is not available in this build", NULL, NULL, SOAP_GLOBAL(lang_en));
+		add_soap_fault(this_ptr, "HTTP", "SSL support is not available in this build", NULL, NULL, soap_lang_en);
 		PG(allow_url_fopen) = old_allow_url_fopen;
 		smart_str_free(&soap_headers_z);
 		efree(http_msg);
@@ -540,7 +540,7 @@ try_again:
 			if (request != buf) {
 				zend_string_release_ex(request, 0);
 			}
-			add_soap_fault(this_ptr, "HTTP", "Could not connect to host", NULL, NULL, SOAP_GLOBAL(lang_en));
+			add_soap_fault(this_ptr, "HTTP", "Could not connect to host", NULL, NULL, soap_lang_en);
 			PG(allow_url_fopen) = old_allow_url_fopen;
 			smart_str_free(&soap_headers_z);
 			efree(http_msg);
@@ -911,14 +911,14 @@ try_again:
 			php_stream_close(stream);
 			convert_to_null(Z_CLIENT_HTTPURL_P(this_ptr));
 			ZVAL_NULL(Z_CLIENT_USE_PROXY_P(this_ptr));
-			add_soap_fault(this_ptr, "HTTP", "Failed Sending HTTP SOAP request", NULL, NULL, SOAP_GLOBAL(lang_en));
+			add_soap_fault(this_ptr, "HTTP", "Failed Sending HTTP SOAP request", NULL, NULL, soap_lang_en);
 			smart_str_free(&soap_headers_z);
 			efree(http_msg);
 			return FALSE;
 		}
 		smart_str_free(&soap_headers);
 	} else {
-		add_soap_fault(this_ptr, "HTTP", "Failed to create stream??", NULL, NULL, SOAP_GLOBAL(lang_en));
+		add_soap_fault(this_ptr, "HTTP", "Failed to create stream??", NULL, NULL, soap_lang_en);
 		smart_str_free(&soap_headers_z);
 		efree(http_msg);
 		return FALSE;
@@ -935,7 +935,7 @@ try_again:
 				ZVAL_NULL(Z_CLIENT_HTTPSOCKET_P(this_ptr));
 				php_stream_close(stream);
 				ZVAL_NULL(Z_CLIENT_USE_PROXY_P(this_ptr));
-				add_soap_fault(this_ptr, "HTTP", "Error Fetching http headers", NULL, NULL, SOAP_GLOBAL(lang_en));
+				add_soap_fault(this_ptr, "HTTP", "Error Fetching http headers", NULL, NULL, soap_lang_en);
 				smart_str_free(&soap_headers_z);
 				efree(http_msg);
 				return FALSE;
@@ -1014,8 +1014,7 @@ try_again:
 		char *eqpos = strstr(cookie, "=");
 		char *sempos = strstr(cookie, ";");
 		if (eqpos != NULL && (sempos == NULL || sempos > eqpos)) {
-			smart_str name = {0};
-			int cookie_len;
+			size_t cookie_len;
 			zval zcookie;
 
 			if (sempos != NULL) {
@@ -1024,8 +1023,7 @@ try_again:
 				cookie_len = strlen(cookie)-(eqpos-cookie)-1;
 			}
 
-			smart_str_appendl(&name, cookie, eqpos - cookie);
-			smart_str_0(&name);
+			zend_string *name = zend_string_init(cookie, eqpos - cookie, false);
 
 			array_init(&zcookie);
 			add_index_stringl(&zcookie, 0, eqpos + 1, cookie_len);
@@ -1063,8 +1061,8 @@ try_again:
 				GC_ADDREF(uri->host);
 			}
 
-			zend_symtable_update(Z_ARRVAL_P(cookies), name.s, &zcookie);
-			smart_str_free(&name);
+			zend_symtable_update(Z_ARRVAL_P(cookies), name, &zcookie);
+			zend_string_release_ex(name, false);
 		}
 
 		cookie_itt = cookie_itt + cookie_len;
@@ -1124,7 +1122,7 @@ try_again:
 		php_stream_close(stream);
 		zend_string_release_ex(http_headers, 0);
 		ZVAL_NULL(Z_CLIENT_USE_PROXY_P(this_ptr));
-		add_soap_fault(this_ptr, "HTTP", "Error Fetching http body, No Content-Length, connection closed or chunked data", NULL, NULL, SOAP_GLOBAL(lang_en));
+		add_soap_fault(this_ptr, "HTTP", "Error Fetching http body, No Content-Length, connection closed or chunked data", NULL, NULL, soap_lang_en);
 		if (http_msg) {
 			efree(http_msg);
 		}
@@ -1190,7 +1188,7 @@ try_again:
 				uri = new_uri;
 
 				if (--redirect_max < 1) {
-					add_soap_fault(this_ptr, "HTTP", "Redirection limit reached, aborting", NULL, NULL, SOAP_GLOBAL(lang_en));
+					add_soap_fault(this_ptr, "HTTP", "Redirection limit reached, aborting", NULL, NULL, soap_lang_en);
 					smart_str_free(&soap_headers_z);
 					efree(http_msg);
 					return FALSE;
@@ -1326,7 +1324,7 @@ try_again:
 			if (http_msg) {
 				efree(http_msg);
 			}
-			add_soap_fault(this_ptr, "HTTP", "Unknown Content-Encoding", NULL, NULL, SOAP_GLOBAL(lang_en));
+			add_soap_fault(this_ptr, "HTTP", "Unknown Content-Encoding", NULL, NULL, soap_lang_en);
 			return FALSE;
 		}
 		zend_call_known_function(decompression_fn, NULL, NULL, &retval, 1, params, NULL);
@@ -1338,7 +1336,7 @@ try_again:
 			efree(content_encoding);
 			zend_string_release_ex(http_headers, 0);
 			zend_string_release_ex(http_body, 0);
-			add_soap_fault(this_ptr, "HTTP", "Can't uncompress compressed response", NULL, NULL, SOAP_GLOBAL(lang_en));
+			add_soap_fault(this_ptr, "HTTP", "Can't uncompress compressed response", NULL, NULL, soap_lang_en);
 			if (http_msg) {
 				efree(http_msg);
 			}
@@ -1372,7 +1370,7 @@ try_again:
 		if (error) {
 			zval_ptr_dtor(return_value);
 			ZVAL_UNDEF(return_value);
-			add_soap_fault(this_ptr, "HTTP", http_msg, NULL, NULL, SOAP_GLOBAL(lang_en));
+			add_soap_fault(this_ptr, "HTTP", http_msg, NULL, NULL, soap_lang_en);
 			efree(http_msg);
 			return FALSE;
 		}

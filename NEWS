@@ -2,13 +2,53 @@ PHP                                                                        NEWS
 |||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
 ?? ??? ????, PHP 8.6.0alpha1
 
+- Core:
+  . Added first-class callable cache to share instances for the duration of the
+    request. (ilutov)
+  . It is now possible to use reference assign on WeakMap without the key
+    needing to be present beforehand. (ndossche)
+
+- Hash:
+  . Upgrade xxHash to 0.8.2. (timwolla)
+
 - Intl:
   . Added IntlNumberRangeFormatter class to format an interval of two numbers
     with a given skeleton, locale, collapse type and identity fallback.
     (BogdanUngureanu)
 
-- PDO_PGSQL:
-  . Fixed Pdo\Pgsql::getColumnMeta() when Pdo\Pgsql::setAttribute(PDO::ATTR_PREFETCH, 0).
-    (outtersg)
+- Fibers:
+  . Fixed bug GH-20483 (ASAN stack overflow with fiber.stack_size INI
+    small value). (David Carlier)
+
+- Opcache:
+  . Fixed bug GH-20051 (apache2 shutdowns when restart is requested during
+    preloading). (Arnaud, welcomycozyhom)
+
+- Phar:
+  . Support reference values in Phar::mungServer(). (ndossche)
+  . Invalid values now throw in Phar::mungServer() instead of being silently
+    ignored. (ndossche)
+
+- Reflection:
+  . Fixed bug GH-20217 (ReflectionClass::isIterable() incorrectly returns true
+    for classes with property hooks). (alexandre-daubois)
+
+- Soap:
+  . Soap::__setCookie() when cookie name is a digit is now not stored and represented
+    as a string anymore but a int. (David Carlier)
+
+- Standard:
+  . Fixed bug GH-19926 (reset internal pointer earlier while splicing array
+    while COW violation flag is still set). (alexandre-daubois)
+
+- Streams:
+  . Added so_reuseaddr streams context socket option that allows disabling
+    address resuse.
+
+- Zip:
+  . Fixed ZipArchive callback being called after executor has shut down.
+    (ilutov)
+  . Support minimum version for libzip dependency updated to 1.0.0.
+    (David Carlier)
 
 <<< NOTE: Insert NEWS from last stable release here prior to actual release! >>>

@@ -244,7 +244,6 @@ static void zend_generator_dtor_storage(zend_object *object) /* {{{ */
 	zend_generator *current_generator = zend_generator_get_current(generator);
 	zend_execute_data *ex = generator->execute_data;
 	uint32_t op_num, try_catch_offset;
-	int i;
 
 	/* If current_generator is running in a fiber, there are 2 cases to consider:
 	 *  - If generator is also marked with ZEND_GENERATOR_IN_FIBER, then the
@@ -289,7 +288,7 @@ static void zend_generator_dtor_storage(zend_object *object) /* {{{ */
 	try_catch_offset = -1;
 
 	/* Find the innermost try/catch that we are inside of. */
-	for (i = 0; i < ex->func->op_array.last_try_catch; i++) {
+	for (uint32_t i = 0; i < ex->func->op_array.last_try_catch; i++) {
 		zend_try_catch_element *try_catch = &ex->func->op_array.try_catch_array[i];
 		if (op_num < try_catch->try_op) {
 			break;
@@ -309,9 +308,18 @@ static void zend_generator_dtor_storage(zend_object *object) /* {{{ */
 				ZEND_CALL_VAR(ex, ex->func->op_array.opcodes[try_catch->finally_end].op1.var);
 
 			zend_generator_cleanup_unfinished_execution(generator, ex, try_catch->finally_op);
-			zend_object *old_exception = EG(exception);
-			const zend_op *old_opline_before_exception = EG(opline_before_exception);
-			EG(exception) = NULL;
+
+			zend_object *old_exception = NULL;
+			const zend_op *old_opline_before_exception = NULL;
+			if (EG(exception)) {
+				if (EG(current_execute_data)) {
+					EG(current_execute_data)->opline = EG(opline_before_exception);
+					old_opline_before_exception = EG(opline_before_exception);
+				}
+				old_exception = EG(exception);
+				EG(exception) = NULL;
+			}
+
 			Z_OBJ_P(fast_call) = NULL;
 			Z_OPLINE_NUM_P(fast_call) = (uint32_t)-1;
 
@@ -321,7 +329,10 @@ static void zend_generator_dtor_storage(zend_object *object) /* {{{ */
 			zend_generator_resume(generator);
 
 			if (old_exception) {
-				EG(opline_before_exception) = old_opline_before_exception;
+				if (EG(current_execute_data)) {
+					EG(current_execute_data)->opline = EG(exception_op);
+					EG(opline_before_exception) = old_opline_before_exception;
+				}
 				if (EG(exception)) {
 					zend_exception_set_previous(EG(exception), old_exception);
 				} else {

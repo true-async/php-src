@@ -851,9 +851,10 @@ static inline int php_tcp_sockop_bind(php_stream *stream, php_netstream_data_t *
 
 		if (sock->socket == SOCK_ERR) {
 			if (xparam->want_errortext) {
+				char errstr[256];
 				xparam->outputs.error_text = strpprintf(0, "Failed to create unix%s socket %s",
 						stream->ops == &php_stream_unix_socket_ops ? "" : "datagram",
-						strerror(errno));
+						php_socket_strerror_s(errno, errstr, sizeof(errstr)));
 			}
 			return -1;
 		}
@@ -887,6 +888,16 @@ static inline int php_tcp_sockop_bind(php_stream *stream, php_netstream_data_t *
 		&& zend_is_true(tmpzval)
 	) {
 		sockopts |= STREAM_SOCKOP_SO_REUSEPORT;
+	}
+#endif
+
+#ifdef SO_REUSEADDR
+	/* SO_REUSEADDR is enabled by default so this option is just to disable it if set to false. */
+	if (!PHP_STREAM_CONTEXT(stream)
+		|| (tmpzval = php_stream_context_get_option(PHP_STREAM_CONTEXT(stream), "socket", "so_reuseaddr")) == NULL
+		|| zend_is_true(tmpzval)
+	) {
+		sockopts |= STREAM_SOCKOP_SO_REUSEADDR;
 	}
 #endif
 

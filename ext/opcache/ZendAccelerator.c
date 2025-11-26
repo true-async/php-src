@@ -2209,7 +2209,14 @@ zend_op_array *persistent_compile_file(zend_file_handle *file_handle, int type)
 		SHM_PROTECT();
 		HANDLE_UNBLOCK_INTERRUPTIONS();
 
-		zend_emit_recorded_errors();
+		/* We may have switched to an existing persistent script that was persisted in
+		 * the meantime. Make sure to use its warnings if available. */
+		if (ZCG(accel_directives).record_warnings) {
+			EG(record_errors) = false;
+			zend_emit_recorded_errors_ex(persistent_script->num_warnings, persistent_script->warnings);
+		} else {
+			zend_emit_recorded_errors();
+		}
 		zend_free_recorded_errors();
 	} else {
 
@@ -4360,12 +4367,14 @@ static void preload_fix_trait_op_array(zend_op_array *op_array)
 	zend_string *function_name = op_array->function_name;
 	zend_class_entry *scope = op_array->scope;
 	uint32_t fn_flags = op_array->fn_flags;
+	uint32_t fn_flags2 = op_array->fn_flags2;
 	zend_function *prototype = op_array->prototype;
 	HashTable *ht = op_array->static_variables;
 	*op_array = *orig_op_array;
 	op_array->function_name = function_name;
 	op_array->scope = scope;
 	op_array->fn_flags = fn_flags;
+	op_array->fn_flags2 = fn_flags2;
 	op_array->prototype = prototype;
 	op_array->static_variables = ht;
 }
@@ -4513,16 +4522,6 @@ static void preload_load(size_t orig_map_ptr_static_last)
 		for (; p != end; p++) {
 			_zend_hash_append_ex(CG(class_table), p->key, &p->val, 1);
 		}
-	}
-
-	if (EG(zend_constants)) {
-		EG(persistent_constants_count) = EG(zend_constants)->nNumUsed;
-	}
-	if (EG(function_table)) {
-		EG(persistent_functions_count) = EG(function_table)->nNumUsed;
-	}
-	if (EG(class_table)) {
-		EG(persistent_classes_count)   = EG(class_table)->nNumUsed;
 	}
 
 	size_t old_map_ptr_last = CG(map_ptr_last);
@@ -4793,6 +4792,12 @@ static zend_result accel_preload(const char *config, bool in_child)
 		HANDLE_UNBLOCK_INTERRUPTIONS();
 
 		preload_load(orig_map_ptr_static_last);
+
+		/* Update persistent counts, as shutdown will discard anything past
+		 * that, and these tables are aliases to global ones at this point. */
+		EG(persistent_functions_count) = EG(function_table)->nNumUsed;
+		EG(persistent_classes_count)   = EG(class_table)->nNumUsed;
+		EG(persistent_constants_count) = EG(zend_constants)->nNumUsed;
 
 		/* Store individual scripts with unlinked classes */
 		HANDLE_BLOCK_INTERRUPTIONS();
@@ -5085,12 +5090,44 @@ static zend_result accel_finish_startup(void)
 
 		exit(ret == SUCCESS ? 0 : 1);
 	} else { /* parent */
-		int status;
+# ifdef HAVE_SIGPROCMASK
+		/* Interrupting the waitpid() call below with a signal would cause the
+		 * process to exit. This is fine when the signal disposition is set to
+		 * terminate the process, but not otherwise.
+		 * When running the apache2handler, preloading is performed in the
+		 * control process. SIGUSR1 and SIGHUP are used to tell the control
+		 * process to restart children. Exiting when these signals are received
+		 * would unexpectedly shutdown the server instead of restarting it.
+		 * Block the USR1 and HUP signals from being delivered during the
+		 * syscall when running the apache2handler SAPI, as these are not
+		 * supposed to terminate the process. See GH-20051. */
+		bool is_apache2handler = strcmp(sapi_module.name, "apache2handler") == 0;
+		sigset_t set, oldset;
+		if (is_apache2handler) {
+			if (sigemptyset(&set)
+					|| sigaddset(&set, SIGUSR1)
+					|| sigaddset(&set, SIGHUP)) {
+				ZEND_UNREACHABLE();
+			}
+			if (sigprocmask(SIG_BLOCK, &set, &oldset)) {
+				ZEND_UNREACHABLE();
+			}
+		}
+# endif
 
+		int status;
 		if (waitpid(pid, &status, 0) < 0) {
 			zend_shared_alloc_unlock();
 			zend_accel_error_noreturn(ACCEL_LOG_FATAL, "Preloading failed to waitpid(%d)", pid);
 		}
+
+# ifdef HAVE_SIGPROCMASK
+		if (is_apache2handler) {
+			if (sigprocmask(SIG_SETMASK, &oldset, NULL)) {
+				ZEND_UNREACHABLE();
+			}
+		}
+# endif
 
 		if (ZCSG(preload_script)) {
 			preload_load(zend_map_ptr_static_last);

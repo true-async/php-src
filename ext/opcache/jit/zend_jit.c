@@ -1268,13 +1268,12 @@ static void zend_jit_allocate_registers(zend_jit_ctx *ctx, const zend_op_array *
 					 && ssa->vars[i].definition >= 0
 					 && ssa->ops[op_num].result_def == i) {
 						const zend_live_range *range = op_array->live_range;
-						int j;
 
 						op_num++;
 						if (op_array->opcodes[op_num].opcode == ZEND_OP_DATA) {
 							op_num++;
 						}
-						for (j = 0; j < op_array->last_live_range; range++, j++) {
+						for (uint32_t j = 0; j < op_array->last_live_range; range++, j++) {
 							if (range->start > op_num) {
 								/* further blocks will not be relevant... */
 								break;
@@ -3099,8 +3098,9 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV zend_runtime_jit(Z
 	bool do_bailout = 0;
 
 	zend_shared_alloc_lock();
+	jit_extension = (zend_jit_op_array_extension*)ZEND_FUNC_INFO(op_array);
 
-	if (ZEND_FUNC_INFO(op_array)) {
+	if (jit_extension && !(jit_extension->func_info.flags & ZEND_FUNC_JITED)) {
 
 		SHM_UNPROTECT();
 		zend_jit_unprotect();
@@ -3112,11 +3112,12 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV zend_runtime_jit(Z
 					opline++;
 				}
 			}
-			jit_extension = (zend_jit_op_array_extension*)ZEND_FUNC_INFO(op_array);
 			((zend_op*)opline)->handler = jit_extension->orig_handler;
 
 			/* perform real JIT for this function */
 			zend_real_jit_func(op_array, NULL, NULL, ZEND_JIT_ON_FIRST_EXEC);
+
+			jit_extension->func_info.flags |= ZEND_FUNC_JITED;
 		} zend_catch {
 			do_bailout = true;
 		} zend_end_try();
@@ -3183,7 +3184,7 @@ void ZEND_FASTCALL zend_jit_hot_func(zend_execute_data *execute_data, const zend
 	zend_shared_alloc_lock();
 	jit_extension = (zend_jit_op_array_hot_extension*)ZEND_FUNC_INFO(op_array);
 
-	if (jit_extension) {
+	if (jit_extension && !(jit_extension->func_info.flags & ZEND_FUNC_JITED)) {
 		SHM_UNPROTECT();
 		zend_jit_unprotect();
 
@@ -3196,6 +3197,8 @@ void ZEND_FASTCALL zend_jit_hot_func(zend_execute_data *execute_data, const zend
 
 			/* perform real JIT for this function */
 			zend_real_jit_func(op_array, NULL, opline, ZEND_JIT_ON_HOT_COUNTERS);
+
+			jit_extension->func_info.flags |= ZEND_FUNC_JITED;
 		} zend_catch {
 			do_bailout = 1;
 		} zend_end_try();

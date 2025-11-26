@@ -18,6 +18,7 @@
    +----------------------------------------------------------------------+
  */
 
+#include "zend_exceptions.h"
 #ifdef HAVE_CONFIG_H
 #include <config.h>
 #endif
@@ -1968,7 +1969,11 @@ PHP_FUNCTION(socket_recvfrom)
 
 			if (arg6 == NULL) {
 				zend_string_efree(recv_buf);
-				WRONG_PARAM_COUNT;
+				zend_throw_exception(
+					zend_ce_argument_count_error,
+					"socket_recvfrom() expects exactly 6 arguments when argument #1 ($socket) is of type AF_INET or AF_INET6",
+					0);
+				RETURN_THROWS();
 			}
 
 			if (php_sock->blocking && ZEND_ASYNC_IS_ACTIVE && ensure_socket_nonblocking(php_sock)) {
@@ -1999,7 +2004,11 @@ PHP_FUNCTION(socket_recvfrom)
 
 			if (arg6 == NULL) {
 				zend_string_efree(recv_buf);
-				WRONG_PARAM_COUNT;
+				zend_throw_exception(
+					zend_ce_argument_count_error,
+					"socket_recvfrom() expects exactly 6 arguments when argument #1 ($socket) is of type AF_INET or AF_INET6",
+					0);
+				RETURN_THROWS();
 			}
 
 			if (php_sock->blocking && ZEND_ASYNC_IS_ACTIVE && ensure_socket_nonblocking(php_sock)) {
