@@ -1690,6 +1690,16 @@ ZEND_API bool zend_async_call_main_coroutine_start_handlers(zend_coroutine_t *ma
 	return EG(exception) == NULL;
 }
 
+/* Destructor for per-coroutine static variables HashTable entries */
+void zend_coroutine_static_variables_dtor(void *pDest)
+{
+	HashTable *ht = *(HashTable**)pDest;
+	if (ht != NULL) {
+		zend_hash_destroy(ht);
+		FREE_HASHTABLE(ht);
+	}
+}
+
 /* Global cleanup function - called during PHP shutdown */
 static void zend_async_main_handlers_shutdown(void)
 {

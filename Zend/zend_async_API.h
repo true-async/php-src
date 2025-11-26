@@ -1713,6 +1713,9 @@ END_EXTERN_C()
 	zend_async_internal_context_set(coro, key, value)
 #define ZEND_ASYNC_INTERNAL_CONTEXT_UNSET(coro, key) zend_async_internal_context_unset(coro, key)
 
+/* Per-coroutine static variables support */
+ZEND_API void zend_coroutine_static_variables_dtor(void *pDest);
+
 /* Coroutine Switch Handlers API Macros */
 #define ZEND_COROUTINE_ADD_SWITCH_HANDLER(coroutine, handler) \
 	zend_coroutine_add_switch_handler(coroutine, handler)

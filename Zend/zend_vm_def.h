@@ -9160,7 +9160,7 @@ ZEND_VM_HANDLER(183, ZEND_BIND_STATIC, CV, ANY, REF)
 		/* We're in a coroutine - use per-coroutine storage */
 		if (!coroutine->static_variables_map) {
 			ALLOC_HASHTABLE(coroutine->static_variables_map);
-			zend_hash_init(coroutine->static_variables_map, 8, NULL, ZVAL_PTR_DTOR, 0);
+			zend_hash_init(coroutine->static_variables_map, 8, NULL, (dtor_func_t) zend_coroutine_static_variables_dtor, 0);
 		}
 
 		/* Find or create HashTable for this function using pointer as index */
