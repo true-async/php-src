@@ -307,6 +307,7 @@ static uint8_t zend_user_opcodes[256] = {0,
 };
 
 #include "Zend/zend_vm_opcodes.h"
+#include "Zend/zend_async_API.h"
 
 #define SPEC_START_MASK        0x0000ffff
 #define SPEC_EXTRA_MASK        0xfffc0000
@@ -888,8 +889,16 @@ static zend_always_inline ZEND_OPCODE_HANDLER_RET zend_fetch_static_prop_helper_
 	USE_OPLINE
 	zval *prop;
 	zend_property_info *prop_info;
+	zend_coroutine_t *coroutine;
 
 	SAVE_OPLINE();
+
+	/* Check if we're in a coroutine context - for now, use global storage
+	 * Full per-coroutine static properties require deeper modifications to
+	 * zend_fetch_static_property_address() and related functions.
+	 * TODO: Implement per-coroutine class static property isolation */
+	coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+	(void)coroutine; /* Suppress unused variable warning for now */
 
 	prop = zend_fetch_static_property_address(
 		&prop_info, opline->extended_value & ~ZEND_FETCH_OBJ_FLAGS, type,
@@ -42810,10 +42819,30 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_BIND_STATIC_S
 
 	SAVE_OPLINE();
 
-	ht = ZEND_MAP_PTR_GET(EX(func)->op_array.static_variables_ptr);
-	if (!ht) {
-		ht = zend_array_dup(EX(func)->op_array.static_variables);
-		ZEND_MAP_PTR_SET(EX(func)->op_array.static_variables_ptr, ht);
+	/* Check if we're in a coroutine context */
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+
+	if (UNEXPECTED(coroutine)) {
+		/* We're in a coroutine - use per-coroutine storage */
+		if (!coroutine->static_variables_map) {
+			ALLOC_HASHTABLE(coroutine->static_variables_map);
+			zend_hash_init(coroutine->static_variables_map, 8, NULL, (dtor_func_t) zend_coroutine_static_variables_dtor, 0);
+		}
+
+		/* Find or create HashTable for this function using pointer as index */
+		ht = zend_hash_index_find_ptr(coroutine->static_variables_map, (zend_ulong)EX(func));
+		if (!ht) {
+			ht = zend_array_dup(EX(func)->op_array.static_variables);
+			zend_hash_index_add_ptr(coroutine->static_variables_map,
+									 (zend_ulong)EX(func), ht);
+		}
+	} else {
+		/* Normal code - use global storage */
+		ht = ZEND_MAP_PTR_GET(EX(func)->op_array.static_variables_ptr);
+		if (!ht) {
+			ht = zend_array_dup(EX(func)->op_array.static_variables);
+			ZEND_MAP_PTR_SET(EX(func)->op_array.static_variables_ptr, ht);
+		}
 	}
 	ZEND_ASSERT(GC_REFCOUNT(ht) == 1);
 
@@ -42861,9 +42890,24 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_BIND_INIT_STA
 
 	variable_ptr = EX_VAR(opline->op1.var);
 
-	ht = ZEND_MAP_PTR_GET(EX(func)->op_array.static_variables_ptr);
-	if (!ht) {
-		ZEND_VM_NEXT_OPCODE();
+	/* Check if we're in a coroutine context */
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+
+	if (UNEXPECTED(coroutine)) {
+		/* We're in a coroutine - look up in per-coroutine storage */
+		if (!coroutine->static_variables_map) {
+			ZEND_VM_NEXT_OPCODE();
+		}
+		ht = zend_hash_index_find_ptr(coroutine->static_variables_map, (zend_ulong)EX(func));
+		if (!ht) {
+			ZEND_VM_NEXT_OPCODE();
+		}
+	} else {
+		/* Normal code - use global storage */
+		ht = ZEND_MAP_PTR_GET(EX(func)->op_array.static_variables_ptr);
+		if (!ht) {
+			ZEND_VM_NEXT_OPCODE();
+		}
 	}
 	ZEND_ASSERT(GC_REFCOUNT(ht) == 1);
 
@@ -98276,10 +98320,30 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_BIND_STATIC_SPEC_C
 
 	SAVE_OPLINE();
 
-	ht = ZEND_MAP_PTR_GET(EX(func)->op_array.static_variables_ptr);
-	if (!ht) {
-		ht = zend_array_dup(EX(func)->op_array.static_variables);
-		ZEND_MAP_PTR_SET(EX(func)->op_array.static_variables_ptr, ht);
+	/* Check if we're in a coroutine context */
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+
+	if (UNEXPECTED(coroutine)) {
+		/* We're in a coroutine - use per-coroutine storage */
+		if (!coroutine->static_variables_map) {
+			ALLOC_HASHTABLE(coroutine->static_variables_map);
+			zend_hash_init(coroutine->static_variables_map, 8, NULL, (dtor_func_t) zend_coroutine_static_variables_dtor, 0);
+		}
+
+		/* Find or create HashTable for this function using pointer as index */
+		ht = zend_hash_index_find_ptr(coroutine->static_variables_map, (zend_ulong)EX(func));
+		if (!ht) {
+			ht = zend_array_dup(EX(func)->op_array.static_variables);
+			zend_hash_index_add_ptr(coroutine->static_variables_map,
+									 (zend_ulong)EX(func), ht);
+		}
+	} else {
+		/* Normal code - use global storage */
+		ht = ZEND_MAP_PTR_GET(EX(func)->op_array.static_variables_ptr);
+		if (!ht) {
+			ht = zend_array_dup(EX(func)->op_array.static_variables);
+			ZEND_MAP_PTR_SET(EX(func)->op_array.static_variables_ptr, ht);
+		}
 	}
 	ZEND_ASSERT(GC_REFCOUNT(ht) == 1);
 
@@ -98327,9 +98391,24 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_BIND_INIT_STATIC_O
 
 	variable_ptr = EX_VAR(opline->op1.var);
 
-	ht = ZEND_MAP_PTR_GET(EX(func)->op_array.static_variables_ptr);
-	if (!ht) {
-		ZEND_VM_NEXT_OPCODE();
+	/* Check if we're in a coroutine context */
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+
+	if (UNEXPECTED(coroutine)) {
+		/* We're in a coroutine - look up in per-coroutine storage */
+		if (!coroutine->static_variables_map) {
+			ZEND_VM_NEXT_OPCODE();
+		}
+		ht = zend_hash_index_find_ptr(coroutine->static_variables_map, (zend_ulong)EX(func));
+		if (!ht) {
+			ZEND_VM_NEXT_OPCODE();
+		}
+	} else {
+		/* Normal code - use global storage */
+		ht = ZEND_MAP_PTR_GET(EX(func)->op_array.static_variables_ptr);
+		if (!ht) {
+			ZEND_VM_NEXT_OPCODE();
+		}
 	}
 	ZEND_ASSERT(GC_REFCOUNT(ht) == 1);
 
@@ -112174,8 +112253,16 @@ static zend_always_inline ZEND_OPCODE_HANDLER_RET zend_fetch_static_prop_helper_
 	USE_OPLINE
 	zval *prop;
 	zend_property_info *prop_info;
+	zend_coroutine_t *coroutine;
 
 	SAVE_OPLINE();
+
+	/* Check if we're in a coroutine context - for now, use global storage
+	 * Full per-coroutine static properties require deeper modifications to
+	 * zend_fetch_static_property_address() and related functions.
+	 * TODO: Implement per-coroutine class static property isolation */
+	coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+	(void)coroutine; /* Suppress unused variable warning for now */
 
 	prop = zend_fetch_static_property_address(
 		&prop_info, opline->extended_value & ~ZEND_FETCH_OBJ_FLAGS, type,

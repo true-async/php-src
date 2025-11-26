@@ -23,6 +23,8 @@
  * php zend_vm_gen.php
  */
 
+#include "zend_async_API.h"
+
 ZEND_VM_HELPER(zend_add_helper, ANY, ANY, zval *op_1, zval *op_2)
 {
 	USE_OPLINE
