@@ -1859,8 +1859,16 @@ ZEND_VM_INLINE_HELPER(zend_fetch_static_prop_helper, ANY, ANY, int type)
 	USE_OPLINE
 	zval *prop;
 	zend_property_info *prop_info;
+	zend_coroutine_t *coroutine;
 
 	SAVE_OPLINE();
+
+	/* Check if we're in a coroutine context - for now, use global storage
+	 * Full per-coroutine static properties require deeper modifications to
+	 * zend_fetch_static_property_address() and related functions.
+	 * TODO: Implement per-coroutine class static property isolation */
+	coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+	(void)coroutine; /* Suppress unused variable warning for now */
 
 	prop = zend_fetch_static_property_address(
 		&prop_info, opline->extended_value & ~ZEND_FETCH_OBJ_FLAGS, type,
@@ -9145,10 +9153,30 @@ ZEND_VM_HANDLER(183, ZEND_BIND_STATIC, CV, ANY, REF)
 
 	SAVE_OPLINE();
 
-	ht = ZEND_MAP_PTR_GET(EX(func)->op_array.static_variables_ptr);
-	if (!ht) {
-		ht = zend_array_dup(EX(func)->op_array.static_variables);
-		ZEND_MAP_PTR_SET(EX(func)->op_array.static_variables_ptr, ht);
+	/* Check if we're in a coroutine context */
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+
+	if (UNEXPECTED(coroutine)) {
+		/* We're in a coroutine - use per-coroutine storage */
+		if (!coroutine->static_variables_map) {
+			ALLOC_HASHTABLE(coroutine->static_variables_map);
+			zend_hash_init(coroutine->static_variables_map, 8, NULL, ZVAL_PTR_DTOR, 0);
+		}
+
+		/* Find or create HashTable for this function using pointer as index */
+		ht = zend_hash_index_find_ptr(coroutine->static_variables_map, (zend_ulong)EX(func));
+		if (!ht) {
+			ht = zend_array_dup(EX(func)->op_array.static_variables);
+			zend_hash_index_add_ptr(coroutine->static_variables_map,
+									 (zend_ulong)EX(func), ht);
+		}
+	} else {
+		/* Normal code - use global storage */
+		ht = ZEND_MAP_PTR_GET(EX(func)->op_array.static_variables_ptr);
+		if (!ht) {
+			ht = zend_array_dup(EX(func)->op_array.static_variables);
+			ZEND_MAP_PTR_SET(EX(func)->op_array.static_variables_ptr, ht);
+		}
 	}
 	ZEND_ASSERT(GC_REFCOUNT(ht) == 1);
 
@@ -9196,9 +9224,24 @@ ZEND_VM_HANDLER(203, ZEND_BIND_INIT_STATIC_OR_JMP, CV, JMP_ADDR)
 
 	variable_ptr = GET_OP1_ZVAL_PTR_PTR_UNDEF(BP_VAR_W);
 
-	ht = ZEND_MAP_PTR_GET(EX(func)->op_array.static_variables_ptr);
-	if (!ht) {
-		ZEND_VM_NEXT_OPCODE();
+	/* Check if we're in a coroutine context */
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+
+	if (UNEXPECTED(coroutine)) {
+		/* We're in a coroutine - look up in per-coroutine storage */
+		if (!coroutine->static_variables_map) {
+			ZEND_VM_NEXT_OPCODE();
+		}
+		ht = zend_hash_index_find_ptr(coroutine->static_variables_map, (zend_ulong)EX(func));
+		if (!ht) {
+			ZEND_VM_NEXT_OPCODE();
+		}
+	} else {
+		/* Normal code - use global storage */
+		ht = ZEND_MAP_PTR_GET(EX(func)->op_array.static_variables_ptr);
+		if (!ht) {
+			ZEND_VM_NEXT_OPCODE();
+		}
 	}
 	ZEND_ASSERT(GC_REFCOUNT(ht) == 1);
 

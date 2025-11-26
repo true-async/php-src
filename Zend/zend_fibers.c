@@ -475,6 +475,12 @@ ZEND_API void zend_fiber_destroy_context(zend_fiber_context *context)
 		context->cleanup(context);
 	}
 
+	/* Clean up per-fiber static variables storage */
+	if (context->static_variables_map) {
+		zend_hash_destroy(context->static_variables_map);
+		FREE_HASHTABLE(context->static_variables_map);
+	}
+
 	zend_fiber_stack_free(stack);
 }
 

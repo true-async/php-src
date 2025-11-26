@@ -1046,6 +1046,12 @@ struct _zend_coroutine_s {
 
 	/* Switch handlers for context switching */
 	zend_coroutine_switch_handlers_vector_t *switch_handlers;
+
+	/* Per-coroutine static variables for functions: op_array* → HashTable* */
+	HashTable *static_variables_map;
+
+	/* Per-coroutine static members for classes: ce* → zval* */
+	HashTable *static_members_map;
 };
 
 /**

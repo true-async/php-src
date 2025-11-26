@@ -95,6 +95,9 @@ struct _zend_fiber_context {
 	/* Observer state */
 	zend_execute_data *top_observed_frame;
 
+	/* Per-fiber storage for static variables: key = zend_op_array*, value = HashTable* */
+	HashTable *static_variables_map;
+
 	/* Reserved for extensions */
 	void *reserved[ZEND_MAX_RESERVED_RESOURCES];
 };
