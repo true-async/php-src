@@ -42822,7 +42822,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_BIND_STATIC_S
 	/* Check if we're in a coroutine context */
 	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 
-	if (UNEXPECTED(coroutine)) {
+	if (UNEXPECTED(ZEND_ASYNC_SHOULD_ISOLATE_STATICS(coroutine))) {
 		/* We're in a coroutine - use per-coroutine storage */
 		if (!coroutine->static_variables_map) {
 			ALLOC_HASHTABLE(coroutine->static_variables_map);
@@ -42893,7 +42893,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_BIND_INIT_STA
 	/* Check if we're in a coroutine context */
 	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 
-	if (UNEXPECTED(coroutine)) {
+	if (UNEXPECTED(ZEND_ASYNC_SHOULD_ISOLATE_STATICS(coroutine))) {
 		/* We're in a coroutine - look up in per-coroutine storage */
 		if (!coroutine->static_variables_map) {
 			ZEND_VM_NEXT_OPCODE();
@@ -98323,7 +98323,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_BIND_STATIC_SPEC_C
 	/* Check if we're in a coroutine context */
 	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 
-	if (UNEXPECTED(coroutine)) {
+	if (UNEXPECTED(ZEND_ASYNC_SHOULD_ISOLATE_STATICS(coroutine))) {
 		/* We're in a coroutine - use per-coroutine storage */
 		if (!coroutine->static_variables_map) {
 			ALLOC_HASHTABLE(coroutine->static_variables_map);
@@ -98394,7 +98394,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_BIND_INIT_STATIC_O
 	/* Check if we're in a coroutine context */
 	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 
-	if (UNEXPECTED(coroutine)) {
+	if (UNEXPECTED(ZEND_ASYNC_SHOULD_ISOLATE_STATICS(coroutine))) {
 		/* We're in a coroutine - look up in per-coroutine storage */
 		if (!coroutine->static_variables_map) {
 			ZEND_VM_NEXT_OPCODE();

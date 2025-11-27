@@ -9158,7 +9158,7 @@ ZEND_VM_HANDLER(183, ZEND_BIND_STATIC, CV, ANY, REF)
 	/* Check if we're in a coroutine context */
 	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 
-	if (UNEXPECTED(coroutine)) {
+	if (UNEXPECTED(ZEND_ASYNC_SHOULD_ISOLATE_STATICS(coroutine))) {
 		/* We're in a coroutine - use per-coroutine storage */
 		if (!coroutine->static_variables_map) {
 			ALLOC_HASHTABLE(coroutine->static_variables_map);
@@ -9229,7 +9229,7 @@ ZEND_VM_HANDLER(203, ZEND_BIND_INIT_STATIC_OR_JMP, CV, JMP_ADDR)
 	/* Check if we're in a coroutine context */
 	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 
-	if (UNEXPECTED(coroutine)) {
+	if (UNEXPECTED(ZEND_ASYNC_SHOULD_ISOLATE_STATICS(coroutine))) {
 		/* We're in a coroutine - look up in per-coroutine storage */
 		if (!coroutine->static_variables_map) {
 			ZEND_VM_NEXT_OPCODE();
