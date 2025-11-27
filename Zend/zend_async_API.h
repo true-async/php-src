@@ -1716,6 +1716,7 @@ END_EXTERN_C()
 
 /* Per-coroutine static variables support */
 ZEND_API zval *zend_async_class_init_statics(zend_coroutine_t *coroutine, zend_class_entry *ce);
+ZEND_API void zend_coroutine_static_members_dtor(void *pDest);
 ZEND_API void zend_coroutine_static_variables_dtor(void *pDest);
 
 /* Coroutine Switch Handlers API Macros */

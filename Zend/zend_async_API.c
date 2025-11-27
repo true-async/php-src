@@ -1732,7 +1732,7 @@ ZEND_API zval *zend_async_class_init_statics(zend_coroutine_t *coroutine, zend_c
 }
 
 /* Destructor for per-coroutine static class members arrays */
-static void zend_coroutine_static_members_dtor(void *pDest)
+void zend_coroutine_static_members_dtor(void *pDest)
 {
 	zval *members = *(zval**)pDest;
 	if (members != NULL) {
