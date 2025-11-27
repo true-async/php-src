@@ -41,6 +41,7 @@
 #include "zend_type_info.h"
 #include "zend_smart_str.h"
 #include "zend_observer.h"
+#include "zend_async_API.h"
 #include "zend_system_id.h"
 #include "zend_call_stack.h"
 #include "zend_attributes.h"
@@ -2484,7 +2485,19 @@ static zend_always_inline HashTable *zend_get_target_symbol_table(int fetch_type
 	HashTable *ht;
 
 	if (EXPECTED(fetch_type & (ZEND_FETCH_GLOBAL_LOCK | ZEND_FETCH_GLOBAL))) {
-		ht = &EG(symbol_table);
+		/* Check if we're in a coroutine context - use per-coroutine symbol table */
+		zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+		if (UNEXPECTED(ZEND_ASYNC_SHOULD_ISOLATE_STATICS(coroutine))) {
+			/* Per-coroutine global variables - lazy initialize with empty table */
+			if (UNEXPECTED(!coroutine->symbol_table)) {
+				coroutine->symbol_table = zend_new_array(0);
+				zend_hash_real_init_mixed(coroutine->symbol_table);
+			}
+			ht = (HashTable *)coroutine->symbol_table;
+		} else {
+			/* Global scope - use main symbol table */
+			ht = &EG(symbol_table);
+		}
 	} else {
 		ZEND_ASSERT(fetch_type & ZEND_FETCH_LOCAL);
 		if (!(EX_CALL_INFO() & ZEND_CALL_HAS_SYMBOL_TABLE)) {

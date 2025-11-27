@@ -1700,6 +1700,15 @@ void zend_coroutine_static_variables_dtor(void *pDest)
 	}
 }
 
+/* Destructor for per-coroutine global variables symbol table */
+ZEND_API void zend_coroutine_symbol_table_dtor(zend_coroutine_t *coroutine)
+{
+	if (coroutine->symbol_table != NULL) {
+		zend_array_release(coroutine->symbol_table);
+		coroutine->symbol_table = NULL;
+	}
+}
+
 /* Global cleanup function - called during PHP shutdown */
 static void zend_async_main_handlers_shutdown(void)
 {

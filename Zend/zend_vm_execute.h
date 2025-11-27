@@ -39096,10 +39096,26 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_F
 static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_FETCH_GLOBALS_SPEC_UNUSED_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
 {
 	USE_OPLINE
+	zend_coroutine_t *coroutine;
+	zend_array *target_table;
+
+	/* Check if we're in a coroutine context - use per-coroutine symbol table */
+	coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+	if (UNEXPECTED(ZEND_ASYNC_SHOULD_ISOLATE_STATICS(coroutine))) {
+		/* Per-coroutine global variables - lazy initialize with empty table */
+		if (UNEXPECTED(!coroutine->symbol_table)) {
+			coroutine->symbol_table = zend_new_array(0);
+			zend_hash_real_init_mixed(coroutine->symbol_table);
+		}
+		target_table = coroutine->symbol_table;
+	} else {
+		/* Global scope - use main symbol table */
+		target_table = &EG(symbol_table);
+	}
 
 	/* For symbol tables we need to deal with exactly the same problems as for property tables. */
 	ZVAL_ARR(EX_VAR(opline->result.var),
-		zend_proptable_to_symtable(&EG(symbol_table), /* always_duplicate */ 1));
+		zend_proptable_to_symtable(target_table, /* always_duplicate */ 1));
 	ZEND_VM_NEXT_OPCODE();
 }
 
@@ -46924,15 +46940,31 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_B
 	zval *variable_ptr;
 	uintptr_t idx;
 	zend_reference *ref;
+	zend_coroutine_t *coroutine;
+	zend_array *target_table;
 
 	ZEND_VM_REPEATABLE_OPCODE
+
+	/* Check if we're in a coroutine context - use per-coroutine symbol table */
+	coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+	if (UNEXPECTED(ZEND_ASYNC_SHOULD_ISOLATE_STATICS(coroutine))) {
+		/* Per-coroutine global variables - lazy initialize with empty table */
+		if (UNEXPECTED(!coroutine->symbol_table)) {
+			coroutine->symbol_table = zend_new_array(0);
+			zend_hash_real_init_mixed(coroutine->symbol_table);
+		}
+		target_table = coroutine->symbol_table;
+	} else {
+		/* Global scope - use main symbol table */
+		target_table = &EG(symbol_table);
+	}
 
 	varname = Z_STR_P(RT_CONSTANT(opline, opline->op2));
 
 	/* We store "hash slot index" + 1 (NULL is a mark of uninitialized cache slot) */
 	idx = (uintptr_t)CACHED_PTR(opline->extended_value) - 1;
-	if (EXPECTED(idx < EG(symbol_table).nNumUsed * sizeof(Bucket))) {
-		Bucket *p = (Bucket*)((char*)EG(symbol_table).arData + idx);
+	if (EXPECTED(idx < target_table->nNumUsed * sizeof(Bucket))) {
+		Bucket *p = (Bucket*)((char*)target_table->arData + idx);
 
 		if (EXPECTED(p->key == varname) ||
 		    (EXPECTED(p->h == ZSTR_H(varname)) &&
@@ -46944,14 +46976,14 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_B
 		}
 	}
 
-	value = zend_hash_find_known_hash(&EG(symbol_table), varname);
+	value = zend_hash_find_known_hash(target_table, varname);
 	if (UNEXPECTED(value == NULL)) {
-		value = zend_hash_add_new(&EG(symbol_table), varname, &EG(uninitialized_zval));
-		idx = (char*)value - (char*)EG(symbol_table).arData;
+		value = zend_hash_add_new(target_table, varname, &EG(uninitialized_zval));
+		idx = (char*)value - (char*)target_table->arData;
 		/* Store "hash slot index" + 1 (NULL is a mark of uninitialized cache slot) */
 		CACHE_PTR(opline->extended_value, (void*)(idx + 1));
 	} else {
-		idx = (char*)value - (char*)EG(symbol_table).arData;
+		idx = (char*)value - (char*)target_table->arData;
 		/* Store "hash slot index" + 1 (NULL is a mark of uninitialized cache slot) */
 		CACHE_PTR(opline->extended_value, (void*)(idx + 1));
 check_indirect:
@@ -94597,10 +94629,26 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_FETCH_
 static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_FETCH_GLOBALS_SPEC_UNUSED_UNUSED_TAILCALL_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
 {
 	USE_OPLINE
+	zend_coroutine_t *coroutine;
+	zend_array *target_table;
+
+	/* Check if we're in a coroutine context - use per-coroutine symbol table */
+	coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+	if (UNEXPECTED(ZEND_ASYNC_SHOULD_ISOLATE_STATICS(coroutine))) {
+		/* Per-coroutine global variables - lazy initialize with empty table */
+		if (UNEXPECTED(!coroutine->symbol_table)) {
+			coroutine->symbol_table = zend_new_array(0);
+			zend_hash_real_init_mixed(coroutine->symbol_table);
+		}
+		target_table = coroutine->symbol_table;
+	} else {
+		/* Global scope - use main symbol table */
+		target_table = &EG(symbol_table);
+	}
 
 	/* For symbol tables we need to deal with exactly the same problems as for property tables. */
 	ZVAL_ARR(EX_VAR(opline->result.var),
-		zend_proptable_to_symtable(&EG(symbol_table), /* always_duplicate */ 1));
+		zend_proptable_to_symtable(target_table, /* always_duplicate */ 1));
 	ZEND_VM_NEXT_OPCODE();
 }
 
@@ -102425,15 +102473,31 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_BIND_G
 	zval *variable_ptr;
 	uintptr_t idx;
 	zend_reference *ref;
+	zend_coroutine_t *coroutine;
+	zend_array *target_table;
 
 	ZEND_VM_REPEATABLE_OPCODE
+
+	/* Check if we're in a coroutine context - use per-coroutine symbol table */
+	coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+	if (UNEXPECTED(ZEND_ASYNC_SHOULD_ISOLATE_STATICS(coroutine))) {
+		/* Per-coroutine global variables - lazy initialize with empty table */
+		if (UNEXPECTED(!coroutine->symbol_table)) {
+			coroutine->symbol_table = zend_new_array(0);
+			zend_hash_real_init_mixed(coroutine->symbol_table);
+		}
+		target_table = coroutine->symbol_table;
+	} else {
+		/* Global scope - use main symbol table */
+		target_table = &EG(symbol_table);
+	}
 
 	varname = Z_STR_P(RT_CONSTANT(opline, opline->op2));
 
 	/* We store "hash slot index" + 1 (NULL is a mark of uninitialized cache slot) */
 	idx = (uintptr_t)CACHED_PTR(opline->extended_value) - 1;
-	if (EXPECTED(idx < EG(symbol_table).nNumUsed * sizeof(Bucket))) {
-		Bucket *p = (Bucket*)((char*)EG(symbol_table).arData + idx);
+	if (EXPECTED(idx < target_table->nNumUsed * sizeof(Bucket))) {
+		Bucket *p = (Bucket*)((char*)target_table->arData + idx);
 
 		if (EXPECTED(p->key == varname) ||
 		    (EXPECTED(p->h == ZSTR_H(varname)) &&
@@ -102445,14 +102509,14 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_BIND_G
 		}
 	}
 
-	value = zend_hash_find_known_hash(&EG(symbol_table), varname);
+	value = zend_hash_find_known_hash(target_table, varname);
 	if (UNEXPECTED(value == NULL)) {
-		value = zend_hash_add_new(&EG(symbol_table), varname, &EG(uninitialized_zval));
-		idx = (char*)value - (char*)EG(symbol_table).arData;
+		value = zend_hash_add_new(target_table, varname, &EG(uninitialized_zval));
+		idx = (char*)value - (char*)target_table->arData;
 		/* Store "hash slot index" + 1 (NULL is a mark of uninitialized cache slot) */
 		CACHE_PTR(opline->extended_value, (void*)(idx + 1));
 	} else {
-		idx = (char*)value - (char*)EG(symbol_table).arData;
+		idx = (char*)value - (char*)target_table->arData;
 		/* Store "hash slot index" + 1 (NULL is a mark of uninitialized cache slot) */
 		CACHE_PTR(opline->extended_value, (void*)(idx + 1));
 check_indirect:

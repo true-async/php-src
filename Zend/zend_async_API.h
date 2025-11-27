@@ -1050,8 +1050,8 @@ struct _zend_coroutine_s {
 	/* Per-coroutine static variables for functions: op_array* → HashTable* */
 	HashTable *static_variables_map;
 
-	/* Per-coroutine static members for classes: ce* → zval* */
-	HashTable *static_members_map;
+	/* Per-coroutine global variables symbol table */
+	zend_array *symbol_table;
 };
 
 /**
@@ -1716,6 +1716,7 @@ END_EXTERN_C()
 
 /* Per-coroutine static variables support */
 ZEND_API void zend_coroutine_static_variables_dtor(void *pDest);
+ZEND_API void zend_coroutine_symbol_table_dtor(zend_coroutine_t *coroutine);
 
 /* Coroutine Switch Handlers API Macros */
 #define ZEND_COROUTINE_ADD_SWITCH_HANDLER(coroutine, handler) \
