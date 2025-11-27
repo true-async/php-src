@@ -1690,6 +1690,56 @@ ZEND_API bool zend_async_call_main_coroutine_start_handlers(zend_coroutine_t *ma
 	return EG(exception) == NULL;
 }
 
+/* Initialize per-coroutine static class members */
+ZEND_API zval *zend_async_class_init_statics(zend_coroutine_t *coroutine, zend_class_entry *ce)
+{
+	zval *members;
+	zval *p;
+
+	/* Ensure global static members are initialized */
+	if (UNEXPECTED(CE_STATIC_MEMBERS(ce) == NULL)) {
+		zend_class_init_statics(ce);
+	}
+
+	/* Check if already initialized for this coroutine */
+	zend_ulong index = ptr_to_index((void *)ce);
+	zval **members_ptr = (zval **)zend_hash_index_find_ptr(coroutine->static_members_map, index);
+	if (members_ptr) {
+		return *members_ptr;
+	}
+
+	/* Allocate memory for per-coroutine static members */
+	members = emalloc(sizeof(zval) * ce->default_static_members_count);
+
+	/* Copy static members with inheritance handling */
+	for (uint32_t i = 0; i < ce->default_static_members_count; i++) {
+		p = &ce->default_static_members_table[i];
+		if (Z_TYPE_P(p) == IS_INDIRECT) {
+			/* This is an inherited property - create indirect reference to parent */
+			zval *parent_member = &CE_STATIC_MEMBERS(ce->parent)[i];
+			ZVAL_DEINDIRECT(parent_member);
+			ZVAL_INDIRECT(&members[i], parent_member);
+		} else {
+			/* Own property - copy the value */
+			ZVAL_COPY_OR_DUP(&members[i], p);
+		}
+	}
+
+	/* Store pointer in coroutine map */
+	zend_hash_index_add_ptr(coroutine->static_members_map, index, members);
+
+	return members;
+}
+
+/* Destructor for per-coroutine static class members arrays */
+static void zend_coroutine_static_members_dtor(void *pDest)
+{
+	zval *members = *(zval**)pDest;
+	if (members != NULL) {
+		efree(members);
+	}
+}
+
 /* Destructor for per-coroutine static variables HashTable entries */
 void zend_coroutine_static_variables_dtor(void *pDest)
 {

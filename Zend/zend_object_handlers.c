@@ -28,6 +28,7 @@
 #include "zend_object_handlers.h"
 #include "zend_interfaces.h"
 #include "zend_exceptions.h"
+#include "zend_async_API.h"
 #include "zend_closures.h"
 #include "zend_compile.h"
 #include "zend_hash.h"
@@ -2048,11 +2049,22 @@ undeclared_property:
 	}
 
 	/* Ensure static properties are initialized. */
-	if (UNEXPECTED(CE_STATIC_MEMBERS(ce) == NULL)) {
-		zend_class_init_statics(ce);
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+	if (UNEXPECTED(ZEND_ASYNC_SHOULD_ISOLATE_STATICS(coroutine))) {
+		/* Per-coroutine static properties */
+		if (!coroutine->static_members_map) {
+			ALLOC_HASHTABLE(coroutine->static_members_map);
+			zend_hash_init(coroutine->static_members_map, 8, NULL, (dtor_func_t) zend_coroutine_static_members_dtor, 0);
+		}
+		zval *members = zend_async_class_init_statics(coroutine, ce);
+		ret = members + property_info->offset;
+	} else {
+		/* Global static properties */
+		if (UNEXPECTED(CE_STATIC_MEMBERS(ce) == NULL)) {
+			zend_class_init_statics(ce);
+		}
+		ret = CE_STATIC_MEMBERS(ce) + property_info->offset;
 	}
-
-	ret = CE_STATIC_MEMBERS(ce) + property_info->offset;
 	ZVAL_DEINDIRECT(ret);
 
 	if (UNEXPECTED((type == BP_VAR_R || type == BP_VAR_RW)

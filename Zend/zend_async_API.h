@@ -1715,6 +1715,7 @@ END_EXTERN_C()
 #define ZEND_ASYNC_INTERNAL_CONTEXT_UNSET(coro, key) zend_async_internal_context_unset(coro, key)
 
 /* Per-coroutine static variables support */
+ZEND_API zval *zend_async_class_init_statics(zend_coroutine_t *coroutine, zend_class_entry *ce);
 ZEND_API void zend_coroutine_static_variables_dtor(void *pDest);
 
 /* Coroutine Switch Handlers API Macros */
