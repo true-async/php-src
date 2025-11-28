@@ -822,6 +822,9 @@ struct _zend_async_scope_s {
 	/* Scope context object */
 	zend_async_context_t *context;
 
+	/* Per-Scope SuperGlobals storage (lazy initialized) */
+	HashTable *superglobals;
+
 	zend_async_before_coroutine_enqueue_t before_coroutine_enqueue;
 	zend_async_after_coroutine_enqueue_t after_coroutine_enqueue;
 
@@ -865,6 +868,7 @@ struct _zend_async_scope_s {
 #define ZEND_ASYNC_SCOPE_F_DISPOSE_SAFELY (1u << 14) /* scope will be disposed safely */
 #define ZEND_ASYNC_SCOPE_F_CANCELLED (1u << 15) /* scope was cancelled */
 #define ZEND_ASYNC_SCOPE_F_DISPOSING (1u << 16) /* scope disposing */
+#define ZEND_ASYNC_SCOPE_F_INHERIT_SUPERGLOBALS (1u << 17) /* scope inherits superglobals from global */
 
 #define ZEND_ASYNC_SCOPE_IS_CLOSED(scope) (((scope)->event.flags & ZEND_ASYNC_SCOPE_F_CLOSED) != 0)
 #define ZEND_ASYNC_SCOPE_IS_NO_FREE_MEMORY(scope) \
@@ -875,6 +879,8 @@ struct _zend_async_scope_s {
 	(((scope)->event.flags & ZEND_ASYNC_SCOPE_F_CANCELLED) != 0)
 #define ZEND_ASYNC_SCOPE_IS_DISPOSING(scope) \
 	(((scope)->event.flags & ZEND_ASYNC_SCOPE_F_DISPOSING) != 0)
+#define ZEND_ASYNC_SCOPE_IS_INHERIT_SUPERGLOBALS(scope) \
+	(((scope)->event.flags & ZEND_ASYNC_SCOPE_F_INHERIT_SUPERGLOBALS) != 0)
 
 #define ZEND_ASYNC_SCOPE_SET_CLOSED(scope) ((scope)->event.flags |= ZEND_ASYNC_SCOPE_F_CLOSED)
 #define ZEND_ASYNC_SCOPE_CLR_CLOSED(scope) ((scope)->event.flags &= ~ZEND_ASYNC_SCOPE_F_CLOSED)
@@ -894,6 +900,11 @@ struct _zend_async_scope_s {
 #define ZEND_ASYNC_SCOPE_SET_DISPOSING(scope) ((scope)->event.flags |= ZEND_ASYNC_SCOPE_F_DISPOSING)
 #define ZEND_ASYNC_SCOPE_CLR_DISPOSING(scope) \
 	((scope)->event.flags &= ~ZEND_ASYNC_SCOPE_F_DISPOSING)
+
+#define ZEND_ASYNC_SCOPE_SET_INHERIT_SUPERGLOBALS(scope) \
+	((scope)->event.flags |= ZEND_ASYNC_SCOPE_F_INHERIT_SUPERGLOBALS)
+#define ZEND_ASYNC_SCOPE_CLR_INHERIT_SUPERGLOBALS(scope) \
+	((scope)->event.flags &= ~ZEND_ASYNC_SCOPE_F_INHERIT_SUPERGLOBALS)
 
 static zend_always_inline void zend_async_scope_add_child(
 		zend_async_scope_t *parent_scope, zend_async_scope_t *child_scope)
@@ -946,6 +957,35 @@ static zend_always_inline void zend_async_scope_free_children(zend_async_scope_t
 	vector->data = NULL;
 	vector->length = 0;
 	vector->capacity = 0;
+}
+
+/**
+ * Try to get SuperGlobal from Scope chain
+ * Returns: true if handled (either found or undefined), false if should use global
+ * If returns true and *result is not NULL, use *result; if NULL, variable is undefined
+ */
+static zend_always_inline bool zend_async_scope_try_get_superglobal(
+		const zend_async_scope_t *scope, const char *name, size_t len, zval **result)
+{
+	*result = NULL;
+	bool is_inherit_superglobals = false;
+
+	do {
+		if (scope->superglobals) {
+			*result = zend_hash_str_find(scope->superglobals, name, len);
+			return true;
+		}
+
+		is_inherit_superglobals = ZEND_ASYNC_SCOPE_IS_INHERIT_SUPERGLOBALS(scope);
+
+		if (false == is_inherit_superglobals) {
+			return true;
+		}
+
+		scope = scope->parent_scope;
+	} while (scope);
+
+	return !is_inherit_superglobals;
 }
 
 ///////////////////////////////////////////////////////////////////

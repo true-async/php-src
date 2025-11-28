@@ -1751,8 +1751,20 @@ ZEND_VM_HELPER(zend_fetch_var_address_helper, CONST|TMPVAR|CV, UNUSED, int type)
 		}
 	}
 
+	/* Per-Scope SuperGlobals: intercept SuperGlobal access in Scope context */
+	if (UNEXPECTED(opline->extended_value & ZEND_FETCH_GLOBAL)) {
+		const zend_async_scope_t *scope = ZEND_ASYNC_CURRENT_SCOPE;
+		if (UNEXPECTED(scope != NULL)) {
+			if (zend_async_scope_try_get_superglobal(scope, ZSTR_VAL(name), ZSTR_LEN(name), &retval)) {
+				goto superglobal_resolved;
+			}
+		}
+	}
+
 	target_symbol_table = zend_get_target_symbol_table(opline->extended_value EXECUTE_DATA_CC);
 	retval = zend_hash_find_ex(target_symbol_table, name, OP1_TYPE == IS_CONST);
+
+superglobal_resolved:
 	if (retval == NULL) {
 		if (UNEXPECTED(zend_string_equals(name, ZSTR_KNOWN(ZEND_STR_THIS)))) {
 ZEND_VM_C_LABEL(fetch_this):
