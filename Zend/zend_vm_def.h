@@ -8705,7 +8705,7 @@ ZEND_VM_HOT_HANDLER(168, ZEND_BIND_GLOBAL, CV, CONST, CACHE_SLOT)
 
 	/* Check if we're in a coroutine context - use per-coroutine symbol table */
 	coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
-	if (UNEXPECTED(ZEND_ASYNC_SHOULD_ISOLATE_STATICS(coroutine))) {
+	if (UNEXPECTED(ZEND_ASYNC_SHOULD_ISOLATE(coroutine))) {
 		/* Per-coroutine global variables - lazy initialize with empty table */
 		if (UNEXPECTED(!coroutine->symbol_table)) {
 			coroutine->symbol_table = zend_new_array(0);
@@ -9171,30 +9171,10 @@ ZEND_VM_HANDLER(183, ZEND_BIND_STATIC, CV, ANY, REF)
 
 	SAVE_OPLINE();
 
-	/* Check if we're in a coroutine context */
-	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
-
-	if (UNEXPECTED(ZEND_ASYNC_SHOULD_ISOLATE_STATICS(coroutine))) {
-		/* We're in a coroutine - use per-coroutine storage */
-		if (!coroutine->static_variables_map) {
-			ALLOC_HASHTABLE(coroutine->static_variables_map);
-			zend_hash_init(coroutine->static_variables_map, 8, NULL, (dtor_func_t) zend_coroutine_static_variables_dtor, 0);
-		}
-
-		/* Find or create HashTable for this function using pointer as index */
-		ht = zend_hash_index_find_ptr(coroutine->static_variables_map, (zend_ulong)EX(func));
-		if (!ht) {
-			ht = zend_array_dup(EX(func)->op_array.static_variables);
-			zend_hash_index_add_ptr(coroutine->static_variables_map,
-									 (zend_ulong)EX(func), ht);
-		}
-	} else {
-		/* Normal code - use global storage */
-		ht = ZEND_MAP_PTR_GET(EX(func)->op_array.static_variables_ptr);
-		if (!ht) {
-			ht = zend_array_dup(EX(func)->op_array.static_variables);
-			ZEND_MAP_PTR_SET(EX(func)->op_array.static_variables_ptr, ht);
-		}
+	ht = ZEND_MAP_PTR_GET(EX(func)->op_array.static_variables_ptr);
+	if (!ht) {
+		ht = zend_array_dup(EX(func)->op_array.static_variables);
+		ZEND_MAP_PTR_SET(EX(func)->op_array.static_variables_ptr, ht);
 	}
 	ZEND_ASSERT(GC_REFCOUNT(ht) == 1);
 
@@ -9242,24 +9222,9 @@ ZEND_VM_HANDLER(203, ZEND_BIND_INIT_STATIC_OR_JMP, CV, JMP_ADDR)
 
 	variable_ptr = GET_OP1_ZVAL_PTR_PTR_UNDEF(BP_VAR_W);
 
-	/* Check if we're in a coroutine context */
-	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
-
-	if (UNEXPECTED(ZEND_ASYNC_SHOULD_ISOLATE_STATICS(coroutine))) {
-		/* We're in a coroutine - look up in per-coroutine storage */
-		if (!coroutine->static_variables_map) {
-			ZEND_VM_NEXT_OPCODE();
-		}
-		ht = zend_hash_index_find_ptr(coroutine->static_variables_map, (zend_ulong)EX(func));
-		if (!ht) {
-			ZEND_VM_NEXT_OPCODE();
-		}
-	} else {
-		/* Normal code - use global storage */
-		ht = ZEND_MAP_PTR_GET(EX(func)->op_array.static_variables_ptr);
-		if (!ht) {
-			ZEND_VM_NEXT_OPCODE();
-		}
+	ht = ZEND_MAP_PTR_GET(EX(func)->op_array.static_variables_ptr);
+	if (!ht) {
+		ZEND_VM_NEXT_OPCODE();
 	}
 	ZEND_ASSERT(GC_REFCOUNT(ht) == 1);
 
@@ -9299,7 +9264,7 @@ ZEND_VM_HANDLER(200, ZEND_FETCH_GLOBALS, UNUSED, UNUSED)
 
 	/* Check if we're in a coroutine context - use per-coroutine symbol table */
 	coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
-	if (UNEXPECTED(ZEND_ASYNC_SHOULD_ISOLATE_STATICS(coroutine))) {
+	if (UNEXPECTED(ZEND_ASYNC_SHOULD_ISOLATE(coroutine))) {
 		/* Per-coroutine global variables - lazy initialize with empty table */
 		if (UNEXPECTED(!coroutine->symbol_table)) {
 			coroutine->symbol_table = zend_new_array(0);

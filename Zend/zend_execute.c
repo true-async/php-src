@@ -2487,7 +2487,7 @@ static zend_always_inline HashTable *zend_get_target_symbol_table(int fetch_type
 	if (EXPECTED(fetch_type & (ZEND_FETCH_GLOBAL_LOCK | ZEND_FETCH_GLOBAL))) {
 		/* Check if we're in a coroutine context - use per-coroutine symbol table */
 		zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
-		if (UNEXPECTED(ZEND_ASYNC_SHOULD_ISOLATE_STATICS(coroutine))) {
+		if (UNEXPECTED(ZEND_ASYNC_SHOULD_ISOLATE(coroutine))) {
 			/* Per-coroutine global variables - lazy initialize with empty table */
 			if (UNEXPECTED(!coroutine->symbol_table)) {
 				coroutine->symbol_table = zend_new_array(0);
