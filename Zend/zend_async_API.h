@@ -961,31 +961,39 @@ static zend_always_inline void zend_async_scope_free_children(zend_async_scope_t
 
 /**
  * Try to get SuperGlobal from Scope chain
- * Returns: true if handled (either found or undefined), false if should use global
- * If returns true and *result is not NULL, use *result; if NULL, variable is undefined
+ * Returns: zval* if handled by scope (found or auto-created), NULL if should use global
  */
-static zend_always_inline bool zend_async_scope_try_get_superglobal(
-		const zend_async_scope_t *scope, const char *name, size_t len, zval **result)
+static zend_always_inline zval *zend_async_scope_try_get_superglobal(
+		zend_async_scope_t *scope, const char *name, size_t len)
 {
-	*result = NULL;
-	bool is_inherit_superglobals = false;
-
+	// 1. Select the scope (walk up the chain until we find a scope with inheritSuperglobals=false)
 	do {
-		if (scope->superglobals) {
-			*result = zend_hash_str_find(scope->superglobals, name, len);
-			return true;
-		}
-
-		is_inherit_superglobals = ZEND_ASYNC_SCOPE_IS_INHERIT_SUPERGLOBALS(scope);
-
-		if (false == is_inherit_superglobals) {
-			return true;
+		if (false == ZEND_ASYNC_SCOPE_IS_INHERIT_SUPERGLOBALS(scope)) {
+			break;
 		}
 
 		scope = scope->parent_scope;
 	} while (scope);
 
-	return !is_inherit_superglobals;
+	if (scope == NULL) {
+		return NULL;
+	}
+
+	// 2. Lazy init scope->superglobals if needed
+	if (scope->superglobals == NULL) {
+		scope->superglobals = zend_new_array(8);
+	}
+
+	// 3. Get the variable or auto-create empty array
+	zval *result = zend_hash_str_find(scope->superglobals, name, len);
+	if (result != NULL) {
+		return result;
+	}
+
+	// Auto-create empty array for this superglobal
+	zval tmp;
+	array_init(&tmp);
+	return zend_hash_str_update(scope->superglobals, name, len, &tmp);
 }
 
 ///////////////////////////////////////////////////////////////////

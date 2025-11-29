@@ -10834,20 +10834,22 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV_
 		}
 	}
 
-	target_symbol_table = zend_get_target_symbol_table(opline->extended_value EXECUTE_DATA_CC);
+	zend_async_scope_t *scope = ZEND_ASYNC_CURRENT_SCOPE;
 
 	/* Per-Scope SuperGlobals: intercept SuperGlobal access in Scope context */
-	if (UNEXPECTED(opline->extended_value & ZEND_FETCH_GLOBAL)) {
-		const zend_async_scope_t *scope = ZEND_ASYNC_CURRENT_SCOPE;
-		if (UNEXPECTED(scope != NULL)) {
-			zval *sg = NULL;
-			if (zend_async_scope_try_get_superglobal(scope, ZSTR_VAL(name), ZSTR_LEN(name), &sg)) {
-				retval = sg;
-				goto superglobal_resolved;
-			}
+	if (UNEXPECTED(scope != NULL && opline->extended_value & ZEND_FETCH_GLOBAL
+		&& zend_hash_str_find_ptr(CG(auto_globals), ZSTR_VAL(name), ZSTR_LEN(name)) != NULL)) {
+
+		retval = zend_async_scope_try_get_superglobal(scope, ZSTR_VAL(name), ZSTR_LEN(name));
+		if (retval == NULL) {
+			target_symbol_table = &EG(symbol_table);
+			retval = zend_hash_find_ex(target_symbol_table, name, IS_CONST == IS_CONST);
 		}
+
+		goto superglobal_resolved;
 	}
 
+	target_symbol_table = zend_get_target_symbol_table(opline->extended_value EXECUTE_DATA_CC);
 	retval = zend_hash_find_ex(target_symbol_table, name, IS_CONST == IS_CONST);
 
 superglobal_resolved:
@@ -19101,20 +19103,22 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV_
 		}
 	}
 
-	target_symbol_table = zend_get_target_symbol_table(opline->extended_value EXECUTE_DATA_CC);
+	zend_async_scope_t *scope = ZEND_ASYNC_CURRENT_SCOPE;
 
 	/* Per-Scope SuperGlobals: intercept SuperGlobal access in Scope context */
-	if (UNEXPECTED(opline->extended_value & ZEND_FETCH_GLOBAL)) {
-		const zend_async_scope_t *scope = ZEND_ASYNC_CURRENT_SCOPE;
-		if (UNEXPECTED(scope != NULL)) {
-			zval *sg = NULL;
-			if (zend_async_scope_try_get_superglobal(scope, ZSTR_VAL(name), ZSTR_LEN(name), &sg)) {
-				retval = sg;
-				goto superglobal_resolved;
-			}
+	if (UNEXPECTED(scope != NULL && opline->extended_value & ZEND_FETCH_GLOBAL
+		&& zend_hash_str_find_ptr(CG(auto_globals), ZSTR_VAL(name), ZSTR_LEN(name)) != NULL)) {
+
+		retval = zend_async_scope_try_get_superglobal(scope, ZSTR_VAL(name), ZSTR_LEN(name));
+		if (retval == NULL) {
+			target_symbol_table = &EG(symbol_table);
+			retval = zend_hash_find_ex(target_symbol_table, name, (IS_TMP_VAR|IS_VAR) == IS_CONST);
 		}
+
+		goto superglobal_resolved;
 	}
 
+	target_symbol_table = zend_get_target_symbol_table(opline->extended_value EXECUTE_DATA_CC);
 	retval = zend_hash_find_ex(target_symbol_table, name, (IS_TMP_VAR|IS_VAR) == IS_CONST);
 
 superglobal_resolved:
@@ -51150,20 +51154,22 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV_
 		}
 	}
 
-	target_symbol_table = zend_get_target_symbol_table(opline->extended_value EXECUTE_DATA_CC);
+	zend_async_scope_t *scope = ZEND_ASYNC_CURRENT_SCOPE;
 
 	/* Per-Scope SuperGlobals: intercept SuperGlobal access in Scope context */
-	if (UNEXPECTED(opline->extended_value & ZEND_FETCH_GLOBAL)) {
-		const zend_async_scope_t *scope = ZEND_ASYNC_CURRENT_SCOPE;
-		if (UNEXPECTED(scope != NULL)) {
-			zval *sg = NULL;
-			if (zend_async_scope_try_get_superglobal(scope, ZSTR_VAL(name), ZSTR_LEN(name), &sg)) {
-				retval = sg;
-				goto superglobal_resolved;
-			}
+	if (UNEXPECTED(scope != NULL && opline->extended_value & ZEND_FETCH_GLOBAL
+		&& zend_hash_str_find_ptr(CG(auto_globals), ZSTR_VAL(name), ZSTR_LEN(name)) != NULL)) {
+
+		retval = zend_async_scope_try_get_superglobal(scope, ZSTR_VAL(name), ZSTR_LEN(name));
+		if (retval == NULL) {
+			target_symbol_table = &EG(symbol_table);
+			retval = zend_hash_find_ex(target_symbol_table, name, IS_CV == IS_CONST);
 		}
+
+		goto superglobal_resolved;
 	}
 
+	target_symbol_table = zend_get_target_symbol_table(opline->extended_value EXECUTE_DATA_CC);
 	retval = zend_hash_find_ex(target_symbol_table, name, IS_CV == IS_CONST);
 
 superglobal_resolved:
@@ -112481,20 +112487,22 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV_EX  z
 		}
 	}
 
-	target_symbol_table = zend_get_target_symbol_table(opline->extended_value EXECUTE_DATA_CC);
+	zend_async_scope_t *scope = ZEND_ASYNC_CURRENT_SCOPE;
 
 	/* Per-Scope SuperGlobals: intercept SuperGlobal access in Scope context */
-	if (UNEXPECTED(opline->extended_value & ZEND_FETCH_GLOBAL)) {
-		const zend_async_scope_t *scope = ZEND_ASYNC_CURRENT_SCOPE;
-		if (UNEXPECTED(scope != NULL)) {
-			zval *sg = NULL;
-			if (zend_async_scope_try_get_superglobal(scope, ZSTR_VAL(name), ZSTR_LEN(name), &sg)) {
-				retval = sg;
-				goto superglobal_resolved;
-			}
+	if (UNEXPECTED(scope != NULL && opline->extended_value & ZEND_FETCH_GLOBAL
+		&& zend_hash_str_find_ptr(CG(auto_globals), ZSTR_VAL(name), ZSTR_LEN(name)) != NULL)) {
+
+		retval = zend_async_scope_try_get_superglobal(scope, ZSTR_VAL(name), ZSTR_LEN(name));
+		if (retval == NULL) {
+			target_symbol_table = &EG(symbol_table);
+			retval = zend_hash_find_ex(target_symbol_table, name, IS_CONST == IS_CONST);
 		}
+
+		goto superglobal_resolved;
 	}
 
+	target_symbol_table = zend_get_target_symbol_table(opline->extended_value EXECUTE_DATA_CC);
 	retval = zend_hash_find_ex(target_symbol_table, name, IS_CONST == IS_CONST);
 
 superglobal_resolved:
@@ -112598,20 +112606,22 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV_EX  z
 		}
 	}
 
-	target_symbol_table = zend_get_target_symbol_table(opline->extended_value EXECUTE_DATA_CC);
+	zend_async_scope_t *scope = ZEND_ASYNC_CURRENT_SCOPE;
 
 	/* Per-Scope SuperGlobals: intercept SuperGlobal access in Scope context */
-	if (UNEXPECTED(opline->extended_value & ZEND_FETCH_GLOBAL)) {
-		const zend_async_scope_t *scope = ZEND_ASYNC_CURRENT_SCOPE;
-		if (UNEXPECTED(scope != NULL)) {
-			zval *sg = NULL;
-			if (zend_async_scope_try_get_superglobal(scope, ZSTR_VAL(name), ZSTR_LEN(name), &sg)) {
-				retval = sg;
-				goto superglobal_resolved;
-			}
+	if (UNEXPECTED(scope != NULL && opline->extended_value & ZEND_FETCH_GLOBAL
+		&& zend_hash_str_find_ptr(CG(auto_globals), ZSTR_VAL(name), ZSTR_LEN(name)) != NULL)) {
+
+		retval = zend_async_scope_try_get_superglobal(scope, ZSTR_VAL(name), ZSTR_LEN(name));
+		if (retval == NULL) {
+			target_symbol_table = &EG(symbol_table);
+			retval = zend_hash_find_ex(target_symbol_table, name, (IS_TMP_VAR|IS_VAR) == IS_CONST);
 		}
+
+		goto superglobal_resolved;
 	}
 
+	target_symbol_table = zend_get_target_symbol_table(opline->extended_value EXECUTE_DATA_CC);
 	retval = zend_hash_find_ex(target_symbol_table, name, (IS_TMP_VAR|IS_VAR) == IS_CONST);
 
 superglobal_resolved:
@@ -112715,20 +112725,22 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV_EX  z
 		}
 	}
 
-	target_symbol_table = zend_get_target_symbol_table(opline->extended_value EXECUTE_DATA_CC);
+	zend_async_scope_t *scope = ZEND_ASYNC_CURRENT_SCOPE;
 
 	/* Per-Scope SuperGlobals: intercept SuperGlobal access in Scope context */
-	if (UNEXPECTED(opline->extended_value & ZEND_FETCH_GLOBAL)) {
-		const zend_async_scope_t *scope = ZEND_ASYNC_CURRENT_SCOPE;
-		if (UNEXPECTED(scope != NULL)) {
-			zval *sg = NULL;
-			if (zend_async_scope_try_get_superglobal(scope, ZSTR_VAL(name), ZSTR_LEN(name), &sg)) {
-				retval = sg;
-				goto superglobal_resolved;
-			}
+	if (UNEXPECTED(scope != NULL && opline->extended_value & ZEND_FETCH_GLOBAL
+		&& zend_hash_str_find_ptr(CG(auto_globals), ZSTR_VAL(name), ZSTR_LEN(name)) != NULL)) {
+
+		retval = zend_async_scope_try_get_superglobal(scope, ZSTR_VAL(name), ZSTR_LEN(name));
+		if (retval == NULL) {
+			target_symbol_table = &EG(symbol_table);
+			retval = zend_hash_find_ex(target_symbol_table, name, IS_CV == IS_CONST);
 		}
+
+		goto superglobal_resolved;
 	}
 
+	target_symbol_table = zend_get_target_symbol_table(opline->extended_value EXECUTE_DATA_CC);
 	retval = zend_hash_find_ex(target_symbol_table, name, IS_CV == IS_CONST);
 
 superglobal_resolved:

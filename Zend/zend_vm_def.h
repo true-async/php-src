@@ -1751,14 +1751,19 @@ ZEND_VM_HELPER(zend_fetch_var_address_helper, CONST|TMPVAR|CV, UNUSED, int type)
 		}
 	}
 
+	zend_async_scope_t *scope = ZEND_ASYNC_CURRENT_SCOPE;
+
 	/* Per-Scope SuperGlobals: intercept SuperGlobal access in Scope context */
-	if (UNEXPECTED(opline->extended_value & ZEND_FETCH_GLOBAL)) {
-		const zend_async_scope_t *scope = ZEND_ASYNC_CURRENT_SCOPE;
-		if (UNEXPECTED(scope != NULL)) {
-			if (zend_async_scope_try_get_superglobal(scope, ZSTR_VAL(name), ZSTR_LEN(name), &retval)) {
-				goto superglobal_resolved;
-			}
+	if (UNEXPECTED(scope != NULL && opline->extended_value & ZEND_FETCH_GLOBAL
+		&& zend_hash_str_find_ptr(CG(auto_globals), ZSTR_VAL(name), ZSTR_LEN(name)) != NULL)) {
+
+		retval = zend_async_scope_try_get_superglobal(scope, ZSTR_VAL(name), ZSTR_LEN(name));
+		if (retval == NULL) {
+			target_symbol_table = &EG(symbol_table);
+			retval = zend_hash_find_ex(target_symbol_table, name, OP1_TYPE == IS_CONST);
 		}
+
+		goto superglobal_resolved;
 	}
 
 	target_symbol_table = zend_get_target_symbol_table(opline->extended_value EXECUTE_DATA_CC);
