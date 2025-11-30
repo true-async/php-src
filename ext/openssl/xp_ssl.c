@@ -2277,6 +2277,8 @@ static inline int php_openssl_tcp_sockop_accept(php_stream *stream, php_openssl_
 		nodelay = true;
 	}
 
+	php_socket_t clisock;
+
 	if (ZEND_ASYNC_IS_ACTIVE) {
 		clisock = network_async_accept_incoming(&sock->s,
 			xparam->want_textaddr ? &xparam->outputs.textaddr : NULL,
