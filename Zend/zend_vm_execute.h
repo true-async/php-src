@@ -10837,7 +10837,9 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV_
 	zend_async_scope_t *scope = ZEND_ASYNC_CURRENT_SCOPE;
 
 	/* Per-Scope SuperGlobals: intercept SuperGlobal access in Scope context */
-	if (UNEXPECTED(scope != NULL && opline->extended_value & ZEND_FETCH_GLOBAL
+	if (UNEXPECTED(scope != NULL
+		&& scope != ZEND_ASYNC_MAIN_SCOPE
+		&& opline->extended_value & ZEND_FETCH_GLOBAL
 		&& zend_hash_str_find_ptr(CG(auto_globals), ZSTR_VAL(name), ZSTR_LEN(name)) != NULL)) {
 
 		retval = zend_async_scope_try_get_superglobal(scope, ZSTR_VAL(name), ZSTR_LEN(name));
@@ -19106,7 +19108,9 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV_
 	zend_async_scope_t *scope = ZEND_ASYNC_CURRENT_SCOPE;
 
 	/* Per-Scope SuperGlobals: intercept SuperGlobal access in Scope context */
-	if (UNEXPECTED(scope != NULL && opline->extended_value & ZEND_FETCH_GLOBAL
+	if (UNEXPECTED(scope != NULL
+		&& scope != ZEND_ASYNC_MAIN_SCOPE
+		&& opline->extended_value & ZEND_FETCH_GLOBAL
 		&& zend_hash_str_find_ptr(CG(auto_globals), ZSTR_VAL(name), ZSTR_LEN(name)) != NULL)) {
 
 		retval = zend_async_scope_try_get_superglobal(scope, ZSTR_VAL(name), ZSTR_LEN(name));
@@ -51157,7 +51161,9 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV_
 	zend_async_scope_t *scope = ZEND_ASYNC_CURRENT_SCOPE;
 
 	/* Per-Scope SuperGlobals: intercept SuperGlobal access in Scope context */
-	if (UNEXPECTED(scope != NULL && opline->extended_value & ZEND_FETCH_GLOBAL
+	if (UNEXPECTED(scope != NULL
+		&& scope != ZEND_ASYNC_MAIN_SCOPE
+		&& opline->extended_value & ZEND_FETCH_GLOBAL
 		&& zend_hash_str_find_ptr(CG(auto_globals), ZSTR_VAL(name), ZSTR_LEN(name)) != NULL)) {
 
 		retval = zend_async_scope_try_get_superglobal(scope, ZSTR_VAL(name), ZSTR_LEN(name));
@@ -112490,7 +112496,9 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV_EX  z
 	zend_async_scope_t *scope = ZEND_ASYNC_CURRENT_SCOPE;
 
 	/* Per-Scope SuperGlobals: intercept SuperGlobal access in Scope context */
-	if (UNEXPECTED(scope != NULL && opline->extended_value & ZEND_FETCH_GLOBAL
+	if (UNEXPECTED(scope != NULL
+		&& scope != ZEND_ASYNC_MAIN_SCOPE
+		&& opline->extended_value & ZEND_FETCH_GLOBAL
 		&& zend_hash_str_find_ptr(CG(auto_globals), ZSTR_VAL(name), ZSTR_LEN(name)) != NULL)) {
 
 		retval = zend_async_scope_try_get_superglobal(scope, ZSTR_VAL(name), ZSTR_LEN(name));
@@ -112609,7 +112617,9 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV_EX  z
 	zend_async_scope_t *scope = ZEND_ASYNC_CURRENT_SCOPE;
 
 	/* Per-Scope SuperGlobals: intercept SuperGlobal access in Scope context */
-	if (UNEXPECTED(scope != NULL && opline->extended_value & ZEND_FETCH_GLOBAL
+	if (UNEXPECTED(scope != NULL
+		&& scope != ZEND_ASYNC_MAIN_SCOPE
+		&& opline->extended_value & ZEND_FETCH_GLOBAL
 		&& zend_hash_str_find_ptr(CG(auto_globals), ZSTR_VAL(name), ZSTR_LEN(name)) != NULL)) {
 
 		retval = zend_async_scope_try_get_superglobal(scope, ZSTR_VAL(name), ZSTR_LEN(name));
@@ -112728,7 +112738,9 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV_EX  z
 	zend_async_scope_t *scope = ZEND_ASYNC_CURRENT_SCOPE;
 
 	/* Per-Scope SuperGlobals: intercept SuperGlobal access in Scope context */
-	if (UNEXPECTED(scope != NULL && opline->extended_value & ZEND_FETCH_GLOBAL
+	if (UNEXPECTED(scope != NULL
+		&& scope != ZEND_ASYNC_MAIN_SCOPE
+		&& opline->extended_value & ZEND_FETCH_GLOBAL
 		&& zend_hash_str_find_ptr(CG(auto_globals), ZSTR_VAL(name), ZSTR_LEN(name)) != NULL)) {
 
 		retval = zend_async_scope_try_get_superglobal(scope, ZSTR_VAL(name), ZSTR_LEN(name));
