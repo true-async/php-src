@@ -1432,13 +1432,7 @@ static void reflection_extension_factory_ex(zval *object, zend_module_entry *mod
 static void reflection_extension_factory(zval *object, const char *name_str)
 {
 	size_t name_len = strlen(name_str);
-	zend_string *lcname;
-	struct _zend_module_entry *module;
-
-	lcname = zend_string_alloc(name_len, 0);
-	zend_str_tolower_copy(ZSTR_VAL(lcname), name_str, name_len);
-	module = zend_hash_find_ptr(&module_registry, lcname);
-	zend_string_efree(lcname);
+	struct _zend_module_entry *module = zend_hash_str_find_ptr_lc(&module_registry, name_str, name_len);
 	if (!module) {
 		return;
 	}
@@ -2141,16 +2135,10 @@ ZEND_METHOD(ReflectionFunction, invoke)
 
 	zend_call_known_fcc(&fcc, &retval, num_args, params, named_params);
 
-	if (Z_TYPE(retval) == IS_UNDEF && !EG(exception)) {
-		zend_throw_exception_ex(reflection_exception_ptr, 0,
-			"Invocation of function %s() failed", ZSTR_VAL(fptr->common.function_name));
-		RETURN_THROWS();
-	}
-
 	if (Z_ISREF(retval)) {
 		zend_unwrap_reference(&retval);
 	}
-	ZVAL_COPY_VALUE(return_value, &retval);
+	RETURN_COPY_VALUE(&retval);
 }
 /* }}} */
 
@@ -2180,16 +2168,10 @@ ZEND_METHOD(ReflectionFunction, invokeArgs)
 
 	zend_call_known_fcc(&fcc, &retval, /* num_params */ 0, /* params */ NULL, params);
 
-	if (Z_TYPE(retval) == IS_UNDEF && !EG(exception)) {
-		zend_throw_exception_ex(reflection_exception_ptr, 0,
-			"Invocation of function %s() failed", ZSTR_VAL(fptr->common.function_name));
-		RETURN_THROWS();
-	}
-
 	if (Z_ISREF(retval)) {
 		zend_unwrap_reference(&retval);
 	}
-	ZVAL_COPY_VALUE(return_value, &retval);
+	RETURN_COPY_VALUE(&retval);
 }
 /* }}} */
 
@@ -3496,16 +3478,10 @@ static void reflection_method_invoke(INTERNAL_FUNCTION_PARAMETERS, int variadic)
 	callback = _copy_function(mptr);
 	zend_call_known_function(callback, (object ? Z_OBJ_P(object) : NULL), intern->ce, &retval, argc, params, named_params);
 
-	if (Z_TYPE(retval) == IS_UNDEF && !EG(exception)) {
-		zend_throw_exception_ex(reflection_exception_ptr, 0,
-			"Invocation of method %s::%s() failed", ZSTR_VAL(mptr->common.scope->name), ZSTR_VAL(mptr->common.function_name));
-		RETURN_THROWS();
-	}
-
 	if (Z_ISREF(retval)) {
 		zend_unwrap_reference(&retval);
 	}
-	ZVAL_COPY_VALUE(return_value, &retval);
+	RETURN_COPY_VALUE(&retval);
 }
 /* }}} */
 
@@ -6661,28 +6637,21 @@ ZEND_METHOD(ReflectionProperty, isFinal)
 ZEND_METHOD(ReflectionExtension, __construct)
 {
 	zval *object;
-	char *lcname;
 	reflection_object *intern;
 	zend_module_entry *module;
-	char *name_str;
-	size_t name_len;
-	ALLOCA_FLAG(use_heap)
+	zend_string *name_str;
 
-	if (zend_parse_parameters(ZEND_NUM_ARGS(), "s", &name_str, &name_len) == FAILURE) {
+	if (zend_parse_parameters(ZEND_NUM_ARGS(), "S", &name_str) == FAILURE) {
 		RETURN_THROWS();
 	}
 
 	object = ZEND_THIS;
 	intern = Z_REFLECTION_P(object);
-	lcname = do_alloca(name_len + 1, use_heap);
-	zend_str_tolower_copy(lcname, name_str, name_len);
-	if ((module = zend_hash_str_find_ptr(&module_registry, lcname, name_len)) == NULL) {
-		free_alloca(lcname, use_heap);
+	if ((module = zend_hash_find_ptr_lc(&module_registry, name_str)) == NULL) {
 		zend_throw_exception_ex(reflection_exception_ptr, 0,
-			"Extension \"%s\" does not exist", name_str);
+			"Extension \"%s\" does not exist", ZSTR_VAL(name_str));
 		RETURN_THROWS();
 	}
-	free_alloca(lcname, use_heap);
 	zval *prop_name = reflection_prop_name(object);
 	zval_ptr_dtor(prop_name);
 	ZVAL_STRING(prop_name, module->name);
