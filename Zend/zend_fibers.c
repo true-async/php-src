@@ -569,16 +569,6 @@ static void zend_fiber_cleanup(zend_fiber_context *context)
 	fiber->caller = NULL;
 }
 
-static zend_always_inline bool can_use_fiber(void)
-{
-	if (UNEXPECTED(ZEND_ASYNC_IS_ACTIVE)) {
-		zend_throw_error(zend_ce_fiber_error, "Cannot create a fiber while an True Async is active");
-		return false;
-	}
-
-	ZEND_ASYNC_DEACTIVATE;
-	return true;
-}
 
 static ZEND_STACK_ALIGNED void zend_fiber_execute(zend_fiber_transfer *transfer)
 {
@@ -725,13 +715,115 @@ static zend_always_inline zend_fiber_transfer zend_fiber_suspend_internal(zend_f
 	return zend_fiber_switch_to(caller, value, false);
 }
 
-ZEND_API zend_result zend_fiber_start(zend_fiber *fiber, zval *return_value)
+/* {{{ libuv_add_callback */
+static bool zend_fiber_async_event_add_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
 {
-	ZEND_ASSERT(fiber->context.status == ZEND_FIBER_STATUS_INIT);
+	return zend_async_callbacks_push(event, callback);
+}
 
-	if (UNEXPECTED(false == can_use_fiber())) {
+/* }}} */
+
+/* {{{ libuv_remove_callback */
+static bool zend_fiber_async_event_del_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
+{
+	return zend_async_callbacks_remove(event, callback);
+}
+
+/* }}} */
+
+static bool zend_fiber_async_event_start(zend_async_event_t *event)
+{
+	return true;
+}
+
+static bool zend_fiber_async_event_stop(zend_async_event_t *event)
+{
+	return true;
+}
+
+static bool zend_fiber_async_event_dispose(zend_async_event_t *event)
+{
+	efree(event);
+	return true;
+}
+
+static zend_string * zend_fiber_async_event_info(zend_async_event_t *event)
+{
+	return zend_string_init("Fiber waiting for async operation", sizeof("Fiber waiting for async operation") - 1, 0);
+}
+
+static zend_result zend_fiber_await(zend_fiber *fiber, zval *return_value)
+{
+	zend_coroutine_t *current_coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+
+	// When a Fiber starts, it blocks the execution of the current coroutine.
+	// That is, the current coroutine enters a waiting state for the Fiber.
+	ZEND_ASSERT(current_coroutine != NULL && "There must be a current coroutine if a fiber has a coroutine");
+
+	if (UNEXPECTED(current_coroutine == fiber->coroutine)) {
+		zend_throw_error(zend_ce_fiber_error, "Cannot start a fiber from within itself");
 		return FAILURE;
 	}
+
+	zend_async_waker_t *waker = zend_async_waker_new(current_coroutine);
+	if (UNEXPECTED(waker == NULL)) {
+		return FAILURE;
+	}
+
+	zend_fiber_async_event * event = emalloc(sizeof(zend_fiber_async_event));
+
+	event->base.ref_count = 1;
+	event->base.add_callback = zend_fiber_async_event_add_callback;
+	event->base.del_callback = zend_fiber_async_event_del_callback;
+	event->base.start = zend_fiber_async_event_start;
+	event->base.stop = zend_fiber_async_event_stop;
+	event->base.dispose = zend_fiber_async_event_dispose;
+	event->base.info = zend_fiber_async_event_info;
+	event->fiber = fiber;
+
+	if (!UNEXPECTED(zend_async_resume_when(
+		current_coroutine,
+		&event->base,
+		true,
+		zend_async_waker_callback_resolve,
+		NULL
+	))) {
+		return FAILURE;
+	}
+
+	ZVAL_NULL(&waker->result);
+	ZVAL_NULL(return_value);
+
+	if (!UNEXPECTED(ZEND_ASYNC_SUSPEND())) {
+		zend_async_waker_clean(current_coroutine);
+		return FAILURE;
+	}
+
+	ZVAL_COPY_VALUE(return_value, &waker->result);
+	ZVAL_NULL(&waker->result);
+	zend_async_waker_clean(current_coroutine);
+
+	return SUCCESS;
+}
+
+ZEND_API zend_result zend_fiber_start(zend_fiber *fiber, zval *return_value)
+{
+	if (EXPECTED(fiber->coroutine)) {
+		if (ZEND_COROUTINE_IS_STARTED(fiber->coroutine)) {
+			zend_throw_error(zend_ce_fiber_error, "Cannot start a fiber that has already been started");
+			RETURN_THROWS();
+		}
+
+		ZEND_ASYNC_ENQUEUE_COROUTINE(fiber->coroutine);
+
+		if (UNEXPECTED(EG(exception))) {
+			return FAILURE;
+		}
+
+		return zend_fiber_await(fiber, return_value);
+	}
+
+	ZEND_ASSERT(fiber->context.status == ZEND_FIBER_STATUS_INIT);
 
 	if (zend_fiber_init_context(&fiber->context, zend_ce_fiber, zend_fiber_execute, EG(fiber_stack_size)) == FAILURE) {
 		return FAILURE;
@@ -748,8 +840,13 @@ ZEND_API zend_result zend_fiber_start(zend_fiber *fiber, zval *return_value)
 
 ZEND_API void zend_fiber_resume(zend_fiber *fiber, zval *value, zval *return_value)
 {
-	if (UNEXPECTED(false == can_use_fiber())) {
-		return;
+	if (EXPECTED(fiber->coroutine)) {
+		if (ZEND_ASYNC_CURRENT_COROUTINE == fiber->coroutine) {
+			zend_throw_error(zend_ce_fiber_error, "Cannot resume a fiber from within itself");
+			return;
+		}
+
+		// TODO: Handle passing value to coroutine?
 	}
 
 	ZEND_ASSERT(fiber->context.status == ZEND_FIBER_STATUS_SUSPENDED && fiber->caller == NULL);
@@ -763,9 +860,7 @@ ZEND_API void zend_fiber_resume(zend_fiber *fiber, zval *value, zval *return_val
 
 ZEND_API void zend_fiber_resume_exception(zend_fiber *fiber, zval *exception, zval *return_value)
 {
-	if (UNEXPECTED(false == can_use_fiber())) {
-		return;
-	}
+	// TODO: Handle coroutine case?
 
 	ZEND_ASSERT(fiber->context.status == ZEND_FIBER_STATUS_SUSPENDED && fiber->caller == NULL);
 
@@ -778,10 +873,6 @@ ZEND_API void zend_fiber_resume_exception(zend_fiber *fiber, zval *exception, zv
 
 ZEND_API void zend_fiber_suspend(zend_fiber *fiber, zval *value, zval *return_value)
 {
-	if (UNEXPECTED(false == can_use_fiber())) {
-		return;
-	}
-
 	fiber->stack_bottom->prev_execute_data = NULL;
 
 	zend_fiber_transfer transfer = zend_fiber_suspend_internal(fiber, value);
@@ -789,10 +880,31 @@ ZEND_API void zend_fiber_suspend(zend_fiber *fiber, zval *value, zval *return_va
 	zend_fiber_delegate_transfer_result(&transfer, EG(current_execute_data), return_value);
 }
 
+static void coroutine_entry_point(void)
+{
+}
+
 static zend_object *zend_fiber_object_create(zend_class_entry *ce)
 {
 	zend_fiber *fiber = emalloc(sizeof(zend_fiber));
 	memset(fiber, 0, sizeof(zend_fiber));
+
+	if (UNEXPECTED(ZEND_ASYNC_IS_READY)) {
+		ZEND_ASYNC_SCHEDULER_LAUNCH();
+
+		if (UNEXPECTED(EG(exception))) {
+			return NULL;
+		}
+	}
+
+	if (ZEND_ASYNC_IS_ACTIVE) {
+		fiber->coroutine = ZEND_ASYNC_NEW_COROUTINE(NULL);
+		if (fiber->coroutine) {
+			ZEND_COROUTINE_SET_FIBER(fiber->coroutine);
+			fiber->coroutine->extended_data = fiber;
+			fiber->coroutine->internal_entry = coroutine_entry_point;
+		}
+	}
 
 	zend_object_std_init(&fiber->std, ce);
 	return &fiber->std;
@@ -801,6 +913,11 @@ static zend_object *zend_fiber_object_create(zend_class_entry *ce)
 static void zend_fiber_object_destroy(zend_object *object)
 {
 	zend_fiber *fiber = (zend_fiber *) object;
+
+	if (fiber->coroutine != NULL) {
+		ZEND_ASYNC_EVENT_RELEASE(&fiber->coroutine->event);
+		fiber->coroutine = NULL;
+	}
 
 	if (fiber->context.status != ZEND_FIBER_STATUS_SUSPENDED) {
 		return;
@@ -910,10 +1027,6 @@ ZEND_METHOD(Fiber, __construct)
 		Z_PARAM_FUNC(fci, fcc)
 	ZEND_PARSE_PARAMETERS_END();
 
-	if (UNEXPECTED(false == can_use_fiber())) {
-		RETURN_THROWS();
-	}
-
 	zend_fiber *fiber = (zend_fiber *) Z_OBJ_P(ZEND_THIS);
 
 	if (UNEXPECTED(fiber->context.status != ZEND_FIBER_STATUS_INIT || Z_TYPE(fiber->fci.function_name) != IS_UNDEF)) {
@@ -936,13 +1049,19 @@ ZEND_METHOD(Fiber, start)
 		Z_PARAM_VARIADIC_WITH_NAMED(fiber->fci.params, fiber->fci.param_count, fiber->fci.named_params);
 	ZEND_PARSE_PARAMETERS_END();
 
-	if (UNEXPECTED(false == can_use_fiber())) {
-		RETURN_THROWS();
-	}
-
 	if (UNEXPECTED(zend_fiber_switch_blocked())) {
 		zend_throw_error(zend_ce_fiber_error, "Cannot switch fibers in current execution context");
 		RETURN_THROWS();
+	}
+
+	if (fiber->coroutine != NULL) {
+		if (ZEND_COROUTINE_IS_STARTED(fiber->coroutine)) {
+			zend_throw_error(zend_ce_fiber_error, "Cannot start a fiber that has already been started");
+			RETURN_THROWS();
+		}
+
+		ZEND_ASYNC_ENQUEUE_COROUTINE(fiber->coroutine);
+		return;
 	}
 
 	if (fiber->context.status != ZEND_FIBER_STATUS_INIT) {

@@ -19,9 +19,9 @@
 #include "zend_fibers.h"
 #include "zend_globals.h"
 
-#define ZEND_ASYNC_API "TrueAsync API v0.7.0"
+#define ZEND_ASYNC_API "TrueAsync API v0.8.0"
 #define ZEND_ASYNC_API_VERSION_MAJOR 0
-#define ZEND_ASYNC_API_VERSION_MINOR 7
+#define ZEND_ASYNC_API_VERSION_MINOR 8
 #define ZEND_ASYNC_API_VERSION_PATCH 0
 
 #define ZEND_ASYNC_API_VERSION_NUMBER \
@@ -1061,6 +1061,7 @@ struct _zend_coroutine_s {
 #define ZEND_COROUTINE_F_ZOMBIE (1u << 12) /* coroutine is a zombie */
 #define ZEND_COROUTINE_F_PROTECTED (1u << 13) /* coroutine is protected */
 #define ZEND_COROUTINE_F_MAIN (1u << 14) /* coroutine is a main coroutine */
+#define ZEND_COROUTINE_F_FIBER (1u << 15) /* coroutine is a fiber. extended_data -> fiber structure */
 
 #define ZEND_COROUTINE_IS_ZOMBIE(coroutine) \
 	(((coroutine)->event.flags & ZEND_COROUTINE_F_ZOMBIE) != 0)
@@ -1090,6 +1091,10 @@ struct _zend_coroutine_s {
 	ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(&(coroutine)->event)
 #define ZEND_COROUTINE_CLR_EXCEPTION_HANDLED(coroutine) \
 	ZEND_ASYNC_EVENT_CLR_EXCEPTION_HANDLED(&(coroutine)->event)
+#define ZEND_COROUTINE_IS_FIBER(coroutine) \
+	(((coroutine)->event.flags & ZEND_COROUTINE_F_FIBER) != 0)
+#define ZEND_COROUTINE_SET_FIBER(coroutine) \
+	((coroutine)->event.flags |= ZEND_COROUTINE_F_FIBER)
 
 static zend_always_inline zend_string *zend_coroutine_callable_name(
 		const zend_coroutine_t *coroutine)

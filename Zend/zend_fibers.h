@@ -21,6 +21,7 @@
 #define ZEND_FIBERS_H
 
 #include "zend_API.h"
+#include "zend_async_API.h"
 #include "zend_types.h"
 
 #define ZEND_FIBER_GUARD_PAGES 1
@@ -55,6 +56,7 @@ void zend_fiber_shutdown(void);
 extern ZEND_API zend_class_entry *zend_ce_fiber;
 
 typedef struct _zend_fiber_stack zend_fiber_stack;
+typedef struct _zend_fiber_async_event zend_fiber_async_event;
 
 /* Encapsulates data needed for a context switch. */
 typedef struct _zend_fiber_transfer {
@@ -106,6 +108,9 @@ struct _zend_fiber {
 	/* Flags are defined in enum zend_fiber_flag. */
 	uint8_t flags;
 
+	/* Associated coroutine, if any. */
+	zend_coroutine_t *coroutine;
+
 	/* Native C fiber context. */
 	zend_fiber_context context;
 
@@ -130,6 +135,15 @@ struct _zend_fiber {
 
 	/* Storage for fiber return value. */
 	zval result;
+};
+
+/**
+ * An event for waiting on a Fiber,
+ * used in the coroutine that creates the Fiber.
+ */
+struct _zend_fiber_async_event {
+	zend_async_event_t base;
+	zend_fiber *fiber;
 };
 
 ZEND_API zend_result zend_fiber_start(zend_fiber *fiber, zval *return_value);
