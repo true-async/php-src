@@ -144,6 +144,8 @@ struct _zend_fiber {
 struct _zend_fiber_async_event {
 	zend_async_event_t base;
 	zend_fiber *fiber;
+	/* Whether the fiber is currently suspended. */
+	bool is_suspended;
 };
 
 ZEND_API zend_result zend_fiber_start(zend_fiber *fiber, zval *return_value);
