@@ -56,7 +56,7 @@ void zend_fiber_shutdown(void);
 extern ZEND_API zend_class_entry *zend_ce_fiber;
 
 typedef struct _zend_fiber_stack zend_fiber_stack;
-typedef struct _zend_fiber_async_event zend_fiber_async_event;
+typedef struct _zend_fiber_event zend_fiber_event;
 
 /* Encapsulates data needed for a context switch. */
 typedef struct _zend_fiber_transfer {
@@ -111,6 +111,15 @@ struct _zend_fiber {
 	/* Associated coroutine, if any. */
 	zend_coroutine_t *coroutine;
 
+	/* The event for resuming a Fiber.
+	 * This is the event the Fiber’s internal coroutine waits for in order to continue execution!. */
+	zend_fiber_event *resume_event;
+
+	/* The event for yielding a Fiber.
+	 * Other coroutines listen to this event to catch the yield operation.
+	*/
+	zend_fiber_event *yield_event;
+
 	/* Native C fiber context. */
 	zend_fiber_context context;
 
@@ -141,7 +150,7 @@ struct _zend_fiber {
  * An event for waiting on a Fiber,
  * used in the coroutine that creates the Fiber.
  */
-struct _zend_fiber_async_event {
+struct _zend_fiber_event {
 	zend_async_event_t base;
 	zend_fiber *fiber;
 	/* Whether the fiber is currently suspended. */
