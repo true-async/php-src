@@ -946,7 +946,7 @@ static zend_result zend_fiber_yield(zend_fiber *fiber, zval *value, zval *return
 	return SUCCESS;
 }
 
-static void zend_fiber_resume_coro(zend_fiber *fiber, zval *value, zval *exception, zval *return_value)
+static void zend_fiber_resume_coroutine(zend_fiber *fiber, zval *value, zval *exception, zval *return_value)
 {
 	if (ZEND_ASYNC_CURRENT_COROUTINE == fiber->coroutine) {
 		zend_throw_error(zend_ce_fiber_error, "Cannot resume a fiber from within itself");
@@ -1010,7 +1010,7 @@ ZEND_API zend_result zend_fiber_start(zend_fiber *fiber, zval *return_value)
 ZEND_API void zend_fiber_resume(zend_fiber *fiber, zval *value, zval *return_value)
 {
 	if (EXPECTED(fiber->coroutine)) {
-		zend_fiber_resume_coro(fiber, value, /* exception */ NULL, return_value);
+		zend_fiber_resume_coroutine(fiber, value, /* exception */ NULL, return_value);
 		return;
 	}
 
@@ -1026,7 +1026,7 @@ ZEND_API void zend_fiber_resume(zend_fiber *fiber, zval *value, zval *return_val
 ZEND_API void zend_fiber_resume_exception(zend_fiber *fiber, zval *exception, zval *return_value)
 {
 	if (EXPECTED(fiber->coroutine)) {
-		zend_fiber_resume_coro(fiber, /* value */ NULL, exception, return_value);
+		zend_fiber_resume_coroutine(fiber, /* value */ NULL, exception, return_value);
 		return;
 	}
 
