@@ -839,32 +839,6 @@ static zend_fiber_event* zend_fiber_event_new(zend_fiber *fiber, const bool is_s
 	return event;
 }
 
-static zend_result zend_fiber_coroutine_await(zend_fiber *fiber, zend_coroutine_t *coroutine, zval *return_value)
-{
-	zend_async_waker_t *waker = zend_async_waker_new(coroutine);
-	if (UNEXPECTED(waker == NULL)) {
-		return FAILURE;
-	}
-
-	if (UNEXPECTED(zend_fiber_event_new(fiber, coroutine, fiber->coroutine == coroutine) == FAILURE)) {
-		zend_async_waker_clean(coroutine);
-		return FAILURE;
-	}
-
-	ZVAL_UNDEF(return_value);
-
-	if (!UNEXPECTED(ZEND_ASYNC_SUSPEND())) {
-		zend_async_waker_clean(coroutine);
-		return FAILURE;
-	}
-
-	ZVAL_COPY_VALUE(return_value, &waker->result);
-	ZVAL_NULL(&waker->result);
-	zend_async_waker_clean(coroutine);
-
-	return SUCCESS;
-}
-
 /**
  * The method suspends the current coroutine until the Fiber returns control.
  *
@@ -929,23 +903,47 @@ static zend_result zend_fiber_await(zend_fiber *fiber, zval *return_value)
  */
 static zend_result zend_fiber_yield(zend_fiber *fiber, zval *value, zval *return_value)
 {
-	const zend_coroutine_t *current_coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 
-	if (UNEXPECTED(current_coroutine != fiber->coroutine)) {
+	if (UNEXPECTED(coroutine != fiber->coroutine)) {
 		zend_throw_error(zend_ce_fiber_error, "The current coroutine must be the fiber's coroutine");
 		return FAILURE;
 	}
 
-	zend_fiber_event * fiber_event = fiber->resume_event;
+	zend_fiber_event * yield_event = fiber->yield_event;
 
-	if (fiber_event == NULL) {
+	if (yield_event == NULL) {
 		zend_throw_error(zend_ce_fiber_error, "Cannot yield a fiber that is not running");
 		return FAILURE;
 	}
 
-	zend_async_callbacks_notify(&fiber_event->base, value, NULL, false);
+	zend_async_callbacks_notify(&yield_event->base, value, NULL, false);
 
-	return zend_fiber_coroutine_await(fiber, fiber->coroutine, return_value);
+	zend_async_waker_t *waker = zend_async_waker_new(coroutine);
+	if (UNEXPECTED(waker == NULL)) {
+		return FAILURE;
+	}
+
+	zend_async_resume_when(
+		coroutine,
+		&yield_event->base,
+		false,
+		zend_async_waker_callback_resolve,
+		NULL
+	);
+
+	ZVAL_NULL(return_value);
+
+	if (!UNEXPECTED(ZEND_ASYNC_SUSPEND())) {
+		zend_async_waker_clean(coroutine);
+		return FAILURE;
+	}
+
+	ZVAL_COPY_VALUE(return_value, &waker->result);
+	ZVAL_NULL(&waker->result);
+	zend_async_waker_clean(coroutine);
+
+	return SUCCESS;
 }
 
 static void zend_fiber_resume_coro(zend_fiber *fiber, zval *value, zval *exception, zval *return_value)
