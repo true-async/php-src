@@ -975,6 +975,48 @@ static void zend_fiber_resume_coroutine(zend_fiber *fiber, zval *value, zval *ex
 	}
 }
 
+/**
+ * Coroutine entry point that executes the Fiber.
+ */
+static void coroutine_entry_point(void)
+{
+	const zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+
+	if (!ZEND_COROUTINE_IS_FIBER(coroutine)) {
+		// throw error
+		zend_throw_error(zend_ce_fiber_error, "Coroutine entry point called for non-fiber coroutine");
+		return;
+	}
+
+	zend_fiber *fiber = coroutine->extended_data;
+	if (UNEXPECTED(fiber == NULL)) {
+		zend_throw_error(zend_ce_fiber_error, "Fiber coroutine has no associated fiber");
+		return;
+	}
+
+	bool is_bailout = false;
+
+	zend_try
+	{
+		fiber->fci.retval = &fiber->result;
+		zend_call_function(&fiber->fci, &fiber->fci_cache);
+	}
+	zend_catch
+	{
+		fiber->flags |= ZEND_FIBER_FLAG_BAILOUT;
+		is_bailout = true;
+	}
+	zend_end_try();
+
+	/* Cleanup callback and unset field to prevent GC / duplicate dtor issues. */
+	zval_ptr_dtor(&fiber->fci.function_name);
+	ZVAL_UNDEF(&fiber->fci.function_name);
+
+	if (is_bailout) {
+		zend_bailout();
+	}
+}
+
 ZEND_API zend_result zend_fiber_start(zend_fiber *fiber, zval *return_value)
 {
 	if (EXPECTED(fiber->coroutine)) {
@@ -1053,10 +1095,6 @@ ZEND_API void zend_fiber_suspend(zend_fiber *fiber, zval *value, zval *return_va
 	zend_fiber_delegate_transfer_result(&transfer, EG(current_execute_data), return_value);
 }
 
-static void coroutine_entry_point(void)
-{
-}
-
 static zend_object *zend_fiber_object_create(zend_class_entry *ce)
 {
 	zend_fiber *fiber = emalloc(sizeof(zend_fiber));
@@ -1086,6 +1124,16 @@ static zend_object *zend_fiber_object_create(zend_class_entry *ce)
 static void zend_fiber_object_destroy(zend_object *object)
 {
 	zend_fiber *fiber = (zend_fiber *) object;
+
+	if (fiber->resume_event != NULL) {
+		ZEND_ASYNC_EVENT_RELEASE(&fiber->resume_event->base);
+		fiber->resume_event = NULL;
+	}
+
+	if (fiber->yield_event != NULL) {
+		ZEND_ASYNC_EVENT_RELEASE(&fiber->yield_event->base);
+		fiber->yield_event = NULL;
+	}
 
 	if (fiber->coroutine != NULL) {
 		ZEND_ASYNC_EVENT_RELEASE(&fiber->coroutine->event);
