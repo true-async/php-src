@@ -986,7 +986,7 @@ static void zend_fiber_resume_coroutine(zend_fiber *fiber, zval *value, zval *ex
 	// Wake up the fiber's coroutine
 	if (UNEXPECTED(exception)) {
 		ZEND_ASYNC_EVENT_CLR_ZVAL_RESULT(&fiber->resume_event->base);
-		ZEND_ASYNC_CALLBACKS_NOTIFY(&fiber->resume_event->base, NULL, NULL);
+		ZEND_ASYNC_CALLBACKS_NOTIFY(&fiber->resume_event->base, NULL, Z_OBJ_P(exception));
 	} else {
 		ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(&fiber->resume_event->base);
 		ZEND_ASYNC_CALLBACKS_NOTIFY(&fiber->resume_event->base, value, NULL);
