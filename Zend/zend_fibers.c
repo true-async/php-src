@@ -1032,18 +1032,17 @@ static void coroutine_entry_point(void)
 	}
 	zend_catch
 	{
-		fiber->flags |= ZEND_FIBER_FLAG_BAILOUT;
 		is_bailout = true;
 	}
 	zend_end_try();
 
 	zend_try
 	{
-		zend_fiber_event * yield_event = fiber->yield_event;
+		fiber = coroutine->extended_data;
 		zend_async_event_t * yield_event_base = NULL;
 
-		if (yield_event) {
-			yield_event_base = &yield_event->base;
+		if (fiber && fiber->yield_event) {
+			yield_event_base = &fiber->yield_event->base;
 		}
 
 		//
@@ -1095,14 +1094,19 @@ static void coroutine_entry_point(void)
 	}
 	zend_catch
 	{
-		fiber->flags |= ZEND_FIBER_FLAG_BAILOUT;
 		is_bailout = true;
 	}
 	zend_end_try();
 
-	/* Cleanup callback and unset field to prevent GC / duplicate dtor issues. */
-	zval_ptr_dtor(&fiber->fci.function_name);
-	ZVAL_UNDEF(&fiber->fci.function_name);
+	if (fiber) {
+		if (is_bailout) {
+			fiber->flags |= ZEND_FIBER_FLAG_BAILOUT;
+		}
+
+		/* Cleanup callback and unset field to prevent GC / duplicate dtor issues. */
+		zval_ptr_dtor(&fiber->fci.function_name);
+		ZVAL_UNDEF(&fiber->fci.function_name);
+	}
 
 	if (is_bailout) {
 		zend_bailout();
@@ -1237,8 +1241,26 @@ static void zend_fiber_object_destroy(zend_object *object)
 	}
 
 	if (fiber->coroutine != NULL) {
-		ZEND_ASYNC_EVENT_RELEASE(&fiber->coroutine->event);
+
+		//
+		// A situation is possible where a Fiber is destroyed earlier than the coroutine,
+		// while the coroutine is already running. In this case, we cancel the coroutine.
+		//
+		zend_coroutine_t *coroutine = fiber->coroutine;
 		fiber->coroutine = NULL;
+		coroutine->extended_data = NULL;
+
+		if (ZEND_COROUTINE_IS_FINISHED(coroutine)) {
+			ZEND_ASYNC_EVENT_RELEASE(&coroutine->event);
+			return;
+		}
+
+		zend_object *exception = zend_async_new_exception(
+			ZEND_ASYNC_EXCEPTION_CANCELLATION, "Fiber has been destroyed"
+		);
+
+		ZEND_ASYNC_CANCEL(coroutine, exception, true);
+
 		return;
 	}
 
