@@ -917,7 +917,9 @@ static zend_result zend_fiber_yield(zend_fiber *fiber, zval *value, zval *return
 		return FAILURE;
 	}
 
-	zend_async_callbacks_notify(&yield_event->base, value, NULL, false);
+	ZEND_ASYNC_EVENT_CLR_EXCEPTION_HANDLED(&yield_event->base);
+	ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(&yield_event->base);
+	ZEND_ASYNC_CALLBACKS_NOTIFY(&yield_event->base, value, NULL);
 
 	zend_async_waker_t *waker = zend_async_waker_new(coroutine);
 	if (UNEXPECTED(waker == NULL)) {
@@ -960,10 +962,11 @@ static void zend_fiber_resume_coroutine(zend_fiber *fiber, zval *value, zval *ex
 
 	// Wake up the fiber's coroutine
 	if (UNEXPECTED(exception)) {
-		zend_async_callbacks_notify(&fiber->resume_event->base, NULL, NULL, false);
+		ZEND_ASYNC_EVENT_CLR_ZVAL_RESULT(&fiber->resume_event->base);
+		ZEND_ASYNC_CALLBACKS_NOTIFY(&fiber->resume_event->base, NULL, NULL);
 	} else {
 		ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(&fiber->resume_event->base);
-		zend_async_callbacks_notify(&fiber->resume_event->base, value, NULL, false);
+		ZEND_ASYNC_CALLBACKS_NOTIFY(&fiber->resume_event->base, value, NULL);
 	}
 
 	if (UNEXPECTED(EG(exception))) {
@@ -980,7 +983,7 @@ static void zend_fiber_resume_coroutine(zend_fiber *fiber, zval *value, zval *ex
  */
 static void coroutine_entry_point(void)
 {
-	const zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 
 	if (!ZEND_COROUTINE_IS_FIBER(coroutine)) {
 		// throw error
@@ -995,11 +998,77 @@ static void coroutine_entry_point(void)
 	}
 
 	bool is_bailout = false;
+	zend_object **exception_ptr = &EG(exception);
+	zend_object **prev_exception_ptr = &EG(prev_exception);
+	zend_object *exception = NULL;
 
 	zend_try
 	{
 		fiber->fci.retval = &fiber->result;
 		zend_call_function(&fiber->fci, &fiber->fci_cache);
+	}
+	zend_catch
+	{
+		fiber->flags |= ZEND_FIBER_FLAG_BAILOUT;
+		is_bailout = true;
+	}
+	zend_end_try();
+
+	zend_try
+	{
+		zend_fiber_event * yield_event = fiber->yield_event;
+		zend_async_event_t * yield_event_base = NULL;
+
+		if (yield_event) {
+			yield_event_base = &yield_event->base;
+		}
+
+		//
+		// There must be a 100% guarantee
+		// that the exception will be handled by one of the handlers.
+		// We believe that if yield_event has at least one handler, it must properly absorb the exception.
+		// So, we need to verify that such handlers exist.
+		//
+		// If there are no handlers,
+		// the exception will reach the coroutine’s default handler and continue further along the chain.
+		//
+		if (EXPECTED(yield_event_base && yield_event_base->callbacks.length > 0)) {
+			//
+			// Notify any waiters that the fiber has completed
+			// and handle propagation of exceptions
+			//
+
+			if (UNEXPECTED(*exception_ptr)) {
+				if (*prev_exception_ptr) {
+					zend_exception_set_previous(*exception_ptr, *prev_exception_ptr);
+					*prev_exception_ptr = NULL;
+				}
+
+				exception = *exception_ptr;
+				GC_ADDREF(exception);
+
+				zend_clear_exception();
+
+				if (zend_is_graceful_exit(exception) || zend_is_unwind_exit(exception)) {
+					OBJ_RELEASE(exception);
+					exception = NULL;
+				}
+			}
+
+			// Mark second parameter of zend_async_callbacks_notify as ZVAL
+			ZEND_ASYNC_EVENT_CLR_EXCEPTION_HANDLED(yield_event_base);
+			ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(yield_event_base);
+			ZEND_ASYNC_CALLBACKS_NOTIFY(yield_event_base, &fiber->result, exception);
+			zend_async_callbacks_free(yield_event_base);
+
+			if (exception && ZEND_ASYNC_EVENT_IS_EXCEPTION_HANDLED(yield_event_base)) {
+				OBJ_RELEASE(exception);
+				exception = NULL;
+			} else if (exception) {
+				zend_throw_exception_internal(exception);
+			}
+
+		}
 	}
 	zend_catch
 	{
