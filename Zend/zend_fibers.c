@@ -872,7 +872,7 @@ static zend_result zend_fiber_await(zend_fiber *fiber, zval *return_value)
 		return FAILURE;
 	}
 
-	ZVAL_UNDEF(return_value);
+	ZVAL_NULL(return_value);
 
 	zend_async_resume_when(
 		current_coroutine,
@@ -887,8 +887,11 @@ static zend_result zend_fiber_await(zend_fiber *fiber, zval *return_value)
 		return FAILURE;
 	}
 
-	ZVAL_COPY_VALUE(return_value, &waker->result);
-	ZVAL_NULL(&waker->result);
+	if (!Z_ISUNDEF_P(&waker->result)) {
+		ZVAL_COPY_VALUE(return_value, &waker->result);
+		ZVAL_UNDEF(&waker->result);
+	}
+
 	zend_async_waker_clean(current_coroutine);
 
 	return SUCCESS;
@@ -958,8 +961,11 @@ static zend_result zend_fiber_yield(zend_fiber *fiber, zval *value, zval *return
 		return FAILURE;
 	}
 
-	ZVAL_COPY_VALUE(return_value, &waker->result);
-	ZVAL_NULL(&waker->result);
+	if (!Z_ISUNDEF_P(&waker->result)) {
+		ZVAL_COPY_VALUE(return_value, &waker->result);
+		ZVAL_UNDEF(&waker->result);
+	}
+
 	zend_async_waker_clean(coroutine);
 
 	return SUCCESS;
@@ -1430,7 +1436,7 @@ ZEND_METHOD(Fiber, suspend)
 			RETURN_THROWS();
 		}
 
-		zend_fiber_suspend(coroutine->extended_data, value, return_value);
+		zend_fiber_yield(coroutine->extended_data, value, return_value);
 		return;
 	}
 
