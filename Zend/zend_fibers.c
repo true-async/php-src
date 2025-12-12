@@ -1557,7 +1557,10 @@ ZEND_METHOD(Fiber, isSuspended)
 	fiber = (zend_fiber *) Z_OBJ_P(ZEND_THIS);
 
 	if (EXPECTED(fiber->coroutine)) {
-		RETURN_BOOL(ZEND_ASYNC_CURRENT_COROUTINE == fiber->coroutine && !ZEND_COROUTINE_IS_STARTED(fiber->coroutine));
+		RETURN_BOOL(ZEND_ASYNC_CURRENT_COROUTINE != fiber->coroutine
+			&& ZEND_COROUTINE_IS_STARTED(fiber->coroutine)
+			&& !ZEND_COROUTINE_IS_FINISHED(fiber->coroutine)
+			);
 	}
 
 	RETURN_BOOL(fiber->context.status == ZEND_FIBER_STATUS_SUSPENDED && fiber->caller == NULL);
@@ -1572,7 +1575,10 @@ ZEND_METHOD(Fiber, isRunning)
 	fiber = (zend_fiber *) Z_OBJ_P(ZEND_THIS);
 
 	if (EXPECTED(fiber->coroutine)) {
-		RETURN_BOOL(ZEND_ASYNC_CURRENT_COROUTINE == fiber->coroutine && ZEND_COROUTINE_IS_STARTED(fiber->coroutine));
+		RETURN_BOOL(ZEND_ASYNC_CURRENT_COROUTINE == fiber->coroutine
+			&& ZEND_COROUTINE_IS_STARTED(fiber->coroutine)
+			&& !ZEND_COROUTINE_IS_FINISHED(fiber->coroutine)
+			);
 	}
 
 	RETURN_BOOL(fiber->context.status == ZEND_FIBER_STATUS_RUNNING || fiber->caller != NULL);
