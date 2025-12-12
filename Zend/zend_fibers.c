@@ -921,6 +921,23 @@ static zend_result zend_fiber_yield(zend_fiber *fiber, zval *value, zval *return
 	ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(&yield_event->base);
 	ZEND_ASYNC_CALLBACKS_NOTIFY(&yield_event->base, value, NULL);
 
+	if (UNEXPECTED(EG(exception))) {
+		return FAILURE;
+	}
+
+	//
+	// Now we create an event that points to this fiber
+	// and make the fiber “wait for itself.” In reality, the fiber will be waiting for a resume operation.
+	//
+
+	if (fiber->resume_event == NULL) {
+		fiber->resume_event = zend_fiber_event_new(fiber, true);
+
+		if (UNEXPECTED(fiber->resume_event == NULL)) {
+			return FAILURE;
+		}
+	}
+
 	zend_async_waker_t *waker = zend_async_waker_new(coroutine);
 	if (UNEXPECTED(waker == NULL)) {
 		return FAILURE;
@@ -928,7 +945,7 @@ static zend_result zend_fiber_yield(zend_fiber *fiber, zval *value, zval *return
 
 	zend_async_resume_when(
 		coroutine,
-		&yield_event->base,
+		&fiber->resume_event->base,
 		false,
 		zend_async_waker_callback_resolve,
 		NULL
@@ -1364,6 +1381,9 @@ ZEND_METHOD(Fiber, start)
 		if (!ZEND_ASYNC_ENQUEUE_COROUTINE(fiber->coroutine)) {
 			RETURN_THROWS();
 		}
+
+		// Increase reference count to keep the coroutine alive while the fiber is running
+		ZEND_ASYNC_EVENT_ADD_REF(&fiber->coroutine->event);
 
 		if (UNEXPECTED(zend_fiber_await(fiber, return_value) == FAILURE)) {
 			RETURN_THROWS();
