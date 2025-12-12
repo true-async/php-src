@@ -16,7 +16,7 @@
 #ifndef ZEND_ASYNC_API_H
 #define ZEND_ASYNC_API_H
 
-#include "zend_fibers.h"
+#include "zend_API.h"
 #include "zend_globals.h"
 
 #define ZEND_ASYNC_API "TrueAsync API v0.8.0"
