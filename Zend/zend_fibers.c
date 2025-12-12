@@ -1614,7 +1614,11 @@ ZEND_METHOD(Fiber, getReturn)
 			RETURN_THROWS();
 		}
 
-		RETURN_COPY_DEREF(&fiber->coroutine->result);
+		if (!Z_ISUNDEF_P(&fiber->result)) {
+			RETURN_COPY_DEREF(&fiber->result);
+		}
+
+		RETURN_NULL();
 	}
 
 	if (fiber->context.status == ZEND_FIBER_STATUS_DEAD) {
