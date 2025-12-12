@@ -823,7 +823,7 @@ static zend_string * zend_fiber_async_event_info(zend_async_event_t *event)
 
 static zend_fiber_event* zend_fiber_event_new(zend_fiber *fiber, const bool is_suspended)
 {
-	zend_fiber_event * event = emalloc(sizeof(zend_fiber_event));
+	zend_fiber_event * event = ecalloc(1, sizeof(zend_fiber_event));
 	zend_async_event_t *base = &event->base;
 
 	base->ref_count = 1;
@@ -1117,11 +1117,13 @@ static zend_object *zend_fiber_object_create(zend_class_entry *ce)
 		}
 
 		zend_async_scope_t *scope = ZEND_ASYNC_CURRENT_SCOPE;
-
-		scope->after_coroutine_enqueue(fiber->coroutine, scope);
-		if (UNEXPECTED(EG(exception))) {
+		zval options;
+		ZVAL_UNDEF(&options);
+		if (!scope->before_coroutine_enqueue(fiber->coroutine, scope, &options)) {
+			zval_ptr_dtor(&options);
 			return NULL;
 		}
+		zval_ptr_dtor(&options);
 	}
 
 	zend_object_std_init(&fiber->std, ce);
@@ -1290,7 +1292,14 @@ ZEND_METHOD(Fiber, start)
 			RETURN_THROWS();
 		}
 
-		ZEND_ASYNC_ENQUEUE_COROUTINE(fiber->coroutine);
+		if (!ZEND_ASYNC_ENQUEUE_COROUTINE(fiber->coroutine)) {
+			RETURN_THROWS();
+		}
+
+		if (UNEXPECTED(zend_fiber_await(fiber, return_value) == FAILURE)) {
+			RETURN_THROWS();
+		}
+
 		return;
 	}
 
