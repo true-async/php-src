@@ -1022,7 +1022,7 @@ ZEND_API zend_result zend_fiber_start(zend_fiber *fiber, zval *return_value)
 	if (EXPECTED(fiber->coroutine)) {
 		if (ZEND_COROUTINE_IS_STARTED(fiber->coroutine)) {
 			zend_throw_error(zend_ce_fiber_error, "Cannot start a fiber that has already been started");
-			RETURN_THROWS();
+			return FAILURE;
 		}
 
 		ZEND_ASYNC_ENQUEUE_COROUTINE(fiber->coroutine);
@@ -1115,6 +1115,13 @@ static zend_object *zend_fiber_object_create(zend_class_entry *ce)
 			fiber->coroutine->extended_data = fiber;
 			fiber->coroutine->internal_entry = coroutine_entry_point;
 		}
+
+		zend_async_scope_t *scope = ZEND_ASYNC_CURRENT_SCOPE;
+
+		scope->after_coroutine_enqueue(fiber->coroutine, scope);
+		if (UNEXPECTED(EG(exception))) {
+			return NULL;
+		}
 	}
 
 	zend_object_std_init(&fiber->std, ce);
@@ -1138,6 +1145,7 @@ static void zend_fiber_object_destroy(zend_object *object)
 	if (fiber->coroutine != NULL) {
 		ZEND_ASYNC_EVENT_RELEASE(&fiber->coroutine->event);
 		fiber->coroutine = NULL;
+		return;
 	}
 
 	if (fiber->context.status != ZEND_FIBER_STATUS_SUSPENDED) {
