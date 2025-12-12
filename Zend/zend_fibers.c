@@ -1260,6 +1260,7 @@ static void zend_fiber_object_destroy(zend_object *object)
 		);
 
 		ZEND_ASYNC_CANCEL(coroutine, exception, true);
+		ZEND_ASYNC_EVENT_RELEASE(&fiber->yield_event->base);
 
 		return;
 	}
