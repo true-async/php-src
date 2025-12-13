@@ -26,6 +26,8 @@ final class Fiber
 
     public function getReturn(): mixed {}
 
+    public function getCoroutine(): ?\Async\Coroutine {}
+
     public static function getCurrent(): ?Fiber {}
 
     public static function suspend(mixed $value = null): mixed {}

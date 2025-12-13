@@ -1794,6 +1794,20 @@ ZEND_METHOD(Fiber, getCurrent)
 	RETURN_OBJ_COPY(&fiber->std);
 }
 
+ZEND_METHOD(Fiber, getCoroutine)
+{
+	ZEND_PARSE_PARAMETERS_NONE();
+
+	zend_fiber *fiber = (zend_fiber *) Z_OBJ_P(ZEND_THIS);
+
+	if (fiber->coroutine == NULL) {
+		RETURN_NULL();
+	}
+
+	zend_object *coroutine_obj = ZEND_ASYNC_EVENT_TO_OBJECT(&fiber->coroutine->event);
+	RETURN_OBJ_COPY(coroutine_obj);
+}
+
 ZEND_METHOD(FiberError, __construct)
 {
 	zend_throw_error(
