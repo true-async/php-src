@@ -1423,6 +1423,16 @@ static HashTable *zend_fiber_object_gc(zend_object *object, zval **table, int *n
 			symTable = zend_unfinished_execution_gc_ex(ex, ex->func && ZEND_USER_CODE(ex->func->type) ? ex->call : NULL, buf, false);
 		}
 		if (symTable) {
+			/*
+			 * Skip if this is the same symbol_table as previous frame (include shares symbol_table)
+			 * Include operators inherit the symbol_table,
+			 * which causes the same zval to be registered twice in the garbage collector.
+			 * This leads to a double ZVAL_DELREF attempt.
+			*/
+			if (lastSymTable && lastSymTable == symTable) {
+				continue;
+			}
+
 			if (lastSymTable) {
 				zval *val;
 				ZEND_HASH_FOREACH_VAL(lastSymTable, val) {
