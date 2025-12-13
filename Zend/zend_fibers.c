@@ -1375,17 +1375,25 @@ static HashTable *zend_fiber_object_gc(zend_object *object, zval **table, int *n
 	zend_get_gc_buffer *buf = zend_get_gc_buffer_create();
 
 	/*
-	 * For coroutine path add fcall to GC (if ownership not taken).
-	 * For non-coroutine path add fci and result to GC.
+	 * For coroutine path: add coroutine object to GC.
+	 * GC will call coroutine's get_gc handler which handles fcall, result, and execution stack.
 	 */
-	if (fiber->coroutine != NULL && fiber->fcall != NULL) {
-		zend_get_gc_buffer_add_zval(buf, &fiber->fcall->fci.function_name);
-		zend_get_gc_buffer_add_zval(buf, &fiber->coroutine->result);
-		/* result in coroutine->result - coroutine's GC handles it */
-	} else {
-		zend_get_gc_buffer_add_zval(buf, &fiber->fci.function_name);
-		zend_get_gc_buffer_add_zval(buf, &fiber->result);
+	if (fiber->coroutine != NULL) {
+		zend_object *coroutine_obj = ZEND_ASYNC_EVENT_TO_OBJECT(&fiber->coroutine->event);
+		zend_get_gc_buffer_add_obj(buf, coroutine_obj);
+
+		/* Add fcall if it's still owned by fiber (not yet transferred to coroutine) */
+		if (fiber->fcall != NULL) {
+			zend_get_gc_buffer_add_zval(buf, &fiber->fcall->fci.function_name);
+		}
+
+		zend_get_gc_buffer_use(buf, table, num);
+		return NULL;
 	}
+
+	/* Non-coroutine path: add fci and result to GC */
+	zend_get_gc_buffer_add_zval(buf, &fiber->fci.function_name);
+	zend_get_gc_buffer_add_zval(buf, &fiber->result);
 
 	if (fiber->context.status != ZEND_FIBER_STATUS_SUSPENDED || fiber->caller != NULL) {
 		zend_get_gc_buffer_use(buf, table, num);
