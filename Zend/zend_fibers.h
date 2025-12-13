@@ -129,9 +129,26 @@ struct _zend_fiber {
 	/* Fiber that suspended us. */
 	zend_fiber_context *previous;
 
-	/* Callback and info / cache to be used when fiber is started. */
+	/*
+	 * Callback and info / cache to be used when fiber is started.
+	 * IMPORTANT: When fiber->coroutine != NULL, these fields are NOT USED.
+	 * Instead, fiber->fcall is used (see below).
+	 * Only used for non-coroutine path (fiber->coroutine == NULL).
+	 */
 	zend_fcall_info fci;
 	zend_fcall_info_cache fci_cache;
+
+	/*
+	 * Pointer to allocated zend_fcall_t structure for coroutine path.
+	 * OWNERSHIP:
+	 *   - Fiber allocates on creation and TEMPORARILY owns it
+	 *   - coroutine_entry_point TAKES ownership (sets fiber->fcall to NULL)
+	 *   - coroutine_entry_point FREES it at the end
+	 * NULL when:
+	 *   - fiber->coroutine == NULL (non-coroutine path)
+	 *   - Ownership already taken by coroutine_entry_point
+	 */
+	zend_fcall_t *fcall;
 
 	/* Current Zend VM execute data being run by the fiber. */
 	zend_execute_data *execute_data;
@@ -142,7 +159,12 @@ struct _zend_fiber {
 	/* Active fiber vm stack. */
 	zend_vm_stack vm_stack;
 
-	/* Storage for fiber return value. */
+	/*
+	 * Storage for fiber return value.
+	 * IMPORTANT: When fiber->coroutine != NULL, this field is NOT USED.
+	 * Result is stored in coroutine->result instead.
+	 * Only used for non-coroutine path (fiber->coroutine == NULL).
+	 */
 	zval result;
 };
 

@@ -1210,6 +1210,9 @@ static zend_object *zend_fiber_object_create(zend_class_entry *ce)
 			ZEND_COROUTINE_SET_FIBER(fiber->coroutine);
 			fiber->coroutine->extended_data = fiber;
 			fiber->coroutine->internal_entry = coroutine_entry_point;
+
+			/* Initialize coroutine result storage for fiber */
+			ZVAL_UNDEF(&fiber->coroutine->result);
 		}
 
 		zend_async_scope_t *scope = ZEND_ASYNC_CURRENT_SCOPE;
