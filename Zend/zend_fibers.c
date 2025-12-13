@@ -1120,6 +1120,18 @@ static void coroutine_entry_point(void)
 			fiber->fcall = NULL;
 		}
 
+		if (fcall->fci.param_count) {
+			for (uint32_t i = 0; i < fcall->fci.param_count; i++) {
+				zval_ptr_dtor(&fcall->fci.params[i]);
+			}
+			efree(fcall->fci.params);
+		}
+
+		if (fcall->fci.named_params) {
+			GC_DELREF(fcall->fci.named_params);
+			fcall->fci.named_params = NULL;
+		}
+
 		zval_ptr_dtor(&fcall->fci.function_name);
 		ZVAL_UNDEF(&fcall->fci.function_name);
 		efree(fcall);
@@ -1279,6 +1291,19 @@ static void zend_fiber_object_destroy(zend_object *object)
 			if (fiber->fcall != NULL) {
 				zend_fcall_t *fcall = fiber->fcall;
 				fiber->fcall = NULL;
+
+				if (fcall->fci.param_count) {
+					for (uint32_t i = 0; i < fcall->fci.param_count; i++) {
+						zval_ptr_dtor(&fcall->fci.params[i]);
+					}
+					efree(fcall->fci.params);
+				}
+
+				if (fcall->fci.named_params) {
+					GC_DELREF(fcall->fci.named_params);
+					fcall->fci.named_params = NULL;
+				}
+
 				zval_ptr_dtor(&fcall->fci.function_name);
 				efree(fcall);
 			}
