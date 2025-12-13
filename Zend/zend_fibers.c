@@ -1270,19 +1270,19 @@ static void zend_fiber_object_destroy(zend_object *object)
 		fiber->coroutine = NULL;
 		coroutine->extended_data = NULL;
 
-		/*
-		 * If fcall is not NULL, ownership was NOT taken by
-		 * coroutine_entry_point (coroutine did not start execution).
-		 * In this case fiber must free fcall.
-		 */
-		if (fiber->fcall != NULL) {
-			zend_fcall_t *fcall = fiber->fcall;
-			fiber->fcall = NULL;
-			zval_ptr_dtor(&fcall->fci.function_name);
-			efree(fcall);
-		}
-
 		if (ZEND_COROUTINE_IS_FINISHED(coroutine)) {
+			/*
+			 * If fcall is not NULL, ownership was NOT taken by
+			 * coroutine_entry_point (coroutine did not start execution).
+			 * In this case fiber must free fcall.
+			 */
+			if (fiber->fcall != NULL) {
+				zend_fcall_t *fcall = fiber->fcall;
+				fiber->fcall = NULL;
+				zval_ptr_dtor(&fcall->fci.function_name);
+				efree(fcall);
+			}
+
 			ZEND_ASYNC_EVENT_RELEASE(&coroutine->event);
 			return;
 		}
@@ -1292,6 +1292,7 @@ static void zend_fiber_object_destroy(zend_object *object)
 		);
 
 		ZEND_ASYNC_CANCEL(coroutine, exception, true);
+		ZEND_ASYNC_EVENT_RELEASE(&coroutine->event);
 
 		return;
 	}
