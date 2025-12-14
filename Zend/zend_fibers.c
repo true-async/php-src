@@ -1581,6 +1581,11 @@ ZEND_METHOD(Fiber, suspend)
 			RETURN_THROWS();
 		}
 
+		// If fiber was destroyed
+		if (coroutine->extended_data == NULL) {
+			RETURN_NULL();
+		}
+
 		zend_fiber_yield(coroutine->extended_data, value, return_value);
 		return;
 	}
