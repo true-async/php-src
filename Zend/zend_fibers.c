@@ -921,6 +921,8 @@ static zend_result zend_fiber_yield(zend_fiber *fiber, zval *value, zval *return
 		return FAILURE;
 	}
 
+	ZEND_COROUTINE_SET_YIELD(fiber->coroutine);
+
 	ZEND_ASYNC_EVENT_CLR_EXCEPTION_HANDLED(&yield_event->base);
 	ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(&yield_event->base);
 	ZEND_ASYNC_CALLBACKS_NOTIFY(&yield_event->base, value, NULL);
@@ -983,6 +985,8 @@ static void zend_fiber_resume_coroutine(zend_fiber *fiber, zval *value, zval *ex
 		zend_throw_error(zend_ce_fiber_error, "Cannot resume a fiber that has not been started");
 		return;
 	}
+
+	ZEND_COROUTINE_CLR_YIELD(fiber->coroutine);
 
 	// Wake up the fiber's coroutine
 	if (UNEXPECTED(exception)) {
@@ -1318,6 +1322,12 @@ static void zend_fiber_object_destroy(zend_object *object)
 
 		ZEND_ASYNC_CANCEL(coroutine, exception, true);
 
+		//
+		// A Fiber shares ownership of a coroutine with the Scheduler. This is important.
+		// When a coroutine is running, it belongs to the Scheduler, and its reference count must be greater than 1.
+		// The purpose of this code is to ensure that when a Fiber is destroyed,
+		// it correctly decrements the coroutine’s reference count without destroying the coroutine itself.
+		//
 		if (ZEND_COROUTINE_IS_STARTED(coroutine)) {
 			ZEND_ASYNC_EVENT_RELEASE(&coroutine->event);
 		}

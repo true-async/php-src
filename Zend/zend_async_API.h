@@ -1062,6 +1062,7 @@ struct _zend_coroutine_s {
 #define ZEND_COROUTINE_F_PROTECTED (1u << 13) /* coroutine is protected */
 #define ZEND_COROUTINE_F_MAIN (1u << 14) /* coroutine is a main coroutine */
 #define ZEND_COROUTINE_F_FIBER (1u << 15) /* coroutine is a fiber. extended_data -> fiber structure */
+#define ZEND_COROUTINE_F_YIELD (1u << 16) /* coroutine is YIELD */
 
 #define ZEND_COROUTINE_IS_ZOMBIE(coroutine) \
 	(((coroutine)->event.flags & ZEND_COROUTINE_F_ZOMBIE) != 0)
@@ -1095,6 +1096,12 @@ struct _zend_coroutine_s {
 	(((coroutine)->event.flags & ZEND_COROUTINE_F_FIBER) != 0)
 #define ZEND_COROUTINE_SET_FIBER(coroutine) \
 	((coroutine)->event.flags |= ZEND_COROUTINE_F_FIBER)
+#define ZEND_COROUTINE_IS_YIELD(coroutine) \
+	(((coroutine)->event.flags & ZEND_COROUTINE_F_YIELD) != 0)
+#define ZEND_COROUTINE_SET_YIELD(coroutine) \
+	((coroutine)->event.flags |= ZEND_COROUTINE_F_YIELD)
+#define ZEND_COROUTINE_CLR_YIELD(coroutine) \
+	((coroutine)->event.flags &= ~ZEND_COROUTINE_F_YIELD)
 
 static zend_always_inline zend_string *zend_coroutine_callable_name(
 		const zend_coroutine_t *coroutine)
