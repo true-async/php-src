@@ -1316,11 +1316,7 @@ static void zend_fiber_object_destroy(zend_object *object)
 			return;
 		}
 
-		zend_object *exception = zend_async_new_exception(
-			ZEND_ASYNC_EXCEPTION_CANCELLATION, "Fiber has been destroyed"
-		);
-
-		ZEND_ASYNC_CANCEL(coroutine, exception, true);
+		ZEND_ASYNC_CANCEL(coroutine, zend_create_graceful_exit(), true);
 
 		//
 		// A Fiber shares ownership of a coroutine with the Scheduler. This is important.
