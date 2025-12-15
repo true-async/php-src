@@ -1295,6 +1295,7 @@ static void zend_fiber_object_destroy(zend_object *object)
 		//
 		zend_coroutine_t *coroutine = fiber->coroutine;
 		coroutine->extended_data = NULL;
+		fiber->coroutine = NULL;
 
 		if (ZEND_COROUTINE_IS_FINISHED(coroutine) || false == ZEND_COROUTINE_IS_STARTED(coroutine)) {
 			/*
