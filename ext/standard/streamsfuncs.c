@@ -746,7 +746,7 @@ PHP_FUNCTION(stream_select)
 	ZEND_PARSE_PARAMETERS_END();
 
 	// Early async select path - avoid all fd_set processing
-	if(ZEND_ASYNC_IS_ACTIVE && (sec > 0 || usec > 0)) {
+	if(ZEND_ASYNC_IS_ACTIVE && (sec > 0 || usec > 0 || (secnull && usecnull))) {
 		struct timeval tv_async, *tv_p_async = NULL;
 		if (!secnull) {
 			tv_async.tv_sec = sec;
