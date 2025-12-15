@@ -168,7 +168,8 @@ ZEND_API extern int php_poll2_async(php_pollfd *ufds, unsigned int nfds, const i
 
 static zend_always_inline int _php_poll2_async(php_pollfd *ufds, unsigned int nfds, int timeout)
 {
-	if(UNEXPECTED(ZEND_ASYNC_IS_ACTIVE)) {
+	// Use context switching only if a timeout is specified.
+	if(UNEXPECTED(timeout > 0 && ZEND_ASYNC_IS_ACTIVE)) {
 		return php_poll2_async(ufds, nfds, timeout);
 	} else {
 		return poll(ufds, nfds, timeout);
