@@ -981,6 +981,11 @@ static void zend_fiber_resume_coroutine(zend_fiber *fiber, zval *value, zval *ex
 		return;
 	}
 
+	if (ZEND_COROUTINE_IS_FINISHED(fiber->coroutine)) {
+		zend_throw_error(zend_ce_fiber_error, "Cannot resume a fiber that is not suspended");
+		return;
+	}
+
 	if (UNEXPECTED(fiber->resume_event == NULL)) {
 		zend_throw_error(zend_ce_fiber_error, "Cannot resume a fiber that has not been started");
 		return;
@@ -1115,6 +1120,12 @@ static void coroutine_entry_point(void)
 	fiber = coroutine->extended_data;
 	if (fiber && is_bailout) {
 		fiber->flags |= ZEND_FIBER_FLAG_BAILOUT;
+	}
+
+	if (fiber && fiber->resume_event) {
+		zend_async_event_t *resume_event_base = &fiber->resume_event->base;
+		fiber->resume_event = NULL;
+		ZEND_ASYNC_EVENT_RELEASE(resume_event_base);
 	}
 
 	// Cleanup fcall (Except in the case when the Fiber itself has already cleaned up this structure)
@@ -1283,7 +1294,6 @@ static void zend_fiber_object_destroy(zend_object *object)
 		// while the coroutine is already running. In this case, we cancel the coroutine.
 		//
 		zend_coroutine_t *coroutine = fiber->coroutine;
-		fiber->coroutine = NULL;
 		coroutine->extended_data = NULL;
 
 		if (ZEND_COROUTINE_IS_FINISHED(coroutine) || false == ZEND_COROUTINE_IS_STARTED(coroutine)) {
