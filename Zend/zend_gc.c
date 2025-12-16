@@ -71,6 +71,7 @@
 #include "zend_async_API.h"
 #include "zend_compile.h"
 #include "zend_errors.h"
+#include "zend_exceptions.h"
 #include "zend_fibers.h"
 #include "zend_hrtime.h"
 #include "zend_portability.h"
@@ -2183,6 +2184,8 @@ static zend_always_inline void start_gc_in_coroutine(void)
 		if (UNEXPECTED(GC_G(gc_scope) == NULL)) {
 			zend_error_noreturn(E_ERROR, "Unable to create GC scope");
 		}
+
+		ZEND_ASYNC_SCOPE_CLR_DISPOSE_SAFELY(GC_G(gc_scope));
 	}
 
 	if (UNEXPECTED(new_gc_coroutine() == NULL)) {
@@ -2306,8 +2309,39 @@ rerun_gc:
 			if (EXPECTED(!EG(active_fiber) && !is_async)) {
 				gc_call_destructors(GC_FIRST_ROOT, end, NULL);
 			} else if (is_async) {
-				gc_call_destructors_in_coroutine();
+				if (UNEXPECTED(!gc_call_destructors_in_coroutine())) {
+
+					if (EG(exception)) {
+						// If the exception is a cancellation exception, clear it.
+						if (instanceof_function(EG(exception)->ce, ZEND_ASYNC_GET_EXCEPTION_CE(ZEND_ASYNC_EXCEPTION_CANCELLATION))) {
+							zend_clear_exception();
+						} else {
+							//
+							// This is a critical execution path that should almost never occur.
+							// However, if it does happen, we must attempt to shut down the garbage collector gracefully.
+							//
+							should_rerun_gc = false;
+						}
+					}
+
+					/**
+					 * Clean up GC_DTOR_GARBAGE tags if destructor coroutine failed.
+					 * When gc_call_destructors_in_coroutine() fails (e.g. due to cancellation),
+					 * some objects may still have GC_DTOR_GARBAGE tags. These must be converted
+					 * back to GC_ROOT to avoid assertion failures in subsequent GC runs.
+					 */
+					idx = GC_G(dtor_idx);
+					current = GC_IDX2PTR(idx);
+					while (idx != end) {
+						if (GC_IS_DTOR_GARBAGE(current->ref)) {
+							current->ref = GC_GET_PTR(current->ref);
+						}
+						current++;
+						idx++;
+					}
+				}
 			} else {
+				// @todo should be removed in the future
 				gc_call_destructors_in_fiber(end);
 			}
 			GC_G(dtor_time) += zend_hrtime() - dtor_start_time;
