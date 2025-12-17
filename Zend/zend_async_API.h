@@ -1240,9 +1240,14 @@ typedef enum {
 	ZEND_ASYNC_ACTIVE
 } zend_async_state_t;
 
+typedef void (*zend_async_heartbeat_handler_t)(void);
+
 typedef struct {
 	zend_async_state_t state;
-	/* The flag is TRUE if the Scheduler was able to gain control. */
+	/*
+	 * The flag is TRUE if the Scheduler was able to gain control.
+	 * This flag is not set automatically, but it can be used in the heartbeat_handler.
+	 */
 	zend_atomic_bool heartbeat;
 	/* Equal TRUE if the scheduler executed now */
 	bool in_scheduler_context;
@@ -1260,6 +1265,8 @@ typedef struct {
 	zend_coroutine_t *scheduler;
 	/* Exit exception object */
 	zend_object *exit_exception;
+	/* Custom heartbeat handler */
+	zend_async_heartbeat_handler_t heartbeat_handler;
 } zend_async_globals_t;
 
 BEGIN_EXTERN_C()
@@ -1281,7 +1288,12 @@ END_EXTERN_C()
 #define ZEND_ASYNC_INITIALIZE ZEND_ASYNC_G(state) = ZEND_ASYNC_READY
 #define ZEND_ASYNC_DEACTIVATE ZEND_ASYNC_G(state) = ZEND_ASYNC_OFF
 #define ZEND_ASYNC_SCHEDULER_ALIVE (zend_atomic_bool_load(&ZEND_ASYNC_G(heartbeat)) == true)
-#define ZEND_ASYNC_SCHEDULER_HEARTBEAT zend_atomic_bool_store(&ZEND_ASYNC_G(heartbeat), true)
+#define ZEND_ASYNC_SCHEDULER_HEARTBEAT \
+	do { \
+		if (ZEND_ASYNC_G(heartbeat_handler) != NULL) { \
+			ZEND_ASYNC_G(heartbeat_handler)(); \
+		} \
+	} while (0)
 #define ZEND_ASYNC_SCHEDULER_WAIT zend_atomic_bool_store(&ZEND_ASYNC_G(heartbeat), false)
 #define ZEND_ASYNC_SCHEDULER_CONTEXT ZEND_ASYNC_G(in_scheduler_context)
 #define ZEND_ASYNC_IS_SCHEDULER_CONTEXT (ZEND_ASYNC_G(in_scheduler_context) == true)
@@ -1333,6 +1345,26 @@ void zend_async_globals_dtor(void);
 
 ZEND_API const char *zend_async_get_api_version(void);
 ZEND_API int zend_async_get_api_version_number(void);
+
+/**
+ * Setting the heartbeat_handler.
+ *
+ * The **heartbeat handler** is executed on every `Scheduler` tick.
+ * By installing a custom handler here, you can add additional
+ * logic to the Scheduler.
+ *
+ * The heartbeat handler can be unique for each PHP thread!
+ *
+ * **Be careful:**
+ * The **heartbeat handler** can significantly impact performance,
+ * since the **Scheduler** runs on every coroutine switch.
+ *
+ * @param handler The heartbeat handler to set.
+ * @return The previous heartbeat handler.
+ */
+ZEND_API zend_async_heartbeat_handler_t zend_async_set_heartbeat_handler(
+		zend_async_heartbeat_handler_t handler);
+ZEND_API zend_async_heartbeat_handler_t zend_async_get_heartbeat_handler(void);
 
 ZEND_API ZEND_COLD zend_object *zend_async_new_exception(
 		zend_async_class type, const char *format, ...);

@@ -219,6 +219,7 @@ static void internal_globals_ctor(zend_async_globals_t *globals)
 	globals->main_scope = NULL;
 	globals->scheduler = NULL;
 	globals->exit_exception = NULL;
+	globals->heartbeat_handler = NULL;
 }
 
 static void internal_globals_dtor(zend_async_globals_t *globals)
@@ -259,6 +260,19 @@ void zend_async_api_shutdown(void)
 ZEND_API int zend_async_get_api_version_number(void)
 {
 	return ZEND_ASYNC_API_VERSION_NUMBER;
+}
+
+ZEND_API zend_async_heartbeat_handler_t zend_async_set_heartbeat_handler(
+		zend_async_heartbeat_handler_t handler)
+{
+	const zend_async_heartbeat_handler_t old_handler = ZEND_ASYNC_G(heartbeat_handler);
+	ZEND_ASYNC_G(heartbeat_handler) = handler;
+	return old_handler;
+}
+
+ZEND_API zend_async_heartbeat_handler_t zend_async_get_heartbeat_handler(void)
+{
+	return ZEND_ASYNC_G(heartbeat_handler);
 }
 
 ZEND_API bool zend_async_scheduler_register(char *module, bool allow_override,
