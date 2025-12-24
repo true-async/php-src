@@ -231,6 +231,19 @@ typedef struct  _zend_mm_huge_list zend_mm_huge_list;
 
 static bool zend_mm_use_huge_pages = false;
 
+/**********************/
+/* Global MM Registry */
+/**********************/
+
+#define ZEND_MM_INITIAL_HEAPS 64
+
+static struct {
+	zend_mm_heap **heaps;        /* dynamic array */
+	int capacity;
+	int count;
+	pthread_mutex_t lock;
+} zend_mm_global_registry;
+
 /*
  * Memory is retrieved from OS by chunks of fixed size 2MB.
  * Inside chunk it's managed by pages of fixed size 4096B.
@@ -321,6 +334,10 @@ struct _zend_mm_heap {
 	pid_t pid;
 #endif
 	zend_random_bytes_insecure_state rand_state;
+
+	/* Cross-thread support */
+	uint32_t           heap_id;                 /* unique heap ID */
+	pthread_t          thread_id;               /* current owner thread */
 };
 
 struct _zend_mm_chunk {
@@ -2044,8 +2061,85 @@ ZEND_API void zend_mm_refresh_key_child(zend_mm_heap *heap)
 #endif
 }
 
+#ifdef ZTS
+/**********************/
+/* Registry Functions */
+/**********************/
+
+static void zend_mm_registry_init(void)
+{
+	pthread_mutex_lock(&zend_mm_global_registry.lock);
+
+	if (zend_mm_global_registry.heaps == NULL) {
+		zend_mm_global_registry.heaps = (zend_mm_heap**)calloc(ZEND_MM_INITIAL_HEAPS, sizeof(zend_mm_heap*));
+		zend_mm_global_registry.capacity = ZEND_MM_INITIAL_HEAPS;
+		zend_mm_global_registry.count = 0;
+	}
+
+	pthread_mutex_unlock(&zend_mm_global_registry.lock);
+}
+
+static uint32_t zend_mm_registry_allocate_id(zend_mm_heap *heap)
+{
+	pthread_mutex_lock(&zend_mm_global_registry.lock);
+
+	/* Find free slot */
+	for (int i = 0; i < zend_mm_global_registry.capacity; i++) {
+		if (zend_mm_global_registry.heaps[i] == NULL) {
+			zend_mm_global_registry.heaps[i] = heap;
+			zend_mm_global_registry.count++;
+			pthread_mutex_unlock(&zend_mm_global_registry.lock);
+			return (uint32_t)i;
+		}
+	}
+
+	/* Need to expand */
+	int old_capacity = zend_mm_global_registry.capacity;
+	int new_capacity = old_capacity * 2;
+	zend_mm_heap **new_heaps = (zend_mm_heap**)realloc(
+		zend_mm_global_registry.heaps,
+		new_capacity * sizeof(zend_mm_heap*)
+	);
+
+	if (new_heaps == NULL) {
+		pthread_mutex_unlock(&zend_mm_global_registry.lock);
+		return (uint32_t)-1;  /* allocation failed */
+	}
+
+	/* Zero new slots */
+	memset(new_heaps + old_capacity, 0, old_capacity * sizeof(zend_mm_heap*));
+
+	zend_mm_global_registry.heaps = new_heaps;
+	zend_mm_global_registry.capacity = new_capacity;
+
+	/* Use first new slot */
+	zend_mm_global_registry.heaps[old_capacity] = heap;
+	zend_mm_global_registry.count++;
+
+	pthread_mutex_unlock(&zend_mm_global_registry.lock);
+	return (uint32_t)old_capacity;
+}
+
+static void zend_mm_registry_free_id(uint32_t heap_id)
+{
+	pthread_mutex_lock(&zend_mm_global_registry.lock);
+
+	if (heap_id < zend_mm_global_registry.capacity) {
+		zend_mm_global_registry.heaps[heap_id] = NULL;
+		zend_mm_global_registry.count--;
+	}
+
+	pthread_mutex_unlock(&zend_mm_global_registry.lock);
+}
+#endif /* ZTS */
+
 static zend_mm_heap *zend_mm_init(void)
 {
+#ifdef ZTS
+	/* Initialize global registry if needed */
+	zend_mm_registry_init();
+#endif
+
 	zend_mm_chunk *chunk = (zend_mm_chunk*)zend_mm_chunk_alloc_int(ZEND_MM_CHUNK_SIZE, ZEND_MM_CHUNK_SIZE);
 	zend_mm_heap *heap;
 
@@ -2095,6 +2189,16 @@ static zend_mm_heap *zend_mm_init(void)
 #if ZEND_DEBUG
 	heap->pid = getpid();
 #endif
+
+#ifdef ZTS
+	/* Register heap in global registry */
+	heap->heap_id = zend_mm_registry_allocate_id(heap);
+	heap->thread_id = pthread_self();
+#else
+	heap->heap_id = 0;
+	heap->thread_id = 0;
+#endif
+
 	return heap;
 }
 
@@ -2499,6 +2603,10 @@ ZEND_API void zend_mm_shutdown(zend_mm_heap *heap, bool full, bool silent)
 	}
 
 	if (full) {
+#ifdef ZTS
+		/* Unregister from global registry */
+		zend_mm_registry_free_id(heap->heap_id);
+#endif
 		/* free all cached chunks */
 		while (heap->cached_chunks) {
 			p = heap->cached_chunks;
