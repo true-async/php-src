@@ -37,6 +37,11 @@ PHP 8.6 UPGRADE NOTES
     IntlNumberRangeFormatter::IDENTITY_FALLBACK_RANGE identity fallbacks.
     It is supported from icu 63.
 
+- Phar:
+  . Overriding the getMTime() and getPathname() methods of SplFileInfo now
+    influences the result of the phar buildFrom family of functions.
+    This makes it possible to override the timestamp and names of files.
+
 - Streams:
   . Added stream socket context option so_reuseaddr that allows disabling
     address reuse (SO_REUSEADDR) and explicitly uses SO_EXCLUSIVEADDRUSE on
@@ -66,6 +71,10 @@ PHP 8.6 UPGRADE NOTES
 6. New Functions
 ========================================
 
+- Standard:
+  . `clamp()` returns the given value if in range, else return the nearest bound.
+    RFC: https://wiki.php.net/rfc/clamp_v2
+
 ========================================
 7. New Classes and Interfaces
 ========================================
@@ -84,6 +93,9 @@ PHP 8.6 UPGRADE NOTES
 ========================================
 10. New Global Constants
 ========================================
+
+- Sockets:
+  . TCP_USER_TIMEOUT (Linux only).
 
 ========================================
 11. Changes to INI File Handling

@@ -648,7 +648,7 @@ static void sqlite_value_to_zval(sqlite3_stmt *stmt, int column, zval *data) /* 
 			break;
 
 		case SQLITE3_TEXT:
-			ZVAL_STRING(data, (char*)sqlite3_column_text(stmt, column));
+			ZVAL_STRINGL(data, (const char *) sqlite3_column_text(stmt, column), sqlite3_column_bytes(stmt, column));
 			break;
 
 		case SQLITE_BLOB:
@@ -2043,6 +2043,7 @@ PHP_METHOD(SQLite3Result, fetchArray)
 
 		default:
 			php_sqlite3_error(result_obj->db_obj, sqlite3_errcode(sqlite3_db_handle(result_obj->stmt_obj->stmt)), "Unable to execute statement: %s", sqlite3_errmsg(sqlite3_db_handle(result_obj->stmt_obj->stmt)));
+			RETURN_FALSE;
 	}
 }
 /* }}} */
