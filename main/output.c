@@ -194,12 +194,12 @@ PHPAPI void php_output_deactivate(void)
 		ASYNC_OG(running) = NULL;
 
 		/* release all output handlers */
-		if (OG(handlers).elements) {
-			while ((handler = zend_stack_top(&OG(handlers)))) {
-				zend_stack_del_top(&OG(handlers));
+		if (ASYNC_OG(handlers).elements) {
+			while ((handler = zend_stack_top(&ASYNC_OG(handlers)))) {
+				zend_stack_del_top(&ASYNC_OG(handlers));
 				/* It's possible to start a new output handler and mark it as active,
 				 * however this loop will destroy all active handlers. */
-				OG(active) = NULL;
+				ASYNC_OG(active) = NULL;
 				ZEND_ASSERT(OG(running) == NULL && "output is deactivated therefore running should stay NULL");
 				php_output_handler_free(handler);
 			}
