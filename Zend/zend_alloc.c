@@ -15,6 +15,7 @@
    | Authors: Andi Gutmans <andi@php.net>                                 |
    |          Zeev Suraski <zeev@php.net>                                 |
    |          Dmitry Stogov <dmitry@php.net>                              |
+   |          Edmond Dantes <edmondifthen@proton.me>     				  |
    +----------------------------------------------------------------------+
 */
 
@@ -915,6 +916,12 @@ static void zend_mm_change_huge_block_size(zend_mm_heap *heap, void *ptr, size_t
 static void zend_mm_change_huge_block_size(zend_mm_heap *heap, void *ptr, size_t size ZEND_FILE_LINE_DC ZEND_FILE_LINE_ORIG_DC);
 #endif
 
+#ifdef ZTS
+static void zend_mm_free_small_remote(zend_mm_heap *owner_heap, void *ptr, int bin_num ZEND_FILE_LINE_DC ZEND_FILE_LINE_ORIG_DC);
+static void zend_mm_free_large_remote(zend_mm_heap *owner_heap, zend_mm_chunk *chunk, int page_num, int pages_count ZEND_FILE_LINE_DC ZEND_FILE_LINE_ORIG_DC);
+static void zend_mm_free_huge_remote(zend_mm_heap *owner_heap, void *ptr ZEND_FILE_LINE_DC ZEND_FILE_LINE_ORIG_DC);
+#endif
+
 /**************/
 /* Large Runs */
 /**************/
@@ -1430,6 +1437,36 @@ static zend_always_inline void *zend_mm_alloc_small(zend_mm_heap *heap, int bin_
 	}
 }
 
+#ifdef ZTS
+/**
+ * Compare thread IDs in a platform-independent way.
+ */
+static zend_always_inline bool zend_mm_thread_equal(THREAD_T t1, THREAD_T t2)
+{
+#ifdef TSRM_WIN32
+	return t1 == t2;
+#else
+	return pthread_equal(t1, t2);
+#endif
+}
+
+/**
+ * Determine heap owner for a given pointer (small/large blocks only).
+ * Returns NULL for huge blocks (ownership detection not yet implemented).
+ */
+static zend_always_inline zend_mm_heap *zend_mm_ptr_to_heap(void *ptr)
+{
+	const size_t page_offset = ZEND_MM_ALIGNED_OFFSET(ptr, ZEND_MM_CHUNK_SIZE);
+
+	if (UNEXPECTED(page_offset == 0)) {
+		return NULL;
+	}
+
+	const zend_mm_chunk *chunk = (zend_mm_chunk*)ZEND_MM_ALIGNED_BASE(ptr, ZEND_MM_CHUNK_SIZE);
+	return chunk->heap;
+}
+#endif
+
 static zend_always_inline void zend_mm_free_small(zend_mm_heap *heap, void *ptr, int bin_num)
 {
 	ZEND_ASSERT(bin_data_size[bin_num] >= ZEND_MM_MIN_USEABLE_BIN_SIZE);
@@ -1451,6 +1488,38 @@ static zend_always_inline void zend_mm_free_small(zend_mm_heap *heap, void *ptr,
 	zend_mm_set_next_free_slot(heap, bin_num, p, heap->free_slot[bin_num]);
 	heap->free_slot[bin_num] = p;
 }
+
+#ifdef ZTS
+/**
+ * Cross-thread free for small blocks (stub for phase 2).
+ * Will be implemented with triple buffering queues.
+ */
+static void zend_mm_free_small_remote(zend_mm_heap *owner_heap, void *ptr, int bin_num ZEND_FILE_LINE_DC ZEND_FILE_LINE_ORIG_DC)
+{
+	/* TODO: Phase 2 - implement triple buffering enqueue */
+	zend_mm_panic("Cross-thread free not yet implemented (phase 2)");
+}
+
+/**
+ * Cross-thread free for large blocks (stub for phase 2).
+ * Will be implemented with triple buffering queues.
+ */
+static void zend_mm_free_large_remote(zend_mm_heap *owner_heap, zend_mm_chunk *chunk, int page_num, int pages_count ZEND_FILE_LINE_DC ZEND_FILE_LINE_ORIG_DC)
+{
+	/* TODO: Phase 2 - implement triple buffering enqueue */
+	zend_mm_panic("Cross-thread free not yet implemented (phase 2)");
+}
+
+/**
+ * Cross-thread free for huge blocks (stub for future phase).
+ * Requires ownership detection implementation for huge blocks.
+ */
+static void zend_mm_free_huge_remote(zend_mm_heap *owner_heap, void *ptr ZEND_FILE_LINE_DC ZEND_FILE_LINE_ORIG_DC)
+{
+	/* TODO: Implement global free huge pool with recycling */
+	zend_mm_panic("Cross-thread free for huge blocks not supported");
+}
+#endif
 
 /********/
 /* Heap */
@@ -1532,27 +1601,61 @@ static zend_always_inline void *zend_mm_alloc_heap(zend_mm_heap *heap, size_t si
 
 static zend_always_inline void zend_mm_free_heap(zend_mm_heap *heap, void *ptr ZEND_FILE_LINE_DC ZEND_FILE_LINE_ORIG_DC)
 {
+	if (UNEXPECTED(ptr == NULL)) {
+		return;
+	}
+
 	size_t page_offset = ZEND_MM_ALIGNED_OFFSET(ptr, ZEND_MM_CHUNK_SIZE);
 
-	if (UNEXPECTED(page_offset == 0)) {
-		if (ptr != NULL) {
-			zend_mm_free_huge(heap, ptr ZEND_FILE_LINE_RELAY_CC ZEND_FILE_LINE_ORIG_RELAY_CC);
+#ifdef ZTS
+	// Small/large blocks
+	if (EXPECTED(page_offset != 0)) {
+		zend_mm_heap *owner_heap = zend_mm_ptr_to_heap(ptr);
+		zend_mm_chunk *chunk = (zend_mm_chunk*)ZEND_MM_ALIGNED_BASE(ptr, ZEND_MM_CHUNK_SIZE);
+		int page_num = (int)(page_offset / ZEND_MM_PAGE_SIZE);
+		zend_mm_page_info info = chunk->map[page_num];
+
+		ZEND_MM_CHECK(chunk->heap == owner_heap, "zend_mm_heap corrupted");
+
+		// Local free: same thread (hot path)
+		if (EXPECTED(zend_mm_thread_equal(tsrm_thread_id(), owner_heap->thread_id))) {
+			if (EXPECTED(info & ZEND_MM_IS_SRUN)) {
+				zend_mm_free_small(owner_heap, ptr, ZEND_MM_SRUN_BIN_NUM(info));
+			} else {
+				ZEND_MM_CHECK(ZEND_MM_ALIGNED_OFFSET(page_offset, ZEND_MM_PAGE_SIZE) == 0, "zend_mm_heap corrupted");
+				zend_mm_free_large(owner_heap, chunk, page_num, ZEND_MM_LRUN_PAGES(info));
+			}
+		} else {
+			// Remote free: cross-thread
+			if (EXPECTED(info & ZEND_MM_IS_SRUN)) {
+				zend_mm_free_small_remote(owner_heap, ptr, ZEND_MM_SRUN_BIN_NUM(info) ZEND_FILE_LINE_RELAY_CC ZEND_FILE_LINE_ORIG_RELAY_CC);
+			} else {
+				ZEND_MM_CHECK(ZEND_MM_ALIGNED_OFFSET(page_offset, ZEND_MM_PAGE_SIZE) == 0, "zend_mm_heap corrupted");
+				zend_mm_free_large_remote(owner_heap, chunk, page_num, ZEND_MM_LRUN_PAGES(info) ZEND_FILE_LINE_RELAY_CC ZEND_FILE_LINE_ORIG_RELAY_CC);
+			}
 		}
+	} else {
+		// Huge blocks: ownership unknown
+		zend_mm_free_huge(heap, ptr ZEND_FILE_LINE_RELAY_CC ZEND_FILE_LINE_ORIG_RELAY_CC);
+	}
+#else
+	if (UNEXPECTED(page_offset == 0)) {
+		zend_mm_free_huge(heap, ptr ZEND_FILE_LINE_RELAY_CC ZEND_FILE_LINE_ORIG_RELAY_CC);
 	} else {
 		zend_mm_chunk *chunk = (zend_mm_chunk*)ZEND_MM_ALIGNED_BASE(ptr, ZEND_MM_CHUNK_SIZE);
 		int page_num = (int)(page_offset / ZEND_MM_PAGE_SIZE);
 		zend_mm_page_info info = chunk->map[page_num];
 
 		ZEND_MM_CHECK(chunk->heap == heap, "zend_mm_heap corrupted");
+
 		if (EXPECTED(info & ZEND_MM_IS_SRUN)) {
 			zend_mm_free_small(heap, ptr, ZEND_MM_SRUN_BIN_NUM(info));
-		} else /* if (info & ZEND_MM_IS_LRUN) */ {
-			int pages_count = ZEND_MM_LRUN_PAGES(info);
-
+		} else {
 			ZEND_MM_CHECK(ZEND_MM_ALIGNED_OFFSET(page_offset, ZEND_MM_PAGE_SIZE) == 0, "zend_mm_heap corrupted");
-			zend_mm_free_large(heap, chunk, page_num, pages_count);
+			zend_mm_free_large(heap, chunk, page_num, ZEND_MM_LRUN_PAGES(info));
 		}
 	}
+#endif
 }
 
 static size_t zend_mm_size(zend_mm_heap *heap, void *ptr ZEND_FILE_LINE_DC ZEND_FILE_LINE_ORIG_DC)
@@ -1890,8 +1993,12 @@ static size_t zend_mm_del_huge_block(zend_mm_heap *heap, void *ptr ZEND_FILE_LIN
 		prev = list;
 		list = list->next;
 	}
+#ifdef ZTS
+	return 0;  /* Not found - cross-thread huge free */
+#else
 	ZEND_MM_CHECK(0, "zend_mm_heap corrupted");
 	return 0;
+#endif
 }
 
 static size_t zend_mm_get_huge_block_size(zend_mm_heap *heap, void *ptr ZEND_FILE_LINE_DC ZEND_FILE_LINE_ORIG_DC)
@@ -2009,6 +2116,13 @@ static void zend_mm_free_huge(zend_mm_heap *heap, void *ptr ZEND_FILE_LINE_DC ZE
 
 	ZEND_MM_CHECK(ZEND_MM_ALIGNED_OFFSET(ptr, ZEND_MM_CHUNK_SIZE) == 0, "zend_mm_heap corrupted");
 	size = zend_mm_del_huge_block(heap, ptr ZEND_FILE_LINE_RELAY_CC ZEND_FILE_LINE_ORIG_RELAY_CC);
+#ifdef ZTS
+	if (UNEXPECTED(size == 0)) {
+		// Cross-thread free
+		zend_mm_free_huge_remote(heap, ptr ZEND_FILE_LINE_RELAY_CC ZEND_FILE_LINE_ORIG_RELAY_CC);
+		return;
+	}
+#endif
 	zend_mm_chunk_free(heap, ptr, size);
 #if ZEND_MM_STAT || ZEND_MM_LIMIT
 	heap->real_size -= size;
