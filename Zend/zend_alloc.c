@@ -241,7 +241,7 @@ static struct {
 	zend_mm_heap **heaps;        /* dynamic array */
 	int capacity;
 	int count;
-	pthread_mutex_t lock;
+	MUTEX_T lock;
 } zend_mm_global_registry;
 
 /*
@@ -337,7 +337,7 @@ struct _zend_mm_heap {
 
 	/* Cross-thread support */
 	uint32_t           heap_id;                 /* unique heap ID */
-	pthread_t          thread_id;               /* current owner thread */
+	THREAD_T           thread_id;               /* current owner thread */
 };
 
 struct _zend_mm_chunk {
@@ -2068,7 +2068,11 @@ ZEND_API void zend_mm_refresh_key_child(zend_mm_heap *heap)
 
 static void zend_mm_registry_init(void)
 {
-	pthread_mutex_lock(&zend_mm_global_registry.lock);
+	if (zend_mm_global_registry.lock == NULL) {
+		zend_mm_global_registry.lock = tsrm_mutex_alloc();
+	}
+
+	tsrm_mutex_lock(zend_mm_global_registry.lock);
 
 	if (zend_mm_global_registry.heaps == NULL) {
 		zend_mm_global_registry.heaps = (zend_mm_heap**)calloc(ZEND_MM_INITIAL_HEAPS, sizeof(zend_mm_heap*));
@@ -2076,19 +2080,19 @@ static void zend_mm_registry_init(void)
 		zend_mm_global_registry.count = 0;
 	}
 
-	pthread_mutex_unlock(&zend_mm_global_registry.lock);
+	tsrm_mutex_unlock(zend_mm_global_registry.lock);
 }
 
 static uint32_t zend_mm_registry_allocate_id(zend_mm_heap *heap)
 {
-	pthread_mutex_lock(&zend_mm_global_registry.lock);
+	tsrm_mutex_lock(zend_mm_global_registry.lock);
 
 	/* Find free slot */
 	for (int i = 0; i < zend_mm_global_registry.capacity; i++) {
 		if (zend_mm_global_registry.heaps[i] == NULL) {
 			zend_mm_global_registry.heaps[i] = heap;
 			zend_mm_global_registry.count++;
-			pthread_mutex_unlock(&zend_mm_global_registry.lock);
+			tsrm_mutex_unlock(zend_mm_global_registry.lock);
 			return (uint32_t)i;
 		}
 	}
@@ -2102,7 +2106,7 @@ static uint32_t zend_mm_registry_allocate_id(zend_mm_heap *heap)
 	);
 
 	if (new_heaps == NULL) {
-		pthread_mutex_unlock(&zend_mm_global_registry.lock);
+		tsrm_mutex_unlock(zend_mm_global_registry.lock);
 		return (uint32_t)-1;  /* allocation failed */
 	}
 
@@ -2116,20 +2120,20 @@ static uint32_t zend_mm_registry_allocate_id(zend_mm_heap *heap)
 	zend_mm_global_registry.heaps[old_capacity] = heap;
 	zend_mm_global_registry.count++;
 
-	pthread_mutex_unlock(&zend_mm_global_registry.lock);
+	tsrm_mutex_unlock(zend_mm_global_registry.lock);
 	return (uint32_t)old_capacity;
 }
 
 static void zend_mm_registry_free_id(uint32_t heap_id)
 {
-	pthread_mutex_lock(&zend_mm_global_registry.lock);
+	tsrm_mutex_lock(zend_mm_global_registry.lock);
 
 	if (heap_id < zend_mm_global_registry.capacity) {
 		zend_mm_global_registry.heaps[heap_id] = NULL;
 		zend_mm_global_registry.count--;
 	}
 
-	pthread_mutex_unlock(&zend_mm_global_registry.lock);
+	tsrm_mutex_unlock(zend_mm_global_registry.lock);
 }
 #endif /* ZTS */
 
@@ -2193,7 +2197,7 @@ static zend_mm_heap *zend_mm_init(void)
 #ifdef ZTS
 	/* Register heap in global registry */
 	heap->heap_id = zend_mm_registry_allocate_id(heap);
-	heap->thread_id = pthread_self();
+	heap->thread_id = tsrm_thread_id();
 #else
 	heap->heap_id = 0;
 	heap->thread_id = 0;
