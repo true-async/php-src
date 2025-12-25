@@ -277,6 +277,42 @@ static struct {
  *               2 for 5-8, 3 for 9-16 etc) see zend_alloc_sizes.h
  */
 
+#ifdef ZTS
+#include "zend_ring_buffer.h"
+
+/* Message types for cross-thread deallocation */
+typedef enum {
+	ZEND_MM_FREE_SMALL = 0,
+	ZEND_MM_FREE_LARGE = 1,
+	ZEND_MM_FREE_HUGE  = 2
+} zend_mm_free_type;
+
+/* Remote free message */
+typedef struct _zend_mm_remote_free_msg {
+	zend_mm_free_type type;
+	void *ptr;
+	union {
+		struct {
+			int bin_num;
+		} small;
+		struct {
+			zend_mm_chunk *chunk;
+			int page_num;
+			int pages_count;
+		} large;
+		struct {
+			size_t size;
+		} huge;
+	} data;
+} zend_mm_remote_free_msg;
+
+/* Incoming queue from one remote heap */
+typedef struct _zend_mm_incoming_queue {
+	zend_ring_buffer buffer;
+	MUTEX_T lock;  /* protects buffer access */
+} zend_mm_incoming_queue;
+#endif
+
 struct _zend_mm_heap {
 #if ZEND_MM_CUSTOM
 	int                use_custom_heap;
@@ -336,9 +372,16 @@ struct _zend_mm_heap {
 #endif
 	zend_random_bytes_insecure_state rand_state;
 
+#ifdef ZTS
 	/* Cross-thread support */
 	uint32_t           heap_id;                 /* unique heap ID */
 	THREAD_T           thread_id;               /* current owner thread */
+	zend_mm_incoming_queue *incoming_queues;    /* array[heap_id] of incoming queues */
+	int                incoming_queues_capacity; /* size of incoming_queues array */
+#else
+	uint32_t           heap_id;                 /* always 0 in non-ZTS */
+	THREAD_T           thread_id;               /* always 0 in non-ZTS */
+#endif
 };
 
 struct _zend_mm_chunk {
@@ -1491,33 +1534,187 @@ static zend_always_inline void zend_mm_free_small(zend_mm_heap *heap, void *ptr,
 
 #ifdef ZTS
 /**
- * Cross-thread free for small blocks (stub for phase 2).
- * Will be implemented with triple buffering queues.
+ * Get or create incoming queue from sender heap to owner heap.
+ * Uses lazy allocation - queue created only on first remote free.
+ */
+static zend_mm_incoming_queue *zend_mm_get_or_create_incoming_queue(zend_mm_heap *owner_heap, uint32_t sender_heap_id)
+{
+	/* Ensure capacity */
+	if (UNEXPECTED(sender_heap_id >= owner_heap->incoming_queues_capacity)) {
+		int new_capacity = sender_heap_id + 1;
+		new_capacity = (new_capacity + 15) & ~15;  /* round up to 16 */
+
+		zend_mm_incoming_queue *new_queues = (zend_mm_incoming_queue *)realloc(
+			owner_heap->incoming_queues,
+			new_capacity * sizeof(zend_mm_incoming_queue)
+		);
+
+		if (UNEXPECTED(!new_queues)) {
+			return NULL;
+		}
+
+		/* Zero-initialize new slots */
+		memset(new_queues + owner_heap->incoming_queues_capacity, 0,
+			(new_capacity - owner_heap->incoming_queues_capacity) * sizeof(zend_mm_incoming_queue));
+
+		owner_heap->incoming_queues = new_queues;
+		owner_heap->incoming_queues_capacity = new_capacity;
+	}
+
+	zend_mm_incoming_queue *queue = &owner_heap->incoming_queues[sender_heap_id];
+
+	/* Lazy initialize queue */
+	if (UNEXPECTED(!queue->lock)) {
+		zend_ring_buffer_init(&queue->buffer, 32, sizeof(void*), false);  /* 32 pointers, non-persistent */
+		queue->lock = tsrm_mutex_alloc();
+	}
+
+	return queue;
+}
+
+/**
+ * Cross-thread free for small blocks.
+ * Enqueues message to owner heap's incoming queue.
  */
 static void zend_mm_free_small_remote(zend_mm_heap *owner_heap, void *ptr, int bin_num ZEND_FILE_LINE_DC ZEND_FILE_LINE_ORIG_DC)
 {
-	/* TODO: Phase 2 - implement triple buffering enqueue */
-	zend_mm_panic("Cross-thread free not yet implemented (phase 2)");
+	zend_mm_heap *current_heap = zend_mm_get_heap();
+	zend_mm_incoming_queue *queue = zend_mm_get_or_create_incoming_queue(owner_heap, current_heap->heap_id);
+
+	if (UNEXPECTED(!queue)) {
+		zend_mm_panic("Failed to create incoming queue for remote free");
+		return;
+	}
+
+	/* Allocate message */
+	zend_mm_remote_free_msg *msg = (zend_mm_remote_free_msg *)emalloc(sizeof(zend_mm_remote_free_msg));
+	msg->type = ZEND_MM_FREE_SMALL;
+	msg->ptr = ptr;
+	msg->data.small.bin_num = bin_num;
+
+	/* Enqueue to owner's incoming queue */
+	tsrm_mutex_lock(queue->lock);
+	zend_result result = zend_ring_buffer_push(&queue->buffer, &msg, true);
+	tsrm_mutex_unlock(queue->lock);
+
+	if (UNEXPECTED(result == FAILURE)) {
+		efree(msg);
+		zend_mm_panic("Failed to enqueue remote free message");
+	}
 }
 
 /**
- * Cross-thread free for large blocks (stub for phase 2).
- * Will be implemented with triple buffering queues.
+ * Cross-thread free for large blocks.
+ * Enqueues message to owner heap's incoming queue.
  */
 static void zend_mm_free_large_remote(zend_mm_heap *owner_heap, zend_mm_chunk *chunk, int page_num, int pages_count ZEND_FILE_LINE_DC ZEND_FILE_LINE_ORIG_DC)
 {
-	/* TODO: Phase 2 - implement triple buffering enqueue */
-	zend_mm_panic("Cross-thread free not yet implemented (phase 2)");
+	zend_mm_heap *current_heap = zend_mm_get_heap();
+	zend_mm_incoming_queue *queue = zend_mm_get_or_create_incoming_queue(owner_heap, current_heap->heap_id);
+
+	if (UNEXPECTED(!queue)) {
+		zend_mm_panic("Failed to create incoming queue for remote free");
+		return;
+	}
+
+	/* Allocate message */
+	zend_mm_remote_free_msg *msg = (zend_mm_remote_free_msg *)emalloc(sizeof(zend_mm_remote_free_msg));
+	msg->type = ZEND_MM_FREE_LARGE;
+	msg->ptr = ZEND_MM_PAGE_ADDR(chunk, page_num);
+	msg->data.large.chunk = chunk;
+	msg->data.large.page_num = page_num;
+	msg->data.large.pages_count = pages_count;
+
+	/* Enqueue to owner's incoming queue */
+	tsrm_mutex_lock(queue->lock);
+	zend_result result = zend_ring_buffer_push(&queue->buffer, &msg, true);
+	tsrm_mutex_unlock(queue->lock);
+
+	if (UNEXPECTED(result == FAILURE)) {
+		efree(msg);
+		zend_mm_panic("Failed to enqueue remote free message");
+	}
 }
 
 /**
- * Cross-thread free for huge blocks (stub for future phase).
- * Requires ownership detection implementation for huge blocks.
+ * Cross-thread free for huge blocks.
+ * TODO: Phase 3 - implement global free huge pool with recycling.
+ * For now, enqueue message (size will be determined by owner).
  */
 static void zend_mm_free_huge_remote(zend_mm_heap *owner_heap, void *ptr ZEND_FILE_LINE_DC ZEND_FILE_LINE_ORIG_DC)
 {
-	/* TODO: Implement global free huge pool with recycling */
-	zend_mm_panic("Cross-thread free for huge blocks not supported");
+	zend_mm_heap *current_heap = zend_mm_get_heap();
+	zend_mm_incoming_queue *queue = zend_mm_get_or_create_incoming_queue(owner_heap, current_heap->heap_id);
+
+	if (UNEXPECTED(!queue)) {
+		zend_mm_panic("Failed to create incoming queue for remote free");
+		return;
+	}
+
+	/* Allocate message */
+	zend_mm_remote_free_msg *msg = (zend_mm_remote_free_msg *)emalloc(sizeof(zend_mm_remote_free_msg));
+	msg->type = ZEND_MM_FREE_HUGE;
+	msg->ptr = ptr;
+	msg->data.huge.size = 0;  /* owner will lookup size */
+
+	/* Enqueue to owner's incoming queue */
+	tsrm_mutex_lock(queue->lock);
+	zend_result result = zend_ring_buffer_push(&queue->buffer, &msg, true);
+	tsrm_mutex_unlock(queue->lock);
+
+	if (UNEXPECTED(result == FAILURE)) {
+		efree(msg);
+		zend_mm_panic("Failed to enqueue remote free message");
+	}
+}
+
+/**
+ * Collect and process all pending remote frees for this heap.
+ * Should be called periodically by heap owner thread.
+ */
+static void zend_mm_collect_remote_frees(zend_mm_heap *heap)
+{
+	if (!heap->incoming_queues) {
+		return;  /* no queues allocated yet */
+	}
+
+	/* Process all incoming queues */
+	for (int i = 0; i < heap->incoming_queues_capacity; i++) {
+		zend_mm_incoming_queue *queue = &heap->incoming_queues[i];
+
+		if (!queue->lock) {
+			continue;  /* queue not initialized */
+		}
+
+		/* Lock and swap buffer */
+		tsrm_mutex_lock(queue->lock);
+
+		/* Process all messages in queue */
+		void *msg_ptr;
+		while (zend_ring_buffer_pop(&queue->buffer, &msg_ptr) == SUCCESS) {
+			zend_mm_remote_free_msg *msg = (zend_mm_remote_free_msg *)msg_ptr;
+
+			switch (msg->type) {
+				case ZEND_MM_FREE_SMALL:
+					zend_mm_free_small(heap, msg->ptr, msg->data.small.bin_num);
+					break;
+
+				case ZEND_MM_FREE_LARGE:
+					zend_mm_free_large(heap, msg->data.large.chunk,
+						msg->data.large.page_num, msg->data.large.pages_count);
+					break;
+
+				case ZEND_MM_FREE_HUGE:
+					zend_mm_free_huge(heap, msg->ptr ZEND_FILE_LINE_CC ZEND_FILE_LINE_EMPTY_CC);
+					break;
+			}
+
+			/* Free message */
+			efree(msg);
+		}
+
+		tsrm_mutex_unlock(queue->lock);
+	}
 }
 #endif
 
@@ -2312,6 +2509,10 @@ static zend_mm_heap *zend_mm_init(void)
 	/* Register heap in global registry */
 	heap->heap_id = zend_mm_registry_allocate_id(heap);
 	heap->thread_id = tsrm_thread_id();
+
+	/* Initialize incoming queues array (lazy allocation) */
+	heap->incoming_queues = NULL;
+	heap->incoming_queues_capacity = 0;
 #else
 	heap->heap_id = 0;
 	heap->thread_id = 0;
@@ -2722,6 +2923,19 @@ ZEND_API void zend_mm_shutdown(zend_mm_heap *heap, bool full, bool silent)
 
 	if (full) {
 #ifdef ZTS
+		/* Cleanup incoming queues */
+		if (heap->incoming_queues) {
+			for (int i = 0; i < heap->incoming_queues_capacity; i++) {
+				zend_mm_incoming_queue *queue = &heap->incoming_queues[i];
+				if (queue->lock) {
+					zend_ring_buffer_destroy(&queue->buffer);
+					tsrm_mutex_free(queue->lock);
+				}
+			}
+			free(heap->incoming_queues);
+			heap->incoming_queues = NULL;
+		}
+
 		/* Unregister from global registry */
 		zend_mm_registry_free_id(heap->heap_id);
 #endif
