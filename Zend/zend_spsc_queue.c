@@ -60,17 +60,35 @@ static void zend_spsc_buffer_free(zend_spsc_buffer *buf, bool persistent)
 static zend_spsc_buffer* zend_spsc_buffer_realloc(zend_spsc_buffer *buf, size_t new_capacity, bool persistent)
 {
 	void **new_data;
+	size_t old_capacity, head, tail, count;
 
 	ZEND_ASSERT((new_capacity & (new_capacity - 1)) == 0); /* power of 2 */
 	ZEND_ASSERT(new_capacity > buf->capacity);
 
-	new_data = (void**)perealloc(buf->data, sizeof(void*) * new_capacity, persistent);
+	old_capacity = buf->capacity;
+	head = zend_atomic_size_t_load_ex(&buf->head);
+	tail = buf->tail;
+	count = head - tail;
+
+	/* Allocate new buffer */
+	new_data = (void**)pemalloc(sizeof(void*) * new_capacity, persistent);
 	if (UNEXPECTED(!new_data)) {
 		return NULL;
 	}
 
+	/* Copy data unwrapped (linearize the ring buffer) */
+	for (size_t i = 0; i < count; i++) {
+		new_data[i] = buf->data[(tail + i) & (old_capacity - 1)];
+	}
+
+	/* Free old buffer */
+	pefree(buf->data, persistent);
+
+	/* Update buffer state */
 	buf->data = new_data;
 	buf->capacity = new_capacity;
+	zend_atomic_size_t_store_ex(&buf->head, count);
+	buf->tail = 0;
 
 	return buf;
 }

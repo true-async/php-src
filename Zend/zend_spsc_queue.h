@@ -39,8 +39,9 @@
 #define ZEND_ASSERT(x) assert(x)
 #define EXPECTED(x) (x)
 #define UNEXPECTED(x) (x)
+#define ZEND_API
 
-/* Standalone atomic pointer type */
+/* Standalone atomic types */
 typedef struct {
 	_Atomic(void*) value;
 } zend_atomic_ptr;
@@ -48,6 +49,10 @@ typedef struct {
 typedef struct {
 	_Atomic(int) value;
 } zend_atomic_int;
+
+typedef struct {
+	_Atomic(size_t) value;
+} zend_atomic_size_t;
 
 static inline void* zend_atomic_ptr_load_ex(const zend_atomic_ptr *obj) {
 	return atomic_load_explicit(&obj->value, memory_order_acquire);
@@ -70,6 +75,18 @@ static inline int zend_atomic_int_load_ex(const zend_atomic_int *obj) {
 
 static inline void zend_atomic_int_store_ex(zend_atomic_int *obj, int desired) {
 	atomic_store_explicit(&obj->value, desired, memory_order_release);
+}
+
+static inline size_t zend_atomic_size_t_load_ex(const zend_atomic_size_t *obj) {
+	return atomic_load_explicit(&obj->value, memory_order_acquire);
+}
+
+static inline void zend_atomic_size_t_store_ex(zend_atomic_size_t *obj, size_t desired) {
+	atomic_store_explicit(&obj->value, desired, memory_order_release);
+}
+
+static inline size_t zend_atomic_size_t_fetch_add_ex(zend_atomic_size_t *obj, size_t value) {
+	return atomic_fetch_add_explicit(&obj->value, value, memory_order_acq_rel);
 }
 
 #else

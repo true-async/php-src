@@ -107,16 +107,29 @@ ZEND_API zend_result zend_mt_ring_buffer_push(zend_mt_ring_buffer *buffer, const
 
 	if (UNEXPECTED(available == 0)) {
 		/* Buffer full - need resize */
-		size_t new_capacity = buffer->capacity * 2;
-		void *new_data = perealloc(buffer->data, new_capacity * buffer->item_size, buffer->persistent);
+		size_t old_capacity = buffer->capacity;
+		size_t new_capacity = old_capacity * 2;
+		size_t count = head - tail_snap;
+		void *new_data = pemalloc(new_capacity * buffer->item_size, buffer->persistent);
 
 		if (UNEXPECTED(!new_data)) {
 			MT_RING_BUFFER_ERROR("Failed to resize MT ring buffer");
 			return FAILURE;
 		}
 
+		/* Copy data unwrapped (linearize the ring buffer) */
+		for (size_t i = 0; i < count; i++) {
+			char *src = (char*)buffer->data + ((tail_snap + i) & (old_capacity - 1)) * buffer->item_size;
+			char *dest = (char*)new_data + i * buffer->item_size;
+			memcpy(dest, src, buffer->item_size);
+		}
+
+		/* Free old buffer and update state */
+		pefree(buffer->data, buffer->persistent);
 		buffer->data = new_data;
 		buffer->capacity = new_capacity;
+		zend_atomic_size_t_store_ex(&buffer->head, count);
+		buffer->tail = 0;
 
 		/* Retry after resize */
 		head = zend_atomic_size_t_load_ex(&buffer->head);

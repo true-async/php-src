@@ -54,6 +54,15 @@ typedef int zend_result;
 #define EXPECTED(x) (x)
 #define UNEXPECTED(x) (x)
 #define zend_always_inline static inline
+#define ZEND_API
+
+#ifdef __cplusplus
+#define BEGIN_EXTERN_C() extern "C" {
+#define END_EXTERN_C() }
+#else
+#define BEGIN_EXTERN_C()
+#define END_EXTERN_C()
+#endif
 
 /* Standalone atomic size_t */
 typedef struct {
@@ -139,7 +148,7 @@ ZEND_API size_t zend_mt_ring_buffer_count(const zend_mt_ring_buffer *buffer);
  *
  * SPSC-safe: Writer increments head atomically, reader never touches head.
  */
-static zend_always_inline zend_result zend_mt_ring_buffer_push_ptr_fast(zend_mt_ring_buffer *buffer, void *ptr)
+zend_always_inline zend_result zend_mt_ring_buffer_push_ptr_fast(zend_mt_ring_buffer *buffer, void *ptr)
 {
 	size_t head, tail_snap, available, slot;
 
@@ -168,7 +177,7 @@ static zend_always_inline zend_result zend_mt_ring_buffer_push_ptr_fast(zend_mt_
  *
  * SPSC-safe: Reader owns tail, writer never touches it.
  */
-static zend_always_inline zend_result zend_mt_ring_buffer_pop_ptr_fast(zend_mt_ring_buffer *buffer, void **ptr)
+zend_always_inline zend_result zend_mt_ring_buffer_pop_ptr_fast(zend_mt_ring_buffer *buffer, void **ptr)
 {
 	size_t head, tail;
 
@@ -194,7 +203,7 @@ static zend_always_inline zend_result zend_mt_ring_buffer_pop_ptr_fast(zend_mt_r
 /**
  * Check if buffer is not empty (fast inline version).
  */
-static zend_always_inline bool zend_mt_ring_buffer_is_not_empty(const zend_mt_ring_buffer *buffer)
+zend_always_inline bool zend_mt_ring_buffer_is_not_empty(const zend_mt_ring_buffer *buffer)
 {
 	size_t head = zend_atomic_size_t_load_ex(&buffer->head);
 	return buffer->tail < head;
@@ -204,7 +213,7 @@ static zend_always_inline bool zend_mt_ring_buffer_is_not_empty(const zend_mt_ri
  * Clear buffer (reset to empty state).
  * WARNING: Only safe if called by reader thread!
  */
-static zend_always_inline void zend_mt_ring_buffer_clean(zend_mt_ring_buffer *buffer)
+zend_always_inline void zend_mt_ring_buffer_clean(zend_mt_ring_buffer *buffer)
 {
 	size_t head = zend_atomic_size_t_load_ex(&buffer->head);
 	buffer->tail = head; /* Catch up to writer */
