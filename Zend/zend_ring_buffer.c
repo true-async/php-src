@@ -231,6 +231,9 @@ ZEND_API zend_result zend_ring_buffer_realloc(zend_ring_buffer *buffer, size_t n
 
 	/*
 	 * Case 1: Empty buffer - simple replacement
+	 *
+	 * Before: [  |  |  |  ]  head=tail=0
+	 * After:  [  |  |  |  |  |  ]  head=tail=0
 	 */
 	if (zend_ring_buffer_is_empty(buffer)) {
 		void *new_data = pemalloc(new_count * buffer->item_size, buffer->persistent);
@@ -252,10 +255,22 @@ ZEND_API zend_result zend_ring_buffer_realloc(zend_ring_buffer *buffer, size_t n
 
 	/*
 	 * Case 2: Linear order (head >= tail) - data is contiguous
+	 *
+	 * Example:
+	 * Before: [  | A| B| C|  |  ]  tail=1, head=4, count=3
+	 *              ^     ^
+	 *            tail  head
 	 */
 	if (buffer->head >= buffer->tail) {
 		if (EXPECTED(new_count > buffer->capacity)) {
-			/* Increasing size - can use realloc */
+			/*
+			 * Increasing size - can use realloc safely
+			 * Data layout won't change, just more space at the end
+			 *
+			 * After:  [  | A| B| C|  |  |  |  |  ]  tail=1, head=4
+			 *              ^     ^
+			 *            tail  head
+			 */
 			void *new_data = perealloc(buffer->data,
 			                           new_count * buffer->item_size,
 			                           buffer->persistent);
@@ -268,7 +283,14 @@ ZEND_API zend_result zend_ring_buffer_realloc(zend_ring_buffer *buffer, size_t n
 			buffer->capacity = new_count;
 			/* head and tail remain same */
 		} else {
-			/* Decreasing size - copy data to new buffer */
+			/*
+			 * Decreasing size - use memcpy to copy only needed data
+			 *
+			 * Copy [tail...head) to beginning of new buffer
+			 * After:  [ A| B| C|  ]  tail=0, head=3
+			 *           ^     ^
+			 *         tail  head
+			 */
 			void *new_data = pemalloc(new_count * buffer->item_size, buffer->persistent);
 			if (UNEXPECTED(new_data == NULL)) {
 				RING_BUFFER_ERROR("Failed to reallocate ring buffer");
@@ -289,7 +311,19 @@ ZEND_API zend_result zend_ring_buffer_realloc(zend_ring_buffer *buffer, size_t n
 	} else {
 		/*
 		 * Case 3: Wrapped order (head < tail) - data wraps around
-		 * Need to unwrap: copy [tail...end] then [start...head)
+		 *
+		 * Example:
+		 * Before: [ C| D|  |  | A| B]  tail=4, head=2, count=4
+		 *              ^     ^
+		 *            head  tail
+		 *
+		 * Need to copy in two parts:
+		 * Part 1: [A, B] from positions [tail...end]
+		 * Part 2: [C, D] from positions [start...head)
+		 *
+		 * After:  [ A| B| C| D|  |  ]  tail=0, head=4
+		 *           ^           ^
+		 *         tail        head
 		 */
 		void *new_data = pemalloc(new_count * buffer->item_size, buffer->persistent);
 		if (UNEXPECTED(new_data == NULL)) {
@@ -297,13 +331,13 @@ ZEND_API zend_result zend_ring_buffer_realloc(zend_ring_buffer *buffer, size_t n
 			return FAILURE;
 		}
 
-		/* First part: [tail...end] */
+		/* First part: copy [tail...end] to beginning of new buffer */
 		size_t first_part_count = buffer->capacity - buffer->tail;
 		memcpy(new_data,
 		       (char*)buffer->data + buffer->tail * buffer->item_size,
 		       first_part_count * buffer->item_size);
 
-		/* Second part: [start...head) */
+		/* Second part: copy [start...head) after first part */
 		memcpy((char*)new_data + first_part_count * buffer->item_size,
 		       buffer->data,
 		       buffer->head * buffer->item_size);
@@ -353,13 +387,94 @@ ZEND_API zend_result zend_ring_buffer_push(zend_ring_buffer *buffer, const void 
 		return FAILURE;
 	}
 
+	/*
+	 * Classic circular buffer push operation:
+	 * 1. Store data at head position
+	 * 2. Advance head to next position
+	 *
+	 * Visual example:
+	 * Before: [ A| B|  |  ]  head=2, tail=0
+	 *              ^
+	 *            head
+	 *
+	 * After:  [ A| B| C|  ]  head=3, tail=0
+	 *                 ^
+	 *               head
+	 */
 	ZEND_ASSERT(!zend_ring_buffer_is_full(buffer) && "Buffer should not be full at this point");
 
-	/* Copy data and advance head */
 	memcpy((char*)buffer->data + buffer->head * buffer->item_size, value, buffer->item_size);
 	buffer->head = next_index(buffer->head, buffer->capacity);
 
 	ZEND_ASSERT(buffer->head < buffer->capacity && "Head index should be valid after increment");
+
+	return SUCCESS;
+}
+
+/**
+ * Push a value to the front (beginning) of the ring buffer.
+ * This means inserting before the current tail position.
+ * If the buffer is full and cannot resize, falls back to normal push.
+ */
+ZEND_API zend_result zend_ring_buffer_push_front(zend_ring_buffer *buffer, const void *value, bool should_resize)
+{
+	ZEND_ASSERT(buffer != NULL && "Buffer cannot be NULL");
+	ZEND_ASSERT(buffer->data != NULL && "Buffer data cannot be NULL");
+	ZEND_ASSERT(value != NULL && "Value cannot be NULL");
+	ZEND_ASSERT(buffer->head < buffer->capacity && "Head index out of bounds");
+	ZEND_ASSERT(buffer->tail < buffer->capacity && "Tail index out of bounds");
+	ZEND_ASSERT(buffer->item_size > 0 && "Item size must be positive");
+
+	/* First check if resize is needed */
+	if (should_resize) {
+		bool need_increase = zend_ring_buffer_is_full(buffer);
+		bool need_decrease = !need_increase && should_decrease(buffer);
+
+		if (need_increase || need_decrease) {
+			if (zend_ring_buffer_realloc(buffer, 0) == FAILURE) {
+				return FAILURE;
+			}
+		}
+	}
+
+	/* If buffer is full after potential resize, fall back to normal push */
+	if (zend_ring_buffer_is_full(buffer)) {
+		if (should_resize) {
+			/* Should not happen if resize worked correctly */
+			RING_BUFFER_ERROR("Buffer is still full after resize attempt");
+			return FAILURE;
+		} else {
+			/* Fall back to normal push behavior */
+			return zend_ring_buffer_push(buffer, value, false);
+		}
+	}
+
+	/*
+	 * Push front operation:
+	 * 1. Move tail backward (with wraparound)
+	 * 2. Store data at new tail position
+	 *
+	 * Visual example:
+	 * Before: [ A| B| C|  ]  head=3, tail=0
+	 *           ^
+	 *         tail
+	 *
+	 * After:  [X| A| B| C]  head=3, tail=3 (wrapped around)
+	 *                   ^
+	 *                 tail
+	 */
+	ZEND_ASSERT(!zend_ring_buffer_is_full(buffer) && "Buffer should not be full at this point");
+
+	/* Move tail backward (with wraparound) */
+	if (buffer->tail == 0) {
+		buffer->tail = buffer->capacity - 1;
+	} else {
+		buffer->tail--;
+	}
+
+	memcpy((char*)buffer->data + buffer->tail * buffer->item_size, value, buffer->item_size);
+
+	ZEND_ASSERT(buffer->tail < buffer->capacity && "Tail index should be valid after decrement");
 
 	return SUCCESS;
 }
@@ -377,10 +492,27 @@ ZEND_API zend_result zend_ring_buffer_pop(zend_ring_buffer *buffer, void *value)
 	ZEND_ASSERT(buffer->item_size > 0 && "Item size must be positive");
 
 	if (zend_ring_buffer_is_empty(buffer)) {
+		RING_BUFFER_ERROR("Cannot pop from empty ring buffer");
 		return FAILURE;
 	}
 
-	/* Copy data and advance tail */
+	/*
+	 * Classic circular buffer pop operation:
+	 * 1. Read data from tail position
+	 * 2. Advance tail to next position
+	 *
+	 * Visual example:
+	 * Before: [ A| B| C|  ]  head=3, tail=0
+	 *           ^
+	 *         tail
+	 *
+	 * After:  [ A| B| C|  ]  head=3, tail=1
+	 *              ^
+	 *            tail
+	 * (A is returned, but memory isn't cleared for performance)
+	 */
+	ZEND_ASSERT(!zend_ring_buffer_is_empty(buffer) && "Buffer should not be empty at this point");
+
 	memcpy(value, (char*)buffer->data + buffer->tail * buffer->item_size, buffer->item_size);
 	buffer->tail = next_index(buffer->tail, buffer->capacity);
 

@@ -118,6 +118,7 @@ ZEND_API void zend_ring_buffer_free(zend_ring_buffer *buffer);
 
 /* Core operations */
 ZEND_API zend_result zend_ring_buffer_push(zend_ring_buffer *buffer, const void *value, bool should_resize);
+ZEND_API zend_result zend_ring_buffer_push_front(zend_ring_buffer *buffer, const void *value, bool should_resize);
 ZEND_API zend_result zend_ring_buffer_pop(zend_ring_buffer *buffer, void *value);
 ZEND_API zend_result zend_ring_buffer_realloc(zend_ring_buffer *buffer, size_t new_count);
 
