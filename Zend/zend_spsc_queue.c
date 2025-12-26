@@ -34,7 +34,7 @@ static zend_spsc_buffer* zend_spsc_buffer_alloc(size_t capacity, bool persistent
 		return NULL;
 	}
 
-	atomic_store_explicit(&buf->head, 0, memory_order_relaxed);
+	zend_atomic_size_t_store_ex(&buf->head, 0);
 	buf->tail = 0;
 	buf->capacity = capacity;
 
@@ -198,7 +198,7 @@ ZEND_API bool zend_spsc_queue_push(zend_spsc_queue *q, void *item)
 	}
 
 	/* Conservative check for available space */
-	head = atomic_load_explicit(&buf->head, memory_order_relaxed);
+	head = zend_atomic_size_t_load_ex(&buf->head);
 	tail_snap = buf->tail; /* Safe to read directly - only reader modifies */
 	available = buf->capacity - (head - tail_snap);
 
@@ -214,7 +214,7 @@ ZEND_API bool zend_spsc_queue_push(zend_spsc_queue *q, void *item)
 	}
 
 	/* Fetch-add to claim slot (0 CAS!) */
-	slot = atomic_fetch_add_explicit(&buf->head, 1, memory_order_acq_rel);
+	slot = zend_atomic_size_t_fetch_add_ex(&buf->head, 1);
 
 	/* Write item to ring buffer */
 	buf->data[slot & (buf->capacity - 1)] = item;
@@ -248,7 +248,7 @@ ZEND_API size_t zend_spsc_queue_pop_batch(zend_spsc_queue *q, void **items, size
 		}
 
 		/* We now own the buffer, read all items */
-		head = atomic_load_explicit(&buf->head, memory_order_acquire);
+		head = zend_atomic_size_t_load_ex(&buf->head);
 		tail = buf->tail;
 
 		while (tail < head && count < max_count) {
@@ -259,7 +259,7 @@ ZEND_API size_t zend_spsc_queue_pop_batch(zend_spsc_queue *q, void **items, size
 		buf->tail = tail;
 
 		/* Reset buffer for reuse */
-		buf->head = 0;
+		zend_atomic_size_t_store_ex(&buf->head, 0);
 		buf->tail = 0;
 
 		/* Return buffer via CAS */
@@ -276,7 +276,7 @@ ZEND_API size_t zend_spsc_queue_pop_batch(zend_spsc_queue *q, void **items, size
 			return 0; /* No buffer available */
 		}
 
-		head = atomic_load_explicit(&buf->head, memory_order_acquire);
+		head = zend_atomic_size_t_load_ex(&buf->head);
 		tail = buf->tail;
 
 		while (tail < head && count < max_count) {

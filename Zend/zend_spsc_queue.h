@@ -90,8 +90,8 @@ static inline void zend_atomic_int_store_ex(zend_atomic_int *obj, int desired) {
  */
 typedef struct _zend_spsc_buffer {
 	void **data;                  /* ring buffer storage */
-	_Atomic(size_t) head;        /* writer position */
-	size_t tail;                 /* reader position */
+	zend_atomic_size_t head;     /* writer position (atomic) */
+	size_t tail;                 /* reader position (reader-only) */
 	size_t capacity;             /* power of 2 */
 } zend_spsc_buffer;
 
