@@ -59,7 +59,7 @@ static zend_always_inline size_t next_index(size_t index, size_t capacity)
  */
 static zend_always_inline bool should_decrease(const zend_ring_buffer *buffer)
 {
-	return buffer->auto_optimize &&
+	return (buffer->flags & ZEND_RING_BUFFER_AUTO_SHRINK) &&
 	       !zend_ring_buffer_is_empty(buffer) &&
 	       zend_ring_buffer_count(buffer) < buffer->decrease_threshold;
 }
@@ -76,9 +76,9 @@ static void recalc_decrease_threshold(zend_ring_buffer *buffer, size_t new_capac
 }
 
 /**
- * Initialize a ring buffer.
+ * Initialize a ring buffer with flags.
  */
-ZEND_API zend_result zend_ring_buffer_init(zend_ring_buffer *buffer, size_t count, size_t item_size, bool persistent)
+ZEND_API zend_result zend_ring_buffer_init(zend_ring_buffer *buffer, size_t count, size_t item_size, uint32_t flags)
 {
 	if (item_size == 0) {
 		RING_BUFFER_ERROR("Item size must be greater than zero");
@@ -89,8 +89,9 @@ ZEND_API zend_result zend_ring_buffer_init(zend_ring_buffer *buffer, size_t coun
 		count = MINIMUM_CAPACITY;
 	}
 
-	/* Ensure count is power of 2 */
 	count = zend_ring_buffer_next_power_of_2(count);
+
+	bool persistent = (flags & ZEND_RING_BUFFER_PERSISTENT) != 0;
 
 	void *data = pemalloc(count * item_size, persistent);
 	if (UNEXPECTED(data == NULL)) {
@@ -101,8 +102,7 @@ ZEND_API zend_result zend_ring_buffer_init(zend_ring_buffer *buffer, size_t coun
 	buffer->item_size = item_size;
 	buffer->min_size = count;
 	buffer->capacity = count;
-	buffer->auto_optimize = true;  /* enabled by default */
-	buffer->persistent = persistent;
+	buffer->flags = flags;
 	buffer->data = data;
 	buffer->head = 0;
 	buffer->tail = 0;
@@ -118,20 +118,20 @@ ZEND_API zend_result zend_ring_buffer_init(zend_ring_buffer *buffer, size_t coun
 ZEND_API void zend_ring_buffer_destroy(zend_ring_buffer *buffer)
 {
 	if (buffer->data != NULL) {
-		pefree(buffer->data, buffer->persistent);
+		bool persistent = (buffer->flags & ZEND_RING_BUFFER_PERSISTENT) != 0;
+		pefree(buffer->data, persistent);
 		buffer->data = NULL;
 	}
 }
 
-/**
- * Allocate and initialize a new ring buffer.
- */
-ZEND_API zend_ring_buffer *zend_ring_buffer_new(size_t count, size_t item_size, bool persistent)
+ZEND_API zend_ring_buffer *zend_ring_buffer_new(size_t count, size_t item_size, uint32_t flags)
 {
 	if (item_size == 0) {
 		RING_BUFFER_ERROR("Item size must be greater than zero");
 		return NULL;
 	}
+
+	bool persistent = (flags & ZEND_RING_BUFFER_PERSISTENT) != 0;
 
 	zend_ring_buffer *buffer = (zend_ring_buffer *)pemalloc(sizeof(zend_ring_buffer), persistent);
 	if (UNEXPECTED(buffer == NULL)) {
@@ -139,7 +139,7 @@ ZEND_API zend_ring_buffer *zend_ring_buffer_new(size_t count, size_t item_size, 
 		return NULL;
 	}
 
-	if (UNEXPECTED(zend_ring_buffer_init(buffer, count, item_size, persistent) == FAILURE)) {
+	if (UNEXPECTED(zend_ring_buffer_init(buffer, count, item_size, flags) == FAILURE)) {
 		pefree(buffer, persistent);
 		return NULL;
 	}
@@ -147,12 +147,9 @@ ZEND_API zend_ring_buffer *zend_ring_buffer_new(size_t count, size_t item_size, 
 	return buffer;
 }
 
-/**
- * Free ring buffer structure and its data.
- */
 ZEND_API void zend_ring_buffer_free(zend_ring_buffer *buffer)
 {
-	bool persistent = buffer->persistent;
+	bool persistent = (buffer->flags & ZEND_RING_BUFFER_PERSISTENT) != 0;
 	zend_ring_buffer_destroy(buffer);
 	pefree(buffer, persistent);
 }
@@ -546,3 +543,73 @@ ZEND_API zend_result zend_ring_buffer_pop_zval(zend_ring_buffer *buffer, zval *v
 	return zend_ring_buffer_pop(buffer, value);
 }
 #endif /* !ZEND_RING_BUFFER_STANDALONE */
+
+ZEND_API zend_result zend_ring_buffer_push_atomic(zend_ring_buffer *buffer, const void *value)
+{
+	ZEND_ASSERT(buffer->flags & ZEND_RING_BUFFER_ATOMIC_HEAD);
+
+	size_t head, tail_snap, available, slot;
+	bool persistent = (buffer->flags & ZEND_RING_BUFFER_PERSISTENT) != 0;
+
+	head = zend_atomic_size_t_load_ex(&buffer->head_atomic);
+	tail_snap = buffer->tail;
+	available = buffer->capacity - (head - tail_snap);
+
+	if (UNEXPECTED(available == 0)) {
+		if (!(buffer->flags & ZEND_RING_BUFFER_AUTO_GROW)) {
+			return FAILURE;
+		}
+
+		size_t old_capacity = buffer->capacity;
+		size_t new_capacity = old_capacity * 2;
+		size_t count = head - tail_snap;
+		void *new_data = pemalloc(new_capacity * buffer->item_size, persistent);
+
+		if (UNEXPECTED(!new_data)) {
+			RING_BUFFER_ERROR("Failed to resize ring buffer");
+			return FAILURE;
+		}
+
+		for (size_t i = 0; i < count; i++) {
+			char *src = (char*)buffer->data + ((tail_snap + i) & (old_capacity - 1)) * buffer->item_size;
+			char *dest = (char*)new_data + i * buffer->item_size;
+			memcpy(dest, src, buffer->item_size);
+		}
+
+		pefree(buffer->data, persistent);
+		buffer->data = new_data;
+		buffer->capacity = new_capacity;
+		zend_atomic_size_t_store_ex(&buffer->head_atomic, count);
+		buffer->tail = 0;
+
+		head = zend_atomic_size_t_load_ex(&buffer->head_atomic);
+	}
+
+	slot = zend_atomic_size_t_fetch_add_ex(&buffer->head_atomic, 1);
+
+	void *dest = (char*)buffer->data + (slot & (buffer->capacity - 1)) * buffer->item_size;
+	memcpy(dest, value, buffer->item_size);
+
+	return SUCCESS;
+}
+
+ZEND_API zend_result zend_ring_buffer_pop_atomic(zend_ring_buffer *buffer, void *value)
+{
+	ZEND_ASSERT(buffer->flags & ZEND_RING_BUFFER_ATOMIC_HEAD);
+
+	size_t head, tail;
+
+	head = zend_atomic_size_t_load_ex(&buffer->head_atomic);
+	tail = buffer->tail;
+
+	if (UNEXPECTED(tail >= head)) {
+		return FAILURE;
+	}
+
+	void *src = (char*)buffer->data + (tail & (buffer->capacity - 1)) * buffer->item_size;
+	memcpy(value, src, buffer->item_size);
+
+	buffer->tail = tail + 1;
+
+	return SUCCESS;
+}
