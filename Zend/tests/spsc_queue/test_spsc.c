@@ -39,10 +39,10 @@ static void test_push_pop_single(void **state)
 	bool result = zend_spsc_queue_push(&q, item);
 	assert_true(result);
 
-	void *popped[1];
-	size_t count = zend_spsc_queue_pop_batch(&q, popped, 1);
-	assert_int_equal(count, 1);
-	assert_ptr_equal(popped[0], item);
+	void *popped;
+	result = zend_spsc_queue_pop(&q, &popped);
+	assert_true(result);
+	assert_ptr_equal(popped, item);
 
 	zend_spsc_queue_free(&q);
 }
@@ -63,12 +63,11 @@ static void test_push_pop_multiple(void **state)
 		assert_true(result);
 	}
 
-	void *popped[10];
-	size_t count = zend_spsc_queue_pop_batch(&q, popped, 10);
-	assert_int_equal(count, num_items);
-
 	for (size_t i = 0; i < num_items; i++) {
-		assert_ptr_equal(popped[i], items[i]);
+		void *popped;
+		bool result = zend_spsc_queue_pop(&q, &popped);
+		assert_true(result);
+		assert_ptr_equal(popped, items[i]);
 	}
 
 	zend_spsc_queue_free(&q);
@@ -81,9 +80,9 @@ static void test_pop_empty(void **state)
 	zend_spsc_queue q;
 	zend_spsc_queue_init(&q, 16, false);
 
-	void *popped[1];
-	size_t count = zend_spsc_queue_pop_batch(&q, popped, 1);
-	assert_int_equal(count, 0);
+	void *popped;
+	bool result = zend_spsc_queue_pop(&q, &popped);
+	assert_false(result);
 
 	zend_spsc_queue_free(&q);
 }
@@ -101,42 +100,11 @@ static void test_resize(void **state)
 		assert_true(result);
 	}
 
-	void *popped[10];
-	size_t count = zend_spsc_queue_pop_batch(&q, popped, 10);
-	assert_int_equal(count, 10);
-
 	for (size_t i = 0; i < 10; i++) {
-		assert_ptr_equal(popped[i], (void*)(uintptr_t)(i + 1));
-	}
-
-	zend_spsc_queue_free(&q);
-}
-
-static void test_pop_batch_limit(void **state)
-{
-	(void)state;
-
-	zend_spsc_queue q;
-	zend_spsc_queue_init(&q, 16, false);
-
-	for (size_t i = 0; i < 10; i++) {
-		void *item = (void*)(uintptr_t)(i + 1);
-		zend_spsc_queue_push(&q, item);
-	}
-
-	void *popped[5];
-	size_t count = zend_spsc_queue_pop_batch(&q, popped, 5);
-	assert_int_equal(count, 5);
-
-	for (size_t i = 0; i < 5; i++) {
-		assert_ptr_equal(popped[i], (void*)(uintptr_t)(i + 1));
-	}
-
-	count = zend_spsc_queue_pop_batch(&q, popped, 5);
-	assert_int_equal(count, 5);
-
-	for (size_t i = 0; i < 5; i++) {
-		assert_ptr_equal(popped[i], (void*)(uintptr_t)(i + 6));
+		void *popped;
+		bool result = zend_spsc_queue_pop(&q, &popped);
+		assert_true(result);
+		assert_ptr_equal(popped, (void*)(uintptr_t)(i + 1));
 	}
 
 	zend_spsc_queue_free(&q);
@@ -189,21 +157,18 @@ static void* reader_thread(void *arg)
 {
 	thread_data_t *data = (thread_data_t*)arg;
 	size_t total_read = 0;
-	void *items[100];
 
 	while (total_read < data->count || !data->writer_done) {
-		size_t count = zend_spsc_queue_pop_batch(data->q, items, 100);
-
-		for (size_t i = 0; i < count; i++) {
-			uintptr_t expected = total_read + i + 1;
-			uintptr_t actual = (uintptr_t)items[i];
+		void *item;
+		if (zend_spsc_queue_pop(data->q, &item)) {
+			uintptr_t expected = total_read + 1;
+			uintptr_t actual = (uintptr_t)item;
 			if (actual != expected) {
 				fprintf(stderr, "Order violation: expected %zu, got %zu\n", expected, actual);
 				return (void*)1;
 			}
+			total_read++;
 		}
-
-		total_read += count;
 	}
 
 	return (void*)(total_read == data->count ? 0 : 1);
@@ -243,7 +208,6 @@ int main(void)
 		cmocka_unit_test(test_push_pop_multiple),
 		cmocka_unit_test(test_pop_empty),
 		cmocka_unit_test(test_resize),
-		cmocka_unit_test(test_pop_batch_limit),
 		cmocka_unit_test(test_power_of_2_rounding),
 		cmocka_unit_test(test_multithread_spsc),
 	};

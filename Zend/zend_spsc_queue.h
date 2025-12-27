@@ -34,6 +34,7 @@
 #include <stddef.h>
 #include <stdatomic.h>
 #include <assert.h>
+#include <pthread.h>
 
 /* Standalone atomic types */
 typedef struct {
@@ -67,6 +68,13 @@ static inline void zend_atomic_int_store_ex(zend_atomic_int *obj, int desired) {
 	atomic_store_explicit(&obj->value, desired, memory_order_release);
 }
 
+static inline bool zend_atomic_int_compare_exchange_ex(zend_atomic_int *obj, int *expected, int desired) {
+	return atomic_compare_exchange_strong_explicit(
+		&obj->value, expected, desired,
+		memory_order_acq_rel, memory_order_acquire
+	);
+}
+
 #else
 /* Zend integration mode */
 #include "zend.h"
@@ -74,22 +82,41 @@ static inline void zend_atomic_int_store_ex(zend_atomic_int *obj, int desired) {
 #include "zend_atomic.h"
 #include "zend_alloc.h"
 #include "zend_ring_buffer.h"
+#include "TSRM.h"  /* for MUTEX_T */
 #endif
 
 #include <stdatomic.h>
 
 /*
- * SPSC queue structure (double-buffering design)
- * - buf[2]: double buffering (0 and 1) using zend_ring_buffer with ATOMIC_HEAD
- * - write_hint: which buffer writer uses (0 or 1)
- * - capacity: current buffer capacity
- * - persistent: memory allocation flag
+ * SPSC queue structure (double-buffering design with lock-free handoff)
+ *
+ * Double buffering scheme:
+ * - buf[2]: two ring buffers for handoff between reader and writer
+ * - write_hint: indicates which buffer writer currently uses (0 or 1)
+ * - Reader uses buf[1 - write_hint] as dedicated read buffer
+ *
+ * Handoff protocol:
+ * - write_buffer_lock: atomic flag (0=free, 1=locked) for writer buffer access
+ *   * Reader locks when switching write_hint after exhausting read buffer
+ *   * Writer locks when resizing buffer
+ * - write_buffer_mutex: fallback mutex when lock is contended (slow path)
+ *
+ * Fast path (common): no contention, lock succeeds immediately
+ * Slow path (rare): contention detected, thread waits on mutex
  */
 typedef struct _zend_spsc_queue {
-	zend_atomic_ptr buf[2];      /* atomic pointers to zend_ring_buffer */
-	zend_atomic_int write_hint;  /* active writer buffer (0 or 1) */
-	size_t capacity;             /* current buffer capacity */
-	bool persistent;             /* allocation type */
+	zend_atomic_ptr buf[2];           /* double buffering: ring buffers */
+	zend_atomic_int write_hint;       /* active writer buffer index (0 or 1) */
+	zend_atomic_int write_buffer_lock; /* handoff lock: 0=free, 1=locked */
+
+#ifndef ZEND_SPSC_QUEUE_STANDALONE
+	MUTEX_T write_buffer_mutex;       /* slow path mutex for contention */
+#else
+	pthread_mutex_t write_buffer_mutex; /* standalone mode uses pthread */
+#endif
+
+	size_t capacity;                  /* current buffer capacity */
+	bool persistent;                  /* allocation type flag */
 } zend_spsc_queue;
 
 /*
@@ -106,7 +133,7 @@ ZEND_API bool zend_spsc_queue_push(zend_spsc_queue *queue, void *item);
 /*
  * Reader Operations
  */
-ZEND_API size_t zend_spsc_queue_pop_batch(zend_spsc_queue *queue, void **items, size_t max_count);
+ZEND_API bool zend_spsc_queue_pop(zend_spsc_queue *queue, void **item);
 
 /*
  * Internal helpers (exposed for testing)
