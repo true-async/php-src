@@ -26,6 +26,7 @@
 	#include <stdint.h>
 	#include <string.h>
 	#include <assert.h>
+	#include <stdatomic.h>
 
 	typedef int zend_result;
 	#define SUCCESS 0
@@ -36,6 +37,7 @@
 	#define perealloc(ptr, new_size, persistent) realloc(ptr, new_size)
 
 	#define ZEND_ASSERT(x) assert(x)
+	#define ZEND_API
 
 	#ifndef __has_builtin
 		#define __has_builtin(x) 0
@@ -51,11 +53,37 @@
 
 	#define zend_always_inline static inline
 
+	#ifdef __cplusplus
+	#define BEGIN_EXTERN_C() extern "C" {
+	#define END_EXTERN_C() }
+	#else
+	#define BEGIN_EXTERN_C()
+	#define END_EXTERN_C()
+	#endif
+
+	/* Standalone atomic size_t */
+	typedef struct {
+		_Atomic(size_t) value;
+	} zend_atomic_size_t;
+
+	static inline size_t zend_atomic_size_t_load_ex(const zend_atomic_size_t *obj) {
+		return atomic_load_explicit(&obj->value, memory_order_acquire);
+	}
+
+	static inline void zend_atomic_size_t_store_ex(zend_atomic_size_t *obj, size_t desired) {
+		atomic_store_explicit(&obj->value, desired, memory_order_release);
+	}
+
+	static inline size_t zend_atomic_size_t_fetch_add_ex(zend_atomic_size_t *obj, size_t value) {
+		return atomic_fetch_add_explicit(&obj->value, value, memory_order_acq_rel);
+	}
+
 	#define RING_BUFFER_ERROR(msg) fprintf(stderr, "Ring buffer: %s\n", msg)
 #else
 	/* Zend mode - use PHP infrastructure */
 	#include "zend.h"
 	#include "zend_portability.h"
+	#include "zend_atomic.h"
 
 	#ifdef ZEND_DEBUG
 		#define RING_BUFFER_ERROR(msg) zend_error(E_WARNING, "Ring buffer: " msg)
@@ -65,25 +93,37 @@
 #endif
 
 /**
+ * Ring buffer flags (packed into single uint32_t field).
+ */
+#define ZEND_RING_BUFFER_PERSISTENT   (1u << 0)  /* Use persistent allocation */
+#define ZEND_RING_BUFFER_ATOMIC_HEAD  (1u << 1)  /* Use atomic head (writer in SPSC) */
+#define ZEND_RING_BUFFER_ATOMIC_TAIL  (1u << 2)  /* Use atomic tail (reader in SPSC, for MPMC) */
+#define ZEND_RING_BUFFER_AUTO_GROW    (1u << 3)  /* Auto-resize when full */
+#define ZEND_RING_BUFFER_AUTO_SHRINK  (1u << 4)  /* Auto-shrink when underutilized */
+
+/**
  * Generic ring buffer (circular buffer) implementation.
  *
  * Features:
  * - Power-of-2 capacity for fast modulo via bitwise AND
- * - Automatic growth when full (doubles capacity)
- * - Automatic shrinking when underutilized (configurable)
+ * - Optional atomic head/tail for multi-threaded access (SPSC/MPMC)
+ * - Automatic growth when full (configurable via flags)
+ * - Automatic shrinking when underutilized (configurable via flags)
  * - Generic item storage (configurable item_size)
  * - Optimized inline functions for pointer operations
+ * - Branch-free API: separate functions for ST vs MT access
+ *
+ * Thread Safety Models:
+ * - Single-threaded: No flags, use zend_ring_buffer_push/pop
+ * - SPSC: ATOMIC_HEAD flag, use zend_ring_buffer_push_atomic/pop
+ * - MPMC: ATOMIC_HEAD | ATOMIC_TAIL, use custom synchronization
  */
 typedef struct _zend_ring_buffer {
 	size_t item_size;      /* size of each element in bytes */
 	size_t min_size;       /* minimum capacity (won't shrink below this) */
 	size_t capacity;       /* current capacity (always power of 2) */
-
-	/**
-	 * Automatic memory optimization flag.
-	 * When enabled, buffer shrinks when usage drops below threshold.
-	 */
-	bool auto_optimize;
+	uint32_t flags;        /* configuration flags (ZEND_RING_BUFFER_*) */
+	void *data;            /* buffer memory */
 
 	/**
 	 * Decrease threshold for auto-shrinking.
@@ -92,67 +132,166 @@ typedef struct _zend_ring_buffer {
 	 */
 	size_t decrease_threshold;
 
-	bool persistent;       /* use persistent allocation */
-	void *data;            /* buffer memory */
-
 	/**
 	 * Head offset - next write position.
-	 * When buffer is empty, head == tail.
+	 * Use union to support both atomic and non-atomic access.
+	 * - ST mode: access via .head
+	 * - MT mode: access via .head_atomic
 	 */
-	size_t head;
+	union {
+		size_t head;
+		zend_atomic_size_t head_atomic;
+	};
 
 	/**
 	 * Tail offset - next read position.
-	 * When buffer is empty, tail == head.
+	 * Use union to support both atomic and non-atomic access.
+	 * - ST mode: access via .tail
+	 * - SPSC mode: access via .tail (reader-owned, no atomic needed)
+	 * - MPMC mode: access via .tail_atomic
 	 */
-	size_t tail;
+	union {
+		size_t tail;
+		zend_atomic_size_t tail_atomic;
+	};
 } zend_ring_buffer;
 
 BEGIN_EXTERN_C()
 
-/* Lifecycle functions */
-ZEND_API zend_result zend_ring_buffer_init(zend_ring_buffer *buffer, size_t count, size_t item_size, bool persistent);
-ZEND_API void zend_ring_buffer_destroy(zend_ring_buffer *buffer);
-ZEND_API zend_ring_buffer *zend_ring_buffer_new(size_t count, size_t item_size, bool persistent);
-ZEND_API void zend_ring_buffer_free(zend_ring_buffer *buffer);
-
-/* Core operations */
-ZEND_API zend_result zend_ring_buffer_push(zend_ring_buffer *buffer, const void *value, bool should_resize);
-ZEND_API zend_result zend_ring_buffer_push_front(zend_ring_buffer *buffer, const void *value, bool should_resize);
-ZEND_API zend_result zend_ring_buffer_pop(zend_ring_buffer *buffer, void *value);
-ZEND_API zend_result zend_ring_buffer_realloc(zend_ring_buffer *buffer, size_t new_count);
-
-/* Query functions */
-ZEND_API bool zend_ring_buffer_is_full(const zend_ring_buffer *buffer);
-ZEND_API bool zend_ring_buffer_is_empty(const zend_ring_buffer *buffer);
-ZEND_API size_t zend_ring_buffer_count(const zend_ring_buffer *buffer);
-ZEND_API size_t zend_ring_buffer_capacity(const zend_ring_buffer *buffer);
-
-/* Inline optimized functions for hot path */
+/* ========================================================================
+ * Lifecycle Functions
+ * ======================================================================== */
 
 /**
- * Check if buffer is not empty (fast inline version).
+ * Initialize ring buffer with flags.
+ *
+ * @param buffer    Buffer to initialize
+ * @param count     Initial capacity (will be rounded up to power of 2)
+ * @param item_size Size of each element in bytes
+ * @param flags     Configuration flags (ZEND_RING_BUFFER_*)
  */
-static zend_always_inline bool zend_ring_buffer_is_not_empty(const zend_ring_buffer *buffer)
+ZEND_API zend_result zend_ring_buffer_init(zend_ring_buffer *buffer, size_t count, size_t item_size, uint32_t flags);
+
+/**
+ * Destroy ring buffer and free resources.
+ */
+ZEND_API void zend_ring_buffer_destroy(zend_ring_buffer *buffer);
+
+/**
+ * Allocate and initialize new ring buffer.
+ */
+ZEND_API zend_ring_buffer *zend_ring_buffer_new(size_t count, size_t item_size, uint32_t flags);
+
+/**
+ * Destroy and free ring buffer.
+ */
+ZEND_API void zend_ring_buffer_free(zend_ring_buffer *buffer);
+
+/* ========================================================================
+ * Core Operations - Single-Threaded (no atomics)
+ * ======================================================================== */
+
+/**
+ * Push item to buffer (single-threaded version).
+ *
+ * @param buffer        Ring buffer
+ * @param value         Pointer to value to push
+ * @param should_resize If true, auto-resize when full
+ * @return SUCCESS or FAILURE
+ */
+ZEND_API zend_result zend_ring_buffer_push(zend_ring_buffer *buffer, const void *value, bool should_resize);
+
+/**
+ * Push item to front of buffer (single-threaded version).
+ */
+ZEND_API zend_result zend_ring_buffer_push_front(zend_ring_buffer *buffer, const void *value, bool should_resize);
+
+/**
+ * Pop item from buffer (single-threaded version).
+ */
+ZEND_API zend_result zend_ring_buffer_pop(zend_ring_buffer *buffer, void *value);
+
+/* ========================================================================
+ * Core Operations - Multi-Threaded (with atomics, SPSC pattern)
+ * ======================================================================== */
+
+/**
+ * Push item to buffer (multi-threaded SPSC version).
+ * Writer thread uses atomic fetch_add on head.
+ *
+ * @param buffer Ring buffer (must have ATOMIC_HEAD flag)
+ * @param value  Pointer to value to push
+ * @return SUCCESS or FAILURE
+ */
+ZEND_API zend_result zend_ring_buffer_push_atomic(zend_ring_buffer *buffer, const void *value);
+
+/**
+ * Pop item from buffer (multi-threaded SPSC reader version).
+ * Reader thread owns tail (no atomic needed for SPSC).
+ *
+ * @param buffer Ring buffer (must have ATOMIC_HEAD flag)
+ * @param value  Pointer to store popped value
+ * @return SUCCESS or FAILURE
+ */
+ZEND_API zend_result zend_ring_buffer_pop_atomic(zend_ring_buffer *buffer, void *value);
+
+/* ========================================================================
+ * Utility Functions
+ * ======================================================================== */
+
+/**
+ * Manually resize buffer to new capacity.
+ * WARNING: NOT thread-safe! Caller must ensure exclusive access.
+ */
+ZEND_API zend_result zend_ring_buffer_realloc(zend_ring_buffer *buffer, size_t new_count);
+
+/**
+ * Check if buffer is full.
+ */
+ZEND_API bool zend_ring_buffer_is_full(const zend_ring_buffer *buffer);
+
+/**
+ * Check if buffer is empty.
+ */
+ZEND_API bool zend_ring_buffer_is_empty(const zend_ring_buffer *buffer);
+
+/**
+ * Get number of items in buffer.
+ */
+ZEND_API size_t zend_ring_buffer_count(const zend_ring_buffer *buffer);
+
+/**
+ * Get buffer capacity.
+ */
+ZEND_API size_t zend_ring_buffer_capacity(const zend_ring_buffer *buffer);
+
+/* ========================================================================
+ * Inline Optimized Functions - Single-Threaded
+ * ======================================================================== */
+
+/**
+ * Check if buffer is not empty (fast inline, single-threaded).
+ */
+zend_always_inline bool zend_ring_buffer_is_not_empty(const zend_ring_buffer *buffer)
 {
 	return buffer->head != buffer->tail;
 }
 
 /**
- * Clear buffer (reset to empty state).
+ * Clear buffer - reset to empty state (single-threaded).
  */
-static zend_always_inline void zend_ring_buffer_clean(zend_ring_buffer *buffer)
+zend_always_inline void zend_ring_buffer_clean(zend_ring_buffer *buffer)
 {
 	buffer->head = buffer->tail;
 }
 
 /**
- * Fast inline push for pointer-sized items (hot path).
+ * Fast inline push for pointer-sized items (single-threaded, hot path).
  * Does NOT auto-resize - returns FAILURE if full.
  */
-static zend_always_inline zend_result zend_ring_buffer_push_ptr_fast(zend_ring_buffer *buffer, void *ptr)
+zend_always_inline zend_result zend_ring_buffer_push_ptr_fast(zend_ring_buffer *buffer, void *ptr)
 {
-	ZEND_ASSERT(buffer->item_size == sizeof(void*) && "Use push_ptr_fast only for pointer buffers");
+	ZEND_ASSERT(buffer->item_size == sizeof(void*));
 
 	size_t next_head = (buffer->head + 1) & (buffer->capacity - 1);
 
@@ -166,11 +305,11 @@ static zend_always_inline zend_result zend_ring_buffer_push_ptr_fast(zend_ring_b
 }
 
 /**
- * Fast inline pop for pointer-sized items (hot path).
+ * Fast inline pop for pointer-sized items (single-threaded, hot path).
  */
-static zend_always_inline zend_result zend_ring_buffer_pop_ptr_fast(zend_ring_buffer *buffer, void **ptr)
+zend_always_inline zend_result zend_ring_buffer_pop_ptr_fast(zend_ring_buffer *buffer, void **ptr)
 {
-	ZEND_ASSERT(buffer->item_size == sizeof(void*) && "Use pop_ptr_fast only for pointer buffers");
+	ZEND_ASSERT(buffer->item_size == sizeof(void*));
 
 	if (EXPECTED(buffer->head != buffer->tail)) {
 		*ptr = ((void**)buffer->data)[buffer->tail];
@@ -182,10 +321,10 @@ static zend_always_inline zend_result zend_ring_buffer_pop_ptr_fast(zend_ring_bu
 }
 
 /**
- * Push pointer with automatic resize fallback.
+ * Push pointer with automatic resize fallback (single-threaded).
  * First tries fast path, then falls back to slow path with resize.
  */
-static zend_always_inline zend_result zend_ring_buffer_push_ptr(zend_ring_buffer *buffer, void *ptr)
+zend_always_inline zend_result zend_ring_buffer_push_ptr(zend_ring_buffer *buffer, void *ptr)
 {
 	/* Try fast path first */
 	if (EXPECTED(zend_ring_buffer_push_ptr_fast(buffer, ptr) == SUCCESS)) {
@@ -194,6 +333,89 @@ static zend_always_inline zend_result zend_ring_buffer_push_ptr(zend_ring_buffer
 
 	/* Fallback to slow path with resize */
 	return zend_ring_buffer_push(buffer, &ptr, true);
+}
+
+/* ========================================================================
+ * Inline Optimized Functions - Multi-Threaded (SPSC pattern)
+ * ======================================================================== */
+
+/**
+ * Check if buffer is not empty (atomic version for reader).
+ */
+zend_always_inline bool zend_ring_buffer_is_not_empty_atomic(const zend_ring_buffer *buffer)
+{
+	size_t head = zend_atomic_size_t_load_ex(&buffer->head_atomic);
+	return buffer->tail < head;
+}
+
+/**
+ * Clear buffer - reset to empty state (atomic version, reader-only!).
+ * WARNING: Only safe if called by reader thread in SPSC!
+ */
+zend_always_inline void zend_ring_buffer_clean_atomic(zend_ring_buffer *buffer)
+{
+	size_t head = zend_atomic_size_t_load_ex(&buffer->head_atomic);
+	buffer->tail = head; /* Catch up to writer */
+}
+
+/**
+ * Fast inline push for pointer-sized items (atomic SPSC writer, hot path).
+ * Does NOT auto-resize - returns FAILURE if full.
+ *
+ * SPSC-safe: Writer increments head atomically, reader never touches head.
+ */
+zend_always_inline zend_result zend_ring_buffer_push_ptr_fast_atomic(zend_ring_buffer *buffer, void *ptr)
+{
+	ZEND_ASSERT(buffer->item_size == sizeof(void*));
+	ZEND_ASSERT(buffer->flags & ZEND_RING_BUFFER_ATOMIC_HEAD);
+
+	size_t head, tail_snap, available, slot;
+
+	/* Conservative check: read tail snapshot (may be stale) */
+	head = zend_atomic_size_t_load_ex(&buffer->head_atomic);
+	tail_snap = buffer->tail; /* Safe: reader won't modify while we read */
+	available = buffer->capacity - (head - tail_snap);
+
+	if (UNEXPECTED(available == 0)) {
+		return FAILURE; /* Buffer full */
+	}
+
+	/* Claim slot via fetch_add (lock-free!) */
+	slot = zend_atomic_size_t_fetch_add_ex(&buffer->head_atomic, 1);
+
+	/* Write to ring buffer */
+	((void**)buffer->data)[slot & (buffer->capacity - 1)] = ptr;
+
+	return SUCCESS;
+}
+
+/**
+ * Fast inline pop for pointer-sized items (atomic SPSC reader, hot path).
+ *
+ * SPSC-safe: Reader owns tail, writer never touches it.
+ */
+zend_always_inline zend_result zend_ring_buffer_pop_ptr_fast_atomic(zend_ring_buffer *buffer, void **ptr)
+{
+	ZEND_ASSERT(buffer->item_size == sizeof(void*));
+	ZEND_ASSERT(buffer->flags & ZEND_RING_BUFFER_ATOMIC_HEAD);
+
+	size_t head, tail;
+
+	/* Read current head (writer may increment it) */
+	head = zend_atomic_size_t_load_ex(&buffer->head_atomic);
+	tail = buffer->tail;
+
+	if (UNEXPECTED(tail >= head)) {
+		return FAILURE; /* Buffer empty */
+	}
+
+	/* Read from ring buffer */
+	*ptr = ((void**)buffer->data)[tail & (buffer->capacity - 1)];
+
+	/* Increment tail (reader-only, no atomic needed) */
+	buffer->tail = tail + 1;
+
+	return SUCCESS;
 }
 
 #ifndef ZEND_RING_BUFFER_STANDALONE
