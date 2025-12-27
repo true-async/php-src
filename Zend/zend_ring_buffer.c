@@ -121,15 +121,15 @@ ZEND_API zend_ring_buffer *zend_ring_buffer_new(size_t count, size_t item_size, 
 		return NULL;
 	}
 
-	bool persistent = (flags & ZEND_RING_BUFFER_PERSISTENT) != 0;
-	zend_ring_buffer *buffer = (zend_ring_buffer *)pemalloc(sizeof(zend_ring_buffer), persistent);
+	zend_ring_buffer *buffer = (zend_ring_buffer *)pemalloc(sizeof(zend_ring_buffer),
+		(flags & ZEND_RING_BUFFER_PERSISTENT) != 0);
 	if (UNEXPECTED(buffer == NULL)) {
 		RING_BUFFER_ERROR("Failed to allocate ring buffer structure");
 		return NULL;
 	}
 
 	if (UNEXPECTED(zend_ring_buffer_init(buffer, count, item_size, flags) == FAILURE)) {
-		pefree(buffer, persistent);
+		pefree(buffer, (flags & ZEND_RING_BUFFER_PERSISTENT) != 0);
 		return NULL;
 	}
 
