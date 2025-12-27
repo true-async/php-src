@@ -14,8 +14,15 @@
 
 #define INITIAL_CAPACITY 64
 
-/*
- * Allocate new buffer for writer at given index
+/**
+ * @brief Allocate new buffer for writer at given index
+ *
+ * Attempts to create a new ring buffer and install it via CAS.
+ * If CAS fails (another thread installed buffer), uses the existing buffer.
+ *
+ * @param queue The SPSC queue
+ * @param buf_idx Buffer index (0 or 1)
+ * @return Pointer to buffer (newly created or existing), NULL on allocation failure
  */
 zend_always_inline zend_ring_buffer* allocate_buffer(zend_spsc_queue *queue, const int buf_idx)
 {
@@ -39,8 +46,15 @@ zend_always_inline zend_ring_buffer* allocate_buffer(zend_spsc_queue *queue, con
 	return new_buffer;
 }
 
-/*
- * Initialize SPSC queue
+/**
+ * @brief Initialize SPSC queue
+ *
+ * Creates initial buffer and initializes handoff mutex.
+ *
+ * @param queue Queue to initialize
+ * @param initial_capacity Initial buffer capacity (0 = use default 64)
+ * @param persistent Use persistent allocation
+ * @return true on success, false on allocation failure
  */
 ZEND_API bool zend_spsc_queue_init(zend_spsc_queue *queue, size_t initial_capacity, bool persistent)
 {
@@ -83,8 +97,12 @@ ZEND_API bool zend_spsc_queue_init(zend_spsc_queue *queue, size_t initial_capaci
 	return true;
 }
 
-/*
- * Free SPSC queue
+/**
+ * @brief Free SPSC queue and all associated resources
+ *
+ * Frees both buffers and destroys handoff mutex.
+ *
+ * @param queue Queue to free
  */
 ZEND_API void zend_spsc_queue_free(zend_spsc_queue *queue)
 {
@@ -108,21 +126,28 @@ ZEND_API void zend_spsc_queue_free(zend_spsc_queue *queue)
 #endif
 }
 
-/*
- * Resize operation (writer slow path)
+/**
+ * @brief Resize operation (writer slow path)
  *
- * Mutex is used ONLY in case B2 (fallback full, resize in-place):
- * - Reader is reading from fallback_buffer
- * - Writer needs to resize current_buffer in-place
- * - Must serialize: reader might switch to current_buffer during resize
+ * Called when current buffer is full. Implements three strategies:
  *
- * State transitions:
- * Case A: Reader free (buf[read_idx] == NULL)
- *   → Allocate new larger buffer, switch write_hint (NO MUTEX)
+ * **Case A: Reader free (fallback == NULL)**
+ * - Allocate new buffer with doubled capacity
+ * - Switch write_hint to new buffer
+ * - NO MUTEX (reader not active)
  *
- * Case B: Reader busy (buf[read_idx] != NULL)
- *   B1: Fallback not full → switch to it (NO MUTEX - safe to switch)
- *   B2: Fallback full → resize current in-place (MUTEX - serialize with reader switch)
+ * **Case B1: Fallback not full**
+ * - Switch to existing fallback buffer
+ * - NO MUTEX (safe to switch write_hint)
+ *
+ * **Case B2: Fallback full**
+ * - Resize current buffer in-place
+ * - MUTEX REQUIRED: reader might switch to current_buffer during resize
+ *
+ * @param queue The SPSC queue
+ * @return Pointer to buffer for writing, NULL on failure
+ *
+ * @note Mutex used ONLY in case B2 (rarest scenario)
  */
 zend_ring_buffer* zend_spsc_queue_resize(zend_spsc_queue *queue)
 {
@@ -195,8 +220,20 @@ zend_ring_buffer* zend_spsc_queue_resize(zend_spsc_queue *queue)
 	}
 }
 
-/*
- * Push item (writer fast path)
+/**
+ * @brief Push item to queue (writer operation)
+ *
+ * Fast path (common):
+ * - Buffer has space: write directly, NO MUTEX
+ *
+ * Slow path (rare):
+ * - Buffer full: call resize, which may use MUTEX in case B2
+ *
+ * @param queue The SPSC queue
+ * @param item Pointer to enqueue
+ * @return true on success, false on allocation failure
+ *
+ * @note Thread-safe for single writer
  */
 ZEND_API bool zend_spsc_queue_push(zend_spsc_queue *queue, void *item)
 {
@@ -220,21 +257,30 @@ ZEND_API bool zend_spsc_queue_push(zend_spsc_queue *queue, void *item)
 	return zend_ring_buffer_push_ptr_fast_atomic(current_buffer, item) == SUCCESS;
 }
 
-/*
- * Pop single item (reader operation)
+/**
+ * @brief Pop single item from queue (reader operation)
  *
- * Three paths (from fastest to slowest):
+ * Implements three paths ordered by frequency:
  *
- * Path 1 (FAST - most common): Read from dedicated buffer
- *   - dedicated_buffer exists and not empty
- *   - Just read, NO MUTEX
+ * **Path 1 (FAST - most common):**
+ * - Dedicated buffer exists and not empty
+ * - Direct read, NO MUTEX
  *
- * Path 2 (SLOW - rare): Dedicated buffer empty, need to switch
- *   - dedicated_buffer exists but empty
- *   - MUTEX: serialize switch with writer resize (case B2)
+ * **Path 2 (SLOW - rare):**
+ * - Dedicated buffer empty, need to switch
+ * - MUTEX: serialize with writer's case B2 (resize in-place)
+ * - Switch write_hint, fall through to Path 3
  *
- * Path 3 (FALLBACK): No dedicated buffer, read from writer's active buffer
- *   - NO MUTEX: just read from writer's buffer
+ * **Path 3 (FALLBACK):**
+ * - No dedicated buffer or just switched
+ * - Read from writer's active buffer, NO MUTEX
+ *
+ * @param queue The SPSC queue
+ * @param item Output pointer to store dequeued item
+ * @return true if item retrieved, false if queue empty
+ *
+ * @note Thread-safe for single reader
+ * @note Mutex used ONLY in Path 2 (buffer exhausted + switch)
  */
 ZEND_API bool zend_spsc_queue_pop(zend_spsc_queue *queue, void **item)
 {
