@@ -1,4 +1,3 @@
-#define ZEND_RING_BUFFER_STANDALONE
 #include "../../zend_ring_buffer.h"
 
 #include <stdarg.h>
