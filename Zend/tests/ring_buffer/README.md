@@ -6,20 +6,48 @@ Unit tests for `zend_ring_buffer` (unified single-threaded and SPSC atomic modes
 
 - CMocka library
 - pthread support
+- CMake 3.10+ (for cross-platform builds)
 
-### Install CMocka (Ubuntu/Debian)
+### Install CMocka
 
+**Ubuntu/Debian:**
 ```bash
 sudo apt-get install libcmocka-dev
 ```
 
+**Windows (vcpkg):**
+```cmd
+vcpkg install cmocka
+```
+
+**macOS (Homebrew):**
+```bash
+brew install cmocka
+```
+
 ## Build
 
-### CMake (cross-platform)
+### CMake (Linux/macOS)
 
 ```bash
 mkdir build && cd build
 cmake ..
+cmake --build .
+```
+
+### CMake (Windows - Visual Studio)
+
+```cmd
+mkdir build && cd build
+cmake ..
+cmake --build . --config Debug
+```
+
+### CMake (Windows - MinGW)
+
+```cmd
+mkdir build && cd build
+cmake -G "MinGW Makefiles" ..
 cmake --build .
 ```
 
@@ -31,7 +59,7 @@ make
 
 ## Run Tests
 
-### CMake
+### CMake (Linux/macOS)
 
 ```bash
 cd build
@@ -45,7 +73,21 @@ Or run individually:
 ./test_mt    # Multi-threaded SPSC atomic tests
 ```
 
-### Make
+### CMake (Windows)
+
+```cmd
+cd build
+ctest -C Debug --output-on-failure
+```
+
+Or run individually:
+
+```cmd
+Debug\test_st.exe
+Debug\test_mt.exe
+```
+
+### Make (Unix only)
 
 ```bash
 make test
@@ -53,11 +95,18 @@ make test
 
 ## Clean
 
+**CMake (Linux/macOS):**
 ```bash
-# CMake
 rm -rf build/
+```
 
-# Make
+**CMake (Windows):**
+```cmd
+rmdir /s /q build
+```
+
+**Make (Unix only):**
+```bash
 make clean
 ```
 
