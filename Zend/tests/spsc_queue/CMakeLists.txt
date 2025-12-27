@@ -13,8 +13,9 @@ endif()
 include_directories(../..)
 
 add_compile_definitions(ZEND_SPSC_QUEUE_STANDALONE)
+add_compile_definitions(ZEND_RING_BUFFER_STANDALONE)
 
-set(SPSC_QUEUE_SRC ../../zend_spsc_queue.c)
+set(SPSC_QUEUE_SRC ../../zend_spsc_queue.c ../../zend_ring_buffer.c)
 
 add_executable(test_spsc test_spsc.c ${SPSC_QUEUE_SRC})
 target_link_libraries(test_spsc ${CMOCKA_LIBRARY} Threads::Threads)

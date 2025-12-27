@@ -26,20 +26,14 @@
 
 #ifdef ZEND_SPSC_QUEUE_STANDALONE
 /* Standalone mode for unit testing */
+#define ZEND_RING_BUFFER_STANDALONE
+#include "zend_ring_buffer.h"
 #include <stdlib.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <stdatomic.h>
 #include <assert.h>
-
-#define pemalloc(s, p) malloc(s)
-#define pefree(p, f) free(p)
-#define perealloc(p, s, f) realloc(p, s)
-#define ZEND_ASSERT(x) assert(x)
-#define EXPECTED(x) (x)
-#define UNEXPECTED(x) (x)
-#define ZEND_API
 
 /* Standalone atomic types */
 typedef struct {
@@ -49,10 +43,6 @@ typedef struct {
 typedef struct {
 	_Atomic(int) value;
 } zend_atomic_int;
-
-typedef struct {
-	_Atomic(size_t) value;
-} zend_atomic_size_t;
 
 static inline void* zend_atomic_ptr_load_ex(const zend_atomic_ptr *obj) {
 	return atomic_load_explicit(&obj->value, memory_order_acquire);
@@ -77,49 +67,25 @@ static inline void zend_atomic_int_store_ex(zend_atomic_int *obj, int desired) {
 	atomic_store_explicit(&obj->value, desired, memory_order_release);
 }
 
-static inline size_t zend_atomic_size_t_load_ex(const zend_atomic_size_t *obj) {
-	return atomic_load_explicit(&obj->value, memory_order_acquire);
-}
-
-static inline void zend_atomic_size_t_store_ex(zend_atomic_size_t *obj, size_t desired) {
-	atomic_store_explicit(&obj->value, desired, memory_order_release);
-}
-
-static inline size_t zend_atomic_size_t_fetch_add_ex(zend_atomic_size_t *obj, size_t value) {
-	return atomic_fetch_add_explicit(&obj->value, value, memory_order_acq_rel);
-}
-
 #else
 /* Zend integration mode */
 #include "zend.h"
 #include "zend_portability.h"
 #include "zend_atomic.h"
 #include "zend_alloc.h"
+#include "zend_ring_buffer.h"
 #endif
 
 #include <stdatomic.h>
 
 /*
- * Ring buffer (internal structure)
- * - head: writer increments via fetch_add
- * - tail: reader owns, no atomics needed
- * - capacity: always power of 2
- */
-typedef struct _zend_spsc_buffer {
-	void **data;                  /* ring buffer storage */
-	zend_atomic_size_t head;     /* writer position (atomic) */
-	size_t tail;                 /* reader position (reader-only) */
-	size_t capacity;             /* power of 2 */
-} zend_spsc_buffer;
-
-/*
- * SPSC queue structure
- * - buf[2]: double buffering (0 and 1)
+ * SPSC queue structure (double-buffering design)
+ * - buf[2]: double buffering (0 and 1) using zend_ring_buffer with ATOMIC_HEAD
  * - write_hint: which buffer writer uses (0 or 1)
  * - persistent: memory allocation flag
  */
 typedef struct _zend_spsc_queue {
-	zend_atomic_ptr buf[2];      /* atomic pointers to buffers */
+	zend_atomic_ptr buf[2];      /* atomic pointers to zend_ring_buffer */
 	zend_atomic_int write_hint;  /* active writer buffer (0 or 1) */
 	bool persistent;             /* allocation type */
 } zend_spsc_queue;
@@ -143,6 +109,6 @@ ZEND_API size_t zend_spsc_queue_pop_batch(zend_spsc_queue *q, void **items, size
 /*
  * Internal helpers (exposed for testing)
  */
-zend_spsc_buffer* zend_spsc_queue_resize(zend_spsc_queue *q);
+zend_ring_buffer* zend_spsc_queue_resize(zend_spsc_queue *q);
 
 #endif /* ZEND_SPSC_QUEUE_H */

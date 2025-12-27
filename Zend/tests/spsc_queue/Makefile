@@ -1,8 +1,8 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -g -I../.. -DZEND_SPSC_QUEUE_STANDALONE
+CFLAGS = -Wall -Wextra -g -I../.. -DZEND_SPSC_QUEUE_STANDALONE -DZEND_RING_BUFFER_STANDALONE
 LDFLAGS = -lcmocka -pthread
 
-SPSC_QUEUE_SRC = ../../zend_spsc_queue.c
+SPSC_QUEUE_SRC = ../../zend_spsc_queue.c ../../zend_ring_buffer.c
 TEST = test_spsc
 
 all: $(TEST)

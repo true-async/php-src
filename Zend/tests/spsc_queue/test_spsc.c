@@ -14,7 +14,7 @@ static void test_init_destroy(void **state)
 	zend_spsc_queue q;
 	zend_spsc_queue_init(&q, 16, false);
 
-	zend_spsc_buffer *buf0 = (zend_spsc_buffer*)zend_atomic_ptr_load_ex(&q.buf[0]);
+	zend_ring_buffer *buf0 = (zend_ring_buffer*)zend_atomic_ptr_load_ex(&q.buf[0]);
 	assert_non_null(buf0);
 	assert_int_equal(buf0->capacity, 16);
 
@@ -148,17 +148,17 @@ static void test_power_of_2_rounding(void **state)
 	zend_spsc_queue q;
 
 	zend_spsc_queue_init(&q, 13, false);
-	zend_spsc_buffer *buf = (zend_spsc_buffer*)zend_atomic_ptr_load_ex(&q.buf[0]);
+	zend_ring_buffer *buf = (zend_ring_buffer*)zend_atomic_ptr_load_ex(&q.buf[0]);
 	assert_int_equal(buf->capacity, 16);
 	zend_spsc_queue_destroy(&q);
 
 	zend_spsc_queue_init(&q, 32, false);
-	buf = (zend_spsc_buffer*)zend_atomic_ptr_load_ex(&q.buf[0]);
+	buf = (zend_ring_buffer*)zend_atomic_ptr_load_ex(&q.buf[0]);
 	assert_int_equal(buf->capacity, 32);
 	zend_spsc_queue_destroy(&q);
 
 	zend_spsc_queue_init(&q, 0, false);
-	buf = (zend_spsc_buffer*)zend_atomic_ptr_load_ex(&q.buf[0]);
+	buf = (zend_ring_buffer*)zend_atomic_ptr_load_ex(&q.buf[0]);
 	assert_int_equal(buf->capacity, 64);
 	zend_spsc_queue_destroy(&q);
 }
