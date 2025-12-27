@@ -112,7 +112,7 @@ make clean
 
 ## Test Coverage
 
-### Single-Threaded Tests (8 tests)
+### Single-Threaded Tests (12 tests)
 - init/destroy
 - push/pop single item
 - push/pop multiple items
@@ -121,6 +121,10 @@ make clean
 - wraparound behavior
 - power-of-2 capacity rounding
 - clean operation
+- head/tail exchange (complex wraparound)
+- auto-grow (dynamic resize up)
+- auto-shrink (dynamic resize down)
+- resize with wraparound (data linearization)
 
 ### SPSC Atomic Tests (6 tests)
 - init/destroy with atomic flags

@@ -180,6 +180,153 @@ static void test_clean(void **state)
 	zend_ring_buffer_destroy(&buf);
 }
 
+static void test_head_tail_exchange(void **state)
+{
+	(void)state;
+
+	zend_ring_buffer buf;
+	zend_ring_buffer_init(&buf, 4, sizeof(int), 0);
+
+	int value = 100;
+	for (int i = 0; i < 3; i++) {
+		zend_ring_buffer_push(&buf, &value, false);
+	}
+
+	assert_true(zend_ring_buffer_is_full(&buf));
+
+	zend_ring_buffer_pop(&buf, &value);
+	zend_ring_buffer_pop(&buf, &value);
+
+	value = 100;
+	zend_ring_buffer_push(&buf, &value, false);
+
+	int new_value = 500;
+	zend_ring_buffer_push(&buf, &new_value, false);
+
+	assert_int_equal(zend_ring_buffer_push(&buf, &new_value, false), FAILURE);
+	assert_true(zend_ring_buffer_is_full(&buf));
+
+	zend_ring_buffer_pop(&buf, &value);
+	zend_ring_buffer_pop(&buf, &value);
+	assert_int_equal(value, 100);
+
+	zend_ring_buffer_pop(&buf, &value);
+	assert_int_equal(value, 500);
+
+	assert_true(zend_ring_buffer_is_empty(&buf));
+
+	zend_ring_buffer_destroy(&buf);
+}
+
+static void test_auto_grow(void **state)
+{
+	(void)state;
+
+	zend_ring_buffer buf;
+	zend_ring_buffer_init(&buf, 2, sizeof(int), ZEND_RING_BUFFER_AUTO_GROW);
+
+	assert_int_equal(buf.capacity, 2);
+
+	int value;
+	for (int i = 1; i <= 5; i++) {
+		value = i;
+		zend_ring_buffer_push(&buf, &value, true);
+	}
+
+	assert_true(buf.capacity >= 8);
+
+	for (int i = 1; i <= 5; i++) {
+		zend_ring_buffer_pop(&buf, &value);
+		assert_int_equal(value, i);
+	}
+
+	assert_true(zend_ring_buffer_is_empty(&buf));
+
+	zend_ring_buffer_destroy(&buf);
+}
+
+static void test_auto_shrink(void **state)
+{
+	(void)state;
+
+	zend_ring_buffer buf;
+	zend_ring_buffer_init(&buf, 2, sizeof(int), ZEND_RING_BUFFER_AUTO_GROW | ZEND_RING_BUFFER_AUTO_SHRINK);
+
+	int value;
+	for (int i = 1; i <= 16; i++) {
+		value = i;
+		zend_ring_buffer_push(&buf, &value, true);
+	}
+
+	size_t capacity_before = buf.capacity;
+	assert_true(capacity_before >= 16);
+
+	for (int i = 1; i <= 14; i++) {
+		zend_ring_buffer_pop(&buf, &value);
+		assert_int_equal(value, i);
+	}
+
+	value = 17;
+	zend_ring_buffer_push(&buf, &value, true);
+
+	for (int i = 15; i <= 15; i++) {
+		zend_ring_buffer_pop(&buf, &value);
+		assert_int_equal(value, i);
+	}
+
+	value = 18;
+	zend_ring_buffer_push(&buf, &value, true);
+
+	for (int i = 16; i <= 18; i++) {
+		zend_ring_buffer_pop(&buf, &value);
+		assert_int_equal(value, i);
+	}
+
+	assert_true(zend_ring_buffer_is_empty(&buf));
+
+	zend_ring_buffer_destroy(&buf);
+}
+
+static void test_resize_with_wraparound(void **state)
+{
+	(void)state;
+
+	zend_ring_buffer buf;
+	zend_ring_buffer_init(&buf, 4, sizeof(int), 0);
+
+	int value;
+	for (int i = 1; i <= 3; i++) {
+		value = i;
+		zend_ring_buffer_push(&buf, &value, false);
+	}
+
+	zend_ring_buffer_pop(&buf, &value);
+	assert_int_equal(value, 1);
+	zend_ring_buffer_pop(&buf, &value);
+	assert_int_equal(value, 2);
+
+	assert_int_equal(zend_ring_buffer_count(&buf), 1);
+
+	value = 4;
+	zend_ring_buffer_push(&buf, &value, true);
+	value = 5;
+	zend_ring_buffer_push(&buf, &value, true);
+	value = 6;
+	zend_ring_buffer_push(&buf, &value, true);
+
+	assert_true(buf.capacity >= 8);
+
+	int expect_seq[] = {3, 4, 5, 6};
+	for (size_t i = 0; i < 4; i++) {
+		zend_ring_buffer_pop(&buf, &value);
+		assert_int_equal(value, expect_seq[i]);
+	}
+
+	assert_true(zend_ring_buffer_is_empty(&buf));
+
+	zend_ring_buffer_destroy(&buf);
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -191,6 +338,10 @@ int main(void)
 		cmocka_unit_test(test_wraparound),
 		cmocka_unit_test(test_power_of_2_rounding),
 		cmocka_unit_test(test_clean),
+		cmocka_unit_test(test_head_tail_exchange),
+		cmocka_unit_test(test_auto_grow),
+		cmocka_unit_test(test_auto_shrink),
+		cmocka_unit_test(test_resize_with_wraparound),
 	};
 
 	return cmocka_run_group_tests(tests, NULL, NULL);
