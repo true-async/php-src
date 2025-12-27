@@ -15,14 +15,27 @@ sudo apt-get install libcmocka-dev
 
 ## Build
 
+### CMake (cross-platform)
+
+```bash
+mkdir build && cd build
+cmake ..
+cmake --build .
+```
+
+### Make (Unix only)
+
 ```bash
 make
 ```
 
 ## Run Tests
 
+### CMake
+
 ```bash
-make test
+cd build
+ctest --output-on-failure
 ```
 
 Or run individually:
@@ -32,9 +45,19 @@ Or run individually:
 ./test_mt    # Multi-threaded SPSC atomic tests
 ```
 
+### Make
+
+```bash
+make test
+```
+
 ## Clean
 
 ```bash
+# CMake
+rm -rf build/
+
+# Make
 make clean
 ```
 
