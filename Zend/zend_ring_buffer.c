@@ -543,34 +543,7 @@ ZEND_API zend_result zend_ring_buffer_push_atomic(zend_ring_buffer *buffer, cons
 	available = buffer->capacity - (head - tail_snap);
 
 	if (UNEXPECTED(available == 0)) {
-		if (!(buffer->flags & ZEND_RING_BUFFER_AUTO_GROW)) {
-			return FAILURE;
-		}
-
-		size_t old_capacity = buffer->capacity;
-		size_t new_capacity = old_capacity * 2;
-		size_t count = head - tail_snap;
-		void *new_data = pemalloc(new_capacity * buffer->item_size,
-			(buffer->flags & ZEND_RING_BUFFER_PERSISTENT) != 0);
-
-		if (UNEXPECTED(!new_data)) {
-			RING_BUFFER_ERROR("Failed to resize ring buffer");
-			return FAILURE;
-		}
-
-		for (size_t i = 0; i < count; i++) {
-			char *src = (char*)buffer->data + ((tail_snap + i) & (old_capacity - 1)) * buffer->item_size;
-			char *dest = (char*)new_data + i * buffer->item_size;
-			memcpy(dest, src, buffer->item_size);
-		}
-
-		pefree(buffer->data, (buffer->flags & ZEND_RING_BUFFER_PERSISTENT) != 0);
-		buffer->data = new_data;
-		buffer->capacity = new_capacity;
-		zend_atomic_size_t_store_ex(&buffer->head_atomic, count);
-		buffer->tail = 0;
-
-		head = zend_atomic_size_t_load_ex(&buffer->head_atomic);
+		return FAILURE;
 	}
 
 	slot = zend_atomic_size_t_fetch_add_ex(&buffer->head_atomic, 1);
