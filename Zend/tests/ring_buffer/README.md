@@ -28,8 +28,8 @@ make test
 Or run individually:
 
 ```bash
-./test_single_threaded    # Single-threaded mode tests
-./test_spsc_atomic        # SPSC atomic mode tests
+./test_st    # Single-threaded mode tests
+./test_mt    # Multi-threaded SPSC atomic tests
 ```
 
 ## Clean

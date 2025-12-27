@@ -3,22 +3,22 @@ CFLAGS = -Wall -Wextra -g -I../.. -DZEND_RING_BUFFER_STANDALONE
 LDFLAGS = -lcmocka -pthread
 
 RING_BUFFER_SRC = ../../zend_ring_buffer.c
-TESTS = test_single_threaded test_spsc_atomic
+TESTS = test_st test_mt
 
 all: $(TESTS)
 
-test_single_threaded: test_single_threaded.c $(RING_BUFFER_SRC)
+test_st: test_st.c $(RING_BUFFER_SRC)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-test_spsc_atomic: test_spsc_atomic.c $(RING_BUFFER_SRC)
+test_mt: test_mt.c $(RING_BUFFER_SRC)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 test: all
 	@echo "Running single-threaded tests..."
-	./test_single_threaded
+	./test_st
 	@echo ""
-	@echo "Running SPSC atomic tests..."
-	./test_spsc_atomic
+	@echo "Running multi-threaded tests..."
+	./test_mt
 
 clean:
 	rm -f $(TESTS)
