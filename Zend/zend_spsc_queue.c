@@ -15,9 +15,34 @@
 #define INITIAL_CAPACITY 64
 
 /*
+ * Allocate new buffer for writer at given index
+ */
+zend_always_inline zend_ring_buffer* allocate_buffer(zend_spsc_queue *queue, const int buf_idx)
+{
+	uint32_t flags = ZEND_RING_BUFFER_ATOMIC_HEAD;
+	if (queue->persistent) {
+		flags |= ZEND_RING_BUFFER_PERSISTENT;
+	}
+
+	zend_ring_buffer *new_buffer = zend_ring_buffer_new(queue->capacity, sizeof(void *), flags);
+	if (UNEXPECTED(!new_buffer)) {
+		return NULL;
+	}
+
+	void *expected = NULL;
+	if (UNEXPECTED(!zend_atomic_ptr_compare_exchange_ex(&queue->buf[buf_idx], &expected, new_buffer))) {
+		zend_ring_buffer_free(new_buffer);
+		new_buffer = zend_atomic_ptr_load_ex(&queue->buf[buf_idx]);
+		ZEND_ASSERT(new_buffer != NULL);
+	}
+
+	return new_buffer;
+}
+
+/*
  * Initialize SPSC queue
  */
-ZEND_API bool zend_spsc_queue_init(zend_spsc_queue *q, size_t initial_capacity, bool persistent)
+ZEND_API bool zend_spsc_queue_init(zend_spsc_queue *queue, size_t initial_capacity, bool persistent)
 {
 	if (initial_capacity == 0) {
 		initial_capacity = INITIAL_CAPACITY;
@@ -33,10 +58,11 @@ ZEND_API bool zend_spsc_queue_init(zend_spsc_queue *q, size_t initial_capacity, 
 		return false;
 	}
 
-	zend_atomic_ptr_store_ex(&q->buf[0], buf0);
-	zend_atomic_ptr_store_ex(&q->buf[1], NULL);
-	zend_atomic_int_store_ex(&q->write_hint, 0);
-	q->persistent = persistent;
+	zend_atomic_ptr_store_ex(&queue->buf[0], buf0);
+	zend_atomic_ptr_store_ex(&queue->buf[1], NULL);
+	zend_atomic_int_store_ex(&queue->write_hint, 0);
+	queue->capacity = buf0->capacity;
+	queue->persistent = persistent;
 
 	return true;
 }
@@ -44,10 +70,10 @@ ZEND_API bool zend_spsc_queue_init(zend_spsc_queue *q, size_t initial_capacity, 
 /*
  * Free SPSC queue
  */
-ZEND_API void zend_spsc_queue_free(zend_spsc_queue *q)
+ZEND_API void zend_spsc_queue_free(zend_spsc_queue *queue)
 {
-	zend_ring_buffer *buf0 = zend_atomic_ptr_load_ex(&q->buf[0]);
-	zend_ring_buffer *buf1 = zend_atomic_ptr_load_ex(&q->buf[1]);
+	zend_ring_buffer *buf0 = zend_atomic_ptr_load_ex(&queue->buf[0]);
+	zend_ring_buffer *buf1 = zend_atomic_ptr_load_ex(&queue->buf[1]);
 
 	if (buf0) {
 		zend_ring_buffer_free(buf0);
@@ -62,22 +88,23 @@ ZEND_API void zend_spsc_queue_free(zend_spsc_queue *q)
  * Case A: buf[read_idx] == NULL → allocate new buffer
  * Case B: buf[read_idx] != NULL → writer switches to other buffer
  */
-zend_ring_buffer* zend_spsc_queue_resize(zend_spsc_queue *q)
+zend_ring_buffer* zend_spsc_queue_resize(zend_spsc_queue *queue)
 {
-	const int write_hint = zend_atomic_int_load_ex(&q->write_hint);
+	const int write_hint = zend_atomic_int_load_ex(&queue->write_hint);
 	const int read_idx = 1 - write_hint;
 
-	zend_ring_buffer *current_buffer = zend_atomic_ptr_load_ex(&q->buf[write_hint]);
+	zend_ring_buffer *current_buffer = zend_atomic_ptr_load_ex(&queue->buf[write_hint]);
 
 	ZEND_ASSERT(current_buffer != NULL);
 	const size_t new_capacity = current_buffer->capacity * 2;
+	queue->capacity = new_capacity;
 
 	uint32_t flags = ZEND_RING_BUFFER_ATOMIC_HEAD;
-	if (q->persistent) {
+	if (queue->persistent) {
 		flags |= ZEND_RING_BUFFER_PERSISTENT;
 	}
 
-	const zend_ring_buffer *fallback_buffer = zend_atomic_ptr_load_ex(&q->buf[read_idx]);
+	const zend_ring_buffer *fallback_buffer = zend_atomic_ptr_load_ex(&queue->buf[read_idx]);
 
 	if (EXPECTED(fallback_buffer == NULL)) {
 		/* Case A: Reader free, allocate new buffer */
@@ -88,16 +115,16 @@ zend_ring_buffer* zend_spsc_queue_resize(zend_spsc_queue *q)
 
 		/* Try to install new buffer via CAS */
 		void *expected = NULL;
-		if (!zend_atomic_ptr_compare_exchange_ex(&q->buf[read_idx], &expected, buffer)) {
+		if (!zend_atomic_ptr_compare_exchange_ex(&queue->buf[read_idx], &expected, buffer)) {
 			/* Race: reader returned buffer, use it instead */
 			zend_ring_buffer_free(buffer);
 		}
 
 		/* Switch writer to the other buffer */
-		zend_atomic_int_store_ex(&q->write_hint, read_idx);
+		zend_atomic_int_store_ex(&queue->write_hint, read_idx);
 
 		/* Return the buffer we'll write to */
-		return zend_atomic_ptr_load_ex(&q->buf[read_idx]);
+		return zend_atomic_ptr_load_ex(&queue->buf[read_idx]);
 
 	} else {
 		/* Case B: Reader busy, just return current buffer (will continue filling it) */
@@ -108,24 +135,20 @@ zend_ring_buffer* zend_spsc_queue_resize(zend_spsc_queue *q)
 /*
  * Push item (writer fast path)
  */
-ZEND_API bool zend_spsc_queue_push(zend_spsc_queue *q, void *item)
+ZEND_API bool zend_spsc_queue_push(zend_spsc_queue *queue, void *item)
 {
-	const int write_hint = zend_atomic_int_load_ex(&q->write_hint);
-	zend_ring_buffer *current_buffer = zend_atomic_ptr_load_ex(&q->buf[write_hint]);
+	const int write_hint = zend_atomic_int_load_ex(&queue->write_hint);
+	zend_ring_buffer *current_buffer = zend_atomic_ptr_load_ex(&queue->buf[write_hint]);
 
 	if (UNEXPECTED(!current_buffer)) {
-		current_buffer = zend_spsc_queue_resize(q);
+		current_buffer = allocate_buffer(queue, write_hint);
 		if (UNEXPECTED(!current_buffer)) {
 			return false;
 		}
 	}
 
-	const size_t head = zend_atomic_size_t_load_ex(&current_buffer->head_atomic);
-	const size_t tail_snap = current_buffer->tail;
-	const size_t available = current_buffer->capacity - (head - tail_snap);
-
-	if (UNEXPECTED(available == 0)) {
-		current_buffer = zend_spsc_queue_resize(q);
+	if (UNEXPECTED(zend_ring_buffer_is_full_atomic(current_buffer))) {
+		current_buffer = zend_spsc_queue_resize(queue);
 		if (UNEXPECTED(!current_buffer)) {
 			return false;
 		}
@@ -137,17 +160,17 @@ ZEND_API bool zend_spsc_queue_push(zend_spsc_queue *q, void *item)
 /*
  * Pop batch (reader operation)
  */
-ZEND_API size_t zend_spsc_queue_pop_batch(zend_spsc_queue *q, void **items, size_t max_count)
+ZEND_API size_t zend_spsc_queue_pop_batch(zend_spsc_queue *queue, void **items, size_t max_count)
 {
-	const int write_hint = zend_atomic_int_load_ex(&q->write_hint);
+	const int write_hint = zend_atomic_int_load_ex(&queue->write_hint);
 	const int read_idx = 1 - write_hint;
 
-	zend_ring_buffer *dedicated_buffer = zend_atomic_ptr_load_ex(&q->buf[read_idx]);
+	zend_ring_buffer *dedicated_buffer = zend_atomic_ptr_load_ex(&queue->buf[read_idx]);
 
 	if (dedicated_buffer != NULL) {
 		/* Path 1: Dedicated buffer available, take it via CAS */
 		void *expected = dedicated_buffer;
-		if (!zend_atomic_ptr_compare_exchange_ex(&q->buf[read_idx], &expected, NULL)) {
+		if (!zend_atomic_ptr_compare_exchange_ex(&queue->buf[read_idx], &expected, NULL)) {
 			return 0;
 		}
 
@@ -167,14 +190,14 @@ ZEND_API size_t zend_spsc_queue_pop_batch(zend_spsc_queue *q, void **items, size
 		dedicated_buffer->tail = 0;
 
 		expected = NULL;
-		if (!zend_atomic_ptr_compare_exchange_ex(&q->buf[read_idx], &expected, dedicated_buffer)) {
+		if (!zend_atomic_ptr_compare_exchange_ex(&queue->buf[read_idx], &expected, dedicated_buffer)) {
 			zend_ring_buffer_free(dedicated_buffer);
 		}
 
 		return count;
 	} else {
 		/* Path 2: No dedicated buffer, read from active buffer */
-		zend_ring_buffer *active_buffer = zend_atomic_ptr_load_ex(&q->buf[write_hint]);
+		zend_ring_buffer *active_buffer = zend_atomic_ptr_load_ex(&queue->buf[write_hint]);
 		if (!active_buffer) {
 			return 0;
 		}

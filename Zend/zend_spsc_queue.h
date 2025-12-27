@@ -82,33 +82,35 @@ static inline void zend_atomic_int_store_ex(zend_atomic_int *obj, int desired) {
  * SPSC queue structure (double-buffering design)
  * - buf[2]: double buffering (0 and 1) using zend_ring_buffer with ATOMIC_HEAD
  * - write_hint: which buffer writer uses (0 or 1)
+ * - capacity: current buffer capacity
  * - persistent: memory allocation flag
  */
 typedef struct _zend_spsc_queue {
 	zend_atomic_ptr buf[2];      /* atomic pointers to zend_ring_buffer */
 	zend_atomic_int write_hint;  /* active writer buffer (0 or 1) */
+	size_t capacity;             /* current buffer capacity */
 	bool persistent;             /* allocation type */
 } zend_spsc_queue;
 
 /*
  * Initialization & Cleanup
  */
-ZEND_API bool zend_spsc_queue_init(zend_spsc_queue *q, size_t initial_capacity, bool persistent);
-ZEND_API void zend_spsc_queue_free(zend_spsc_queue *q);
+ZEND_API bool zend_spsc_queue_init(zend_spsc_queue *queue, size_t initial_capacity, bool persistent);
+ZEND_API void zend_spsc_queue_free(zend_spsc_queue *queue);
 
 /*
  * Writer Operations
  */
-ZEND_API bool zend_spsc_queue_push(zend_spsc_queue *q, void *item);
+ZEND_API bool zend_spsc_queue_push(zend_spsc_queue *queue, void *item);
 
 /*
  * Reader Operations
  */
-ZEND_API size_t zend_spsc_queue_pop_batch(zend_spsc_queue *q, void **items, size_t max_count);
+ZEND_API size_t zend_spsc_queue_pop_batch(zend_spsc_queue *queue, void **items, size_t max_count);
 
 /*
  * Internal helpers (exposed for testing)
  */
-zend_ring_buffer* zend_spsc_queue_resize(zend_spsc_queue *q);
+zend_ring_buffer* zend_spsc_queue_resize(zend_spsc_queue *queue);
 
 #endif /* ZEND_SPSC_QUEUE_H */

@@ -159,6 +159,20 @@ ZEND_API bool zend_ring_buffer_is_empty(const zend_ring_buffer *buffer)
 }
 
 /**
+ * Check if buffer is full (atomic version for SPSC).
+ */
+ZEND_API bool zend_ring_buffer_is_full_atomic(const zend_ring_buffer *buffer)
+{
+	ZEND_ASSERT(buffer->flags & ZEND_RING_BUFFER_ATOMIC_HEAD);
+
+	const size_t head = zend_atomic_size_t_load_ex(&buffer->head_atomic);
+	const size_t tail_snap = buffer->tail;
+	const size_t available = buffer->capacity - (head - tail_snap);
+
+	return available == 0;
+}
+
+/**
  * Get number of elements in buffer.
  */
 ZEND_API size_t zend_ring_buffer_count(const zend_ring_buffer *buffer)
