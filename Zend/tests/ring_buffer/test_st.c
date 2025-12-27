@@ -89,9 +89,11 @@ static void test_full_buffer(void **state)
 {
 	(void)state;
 
+	/* Capacity=4 means 3 usable slots (1 slot reserved to distinguish full/empty) */
 	zend_ring_buffer buf;
 	zend_ring_buffer_init(&buf, 4, sizeof(void*), 0);
 
+	/* Fill all 3 usable slots */
 	for (size_t i = 0; i < 3; i++) {
 		void *ptr = (void*)(uintptr_t)(i + 1);
 		zend_ring_buffer_push_ptr_fast(&buf, ptr);
@@ -99,6 +101,7 @@ static void test_full_buffer(void **state)
 
 	assert_true(zend_ring_buffer_is_full(&buf));
 
+	/* Fourth push should fail (buffer is full) */
 	void *ptr = (void*)0x999;
 	zend_result result = zend_ring_buffer_push_ptr_fast(&buf, ptr);
 	assert_int_equal(result, FAILURE);
@@ -201,6 +204,17 @@ static void test_head_tail_exchange(void **state)
 	zend_ring_buffer_push(&buf, &value, false);
 
 	int new_value = 500;
+	/**
+	 * If the head is to the left of the tail and the difference between them is one element,
+	 * the circular buffer is considered full, even though the tail points to a read element
+	 * and theoretically one more element could be written.
+	 *
+	 * However, such an operation would put the buffer in an undefined state, which would be equivalent to being empty.
+	 * In other words, the rule is as follows:
+	 * the tail can "catch up" to the head, but the head is not allowed to catch up to the tail.
+	 *
+	 * The minimum difference between them must always be one element if the head is to the left.
+	 */
 	zend_ring_buffer_push(&buf, &new_value, false);
 
 	assert_int_equal(zend_ring_buffer_push(&buf, &new_value, false), FAILURE);
