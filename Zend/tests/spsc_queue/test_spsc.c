@@ -174,6 +174,105 @@ static void* reader_thread(void *arg)
 	return (void*)(total_read == data->count ? 0 : 1);
 }
 
+static void test_reader_buffer_switch(void **state)
+{
+	(void)state;
+
+	zend_spsc_queue q;
+	zend_spsc_queue_init(&q, 4, false);
+
+	/* Fill buffer to trigger resize (Case A: allocate fallback) */
+	for (size_t i = 0; i < 5; i++) {
+		void *item = (void*)(uintptr_t)(i + 1);
+		bool result = zend_spsc_queue_push(&q, item);
+		assert_true(result);
+	}
+
+	/* Now we have: buf[0] (4 items) and buf[1] (1 item), write_hint = 1 */
+	/* Read from buf[0] (dedicated buffer for reader) until exhausted */
+	for (size_t i = 0; i < 4; i++) {
+		void *popped;
+		bool result = zend_spsc_queue_pop(&q, &popped);
+		assert_true(result);
+		assert_ptr_equal(popped, (void*)(uintptr_t)(i + 1));
+	}
+
+	/* Next pop should switch to writer's buffer (Path 2 - MUTEX) */
+	void *popped;
+	bool result = zend_spsc_queue_pop(&q, &popped);
+	assert_true(result);
+	assert_ptr_equal(popped, (void*)(uintptr_t)5);
+
+	/* Verify write_hint switched */
+	int hint = zend_atomic_int_load_ex(&q.write_hint);
+	assert_int_equal(hint, 0);
+
+	zend_spsc_queue_free(&q);
+}
+
+static void test_case_b1_switch_to_fallback(void **state)
+{
+	(void)state;
+
+	zend_spsc_queue q;
+	zend_spsc_queue_init(&q, 4, false);
+
+	/* Fill first buffer and trigger resize to create fallback */
+	for (size_t i = 0; i < 5; i++) {
+		zend_spsc_queue_push(&q, (void*)(uintptr_t)(i + 1));
+	}
+
+	/* Now: buf[0] full (4 items), buf[1] has 1 item, write_hint = 1 */
+	/* Read ALL items from buf[0] to make it empty */
+	void *tmp;
+	zend_spsc_queue_pop(&q, &tmp);
+	zend_spsc_queue_pop(&q, &tmp);
+	zend_spsc_queue_pop(&q, &tmp);
+	zend_spsc_queue_pop(&q, &tmp);
+
+	/* Now buf[0] (fallback) empty, buf[1] has 1 item */
+	/* Fill buf[1] to trigger resize → should switch to buf[0] (Case B1) */
+	for (size_t i = 0; i < 8; i++) {
+		zend_spsc_queue_push(&q, (void*)(uintptr_t)(100 + i));
+	}
+
+	/* Verify write_hint switched to 0 (Case B1) */
+	int hint = zend_atomic_int_load_ex(&q.write_hint);
+	assert_int_equal(hint, 0);
+
+	zend_spsc_queue_free(&q);
+}
+
+static void test_case_b2_resize_in_place(void **state)
+{
+	(void)state;
+
+	zend_spsc_queue q;
+	zend_spsc_queue_init(&q, 2, false);
+
+	/* Fill buf[0] to trigger resize → creates buf[1] */
+	for (size_t i = 0; i < 3; i++) {
+		zend_spsc_queue_push(&q, (void*)(uintptr_t)(i + 1));
+	}
+
+	/* Now: buf[0] full, buf[1] has 1 item, write_hint = 1 */
+	/* Fill buf[1] completely (capacity 4) */
+	for (size_t i = 0; i < 3; i++) {
+		zend_spsc_queue_push(&q, (void*)(uintptr_t)(10 + i));
+	}
+
+	/* Both buffers full: buf[0] (2 items), buf[1] (4 items) */
+	/* Next push triggers Case B2: resize buf[1] in-place with MUTEX */
+	bool result = zend_spsc_queue_push(&q, (void*)(uintptr_t)99);
+	assert_true(result);
+
+	/* Verify buf[1] was resized (capacity should be 8 now) */
+	zend_ring_buffer *buf1 = zend_atomic_ptr_load_ex(&q.buf[1]);
+	assert_int_equal(buf1->capacity, 8);
+
+	zend_spsc_queue_free(&q);
+}
+
 static void test_multithread_spsc(void **state)
 {
 	(void)state;
@@ -209,6 +308,9 @@ int main(void)
 		cmocka_unit_test(test_pop_empty),
 		cmocka_unit_test(test_resize),
 		cmocka_unit_test(test_power_of_2_rounding),
+		cmocka_unit_test(test_reader_buffer_switch),
+		cmocka_unit_test(test_case_b1_switch_to_fallback),
+		cmocka_unit_test(test_case_b2_resize_in_place),
 		cmocka_unit_test(test_multithread_spsc),
 	};
 
