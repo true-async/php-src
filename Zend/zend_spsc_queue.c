@@ -17,38 +17,37 @@
 /*
  * Initialize SPSC queue
  */
-ZEND_API void zend_spsc_queue_init(zend_spsc_queue *q, size_t initial_capacity, bool persistent)
+ZEND_API bool zend_spsc_queue_init(zend_spsc_queue *q, size_t initial_capacity, bool persistent)
 {
-	zend_ring_buffer *buf0;
-	uint32_t flags;
-
 	if (initial_capacity == 0) {
 		initial_capacity = INITIAL_CAPACITY;
 	}
 
-	flags = ZEND_RING_BUFFER_ATOMIC_HEAD;
+	uint32_t flags = ZEND_RING_BUFFER_ATOMIC_HEAD;
 	if (persistent) {
 		flags |= ZEND_RING_BUFFER_PERSISTENT;
 	}
 
-	buf0 = zend_ring_buffer_new(initial_capacity, sizeof(void*), flags);
-	ZEND_ASSERT(buf0 != NULL);
+	zend_ring_buffer *buf0 = zend_ring_buffer_new(initial_capacity, sizeof(void *), flags);
+	if (UNEXPECTED(!buf0)) {
+		return false;
+	}
 
 	zend_atomic_ptr_store_ex(&q->buf[0], buf0);
 	zend_atomic_ptr_store_ex(&q->buf[1], NULL);
 	zend_atomic_int_store_ex(&q->write_hint, 0);
 	q->persistent = persistent;
+
+	return true;
 }
 
 /*
- * Destroy SPSC queue
+ * Free SPSC queue
  */
-ZEND_API void zend_spsc_queue_destroy(zend_spsc_queue *q)
+ZEND_API void zend_spsc_queue_free(zend_spsc_queue *q)
 {
-	zend_ring_buffer *buf0, *buf1;
-
-	buf0 = (zend_ring_buffer*)zend_atomic_ptr_load_ex(&q->buf[0]);
-	buf1 = (zend_ring_buffer*)zend_atomic_ptr_load_ex(&q->buf[1]);
+	zend_ring_buffer *buf0 = zend_atomic_ptr_load_ex(&q->buf[0]);
+	zend_ring_buffer *buf1 = zend_atomic_ptr_load_ex(&q->buf[1]);
 
 	if (buf0) {
 		zend_ring_buffer_free(buf0);
@@ -65,48 +64,44 @@ ZEND_API void zend_spsc_queue_destroy(zend_spsc_queue *q)
  */
 zend_ring_buffer* zend_spsc_queue_resize(zend_spsc_queue *q)
 {
-	int hint, read_idx;
-	zend_ring_buffer *buf_current, *buf_other, *buf_new;
-	size_t new_capacity;
-	uint32_t flags;
+	const int write_hint = zend_atomic_int_load_ex(&q->write_hint);
+	const int read_idx = 1 - write_hint;
 
-	hint = zend_atomic_int_load_ex(&q->write_hint);
-	read_idx = 1 - hint;
+	zend_ring_buffer *current_buffer = zend_atomic_ptr_load_ex(&q->buf[write_hint]);
 
-	buf_current = (zend_ring_buffer*)zend_atomic_ptr_load_ex(&q->buf[hint]);
-	buf_other = (zend_ring_buffer*)zend_atomic_ptr_load_ex(&q->buf[read_idx]);
+	ZEND_ASSERT(current_buffer != NULL);
+	const size_t new_capacity = current_buffer->capacity * 2;
 
-	ZEND_ASSERT(buf_current != NULL);
-	new_capacity = buf_current->capacity * 2;
-
-	flags = ZEND_RING_BUFFER_ATOMIC_HEAD;
+	uint32_t flags = ZEND_RING_BUFFER_ATOMIC_HEAD;
 	if (q->persistent) {
 		flags |= ZEND_RING_BUFFER_PERSISTENT;
 	}
 
-	if (buf_other == NULL) {
+	const zend_ring_buffer *fallback_buffer = zend_atomic_ptr_load_ex(&q->buf[read_idx]);
+
+	if (EXPECTED(fallback_buffer == NULL)) {
 		/* Case A: Reader free, allocate new buffer */
-		buf_new = zend_ring_buffer_new(new_capacity, sizeof(void*), flags);
-		if (UNEXPECTED(!buf_new)) {
+		zend_ring_buffer *buffer = zend_ring_buffer_new(new_capacity, sizeof(void *), flags);
+		if (UNEXPECTED(!buffer)) {
 			return NULL;
 		}
 
 		/* Try to install new buffer via CAS */
 		void *expected = NULL;
-		if (!zend_atomic_ptr_compare_exchange_ex(&q->buf[read_idx], &expected, buf_new)) {
+		if (!zend_atomic_ptr_compare_exchange_ex(&q->buf[read_idx], &expected, buffer)) {
 			/* Race: reader returned buffer, use it instead */
-			zend_ring_buffer_free(buf_new);
+			zend_ring_buffer_free(buffer);
 		}
 
 		/* Switch writer to the other buffer */
 		zend_atomic_int_store_ex(&q->write_hint, read_idx);
 
 		/* Return the buffer we'll write to */
-		return (zend_ring_buffer*)zend_atomic_ptr_load_ex(&q->buf[read_idx]);
+		return zend_atomic_ptr_load_ex(&q->buf[read_idx]);
 
 	} else {
 		/* Case B: Reader busy, just return current buffer (will continue filling it) */
-		return buf_current;
+		return current_buffer;
 	}
 }
 
@@ -115,39 +110,28 @@ zend_ring_buffer* zend_spsc_queue_resize(zend_spsc_queue *q)
  */
 ZEND_API bool zend_spsc_queue_push(zend_spsc_queue *q, void *item)
 {
-	int hint;
-	zend_ring_buffer *buf;
-	size_t head, tail_snap, available;
+	const int write_hint = zend_atomic_int_load_ex(&q->write_hint);
+	zend_ring_buffer *current_buffer = zend_atomic_ptr_load_ex(&q->buf[write_hint]);
 
-	hint = zend_atomic_int_load_ex(&q->write_hint);
-	buf = (zend_ring_buffer*)zend_atomic_ptr_load_ex(&q->buf[hint]);
-
-	if (UNEXPECTED(!buf)) {
-		/* Resize in progress, retry */
-		buf = zend_spsc_queue_resize(q);
-		if (!buf) {
+	if (UNEXPECTED(!current_buffer)) {
+		current_buffer = zend_spsc_queue_resize(q);
+		if (UNEXPECTED(!current_buffer)) {
 			return false;
 		}
 	}
 
-	/* Check if buffer is full */
-	head = zend_atomic_size_t_load_ex(&buf->head_atomic);
-	tail_snap = buf->tail;
-	available = buf->capacity - (head - tail_snap);
+	const size_t head = zend_atomic_size_t_load_ex(&current_buffer->head_atomic);
+	const size_t tail_snap = current_buffer->tail;
+	const size_t available = current_buffer->capacity - (head - tail_snap);
 
 	if (UNEXPECTED(available == 0)) {
-		/* Buffer full, trigger resize */
-		buf = zend_spsc_queue_resize(q);
-		if (!buf) {
+		current_buffer = zend_spsc_queue_resize(q);
+		if (UNEXPECTED(!current_buffer)) {
 			return false;
 		}
-		/* Retry with new buffer */
-		hint = zend_atomic_int_load_ex(&q->write_hint);
-		buf = (zend_ring_buffer*)zend_atomic_ptr_load_ex(&q->buf[hint]);
 	}
 
-	/* Use ptr_fast_atomic for zero-copy atomic push */
-	return zend_ring_buffer_push_ptr_fast_atomic(buf, item) == SUCCESS;
+	return zend_ring_buffer_push_ptr_fast_atomic(current_buffer, item) == SUCCESS;
 }
 
 /*
@@ -155,67 +139,58 @@ ZEND_API bool zend_spsc_queue_push(zend_spsc_queue *q, void *item)
  */
 ZEND_API size_t zend_spsc_queue_pop_batch(zend_spsc_queue *q, void **items, size_t max_count)
 {
-	int hint, read_idx;
-	zend_ring_buffer *buf;
-	void *expected;
-	size_t count = 0;
-	size_t head, tail;
+	const int write_hint = zend_atomic_int_load_ex(&q->write_hint);
+	const int read_idx = 1 - write_hint;
 
-	hint = zend_atomic_int_load_ex(&q->write_hint);
-	read_idx = 1 - hint;
+	zend_ring_buffer *dedicated_buffer = zend_atomic_ptr_load_ex(&q->buf[read_idx]);
 
-	/* Check if there's a dedicated buffer for reader */
-	buf = (zend_ring_buffer*)zend_atomic_ptr_load_ex(&q->buf[read_idx]);
-
-	if (buf != NULL) {
+	if (dedicated_buffer != NULL) {
 		/* Path 1: Dedicated buffer available, take it via CAS */
-		expected = buf;
+		void *expected = dedicated_buffer;
 		if (!zend_atomic_ptr_compare_exchange_ex(&q->buf[read_idx], &expected, NULL)) {
-			/* Race: writer switched or did realloc, retry */
 			return 0;
 		}
 
-		/* We now own the buffer, read all items */
-		head = zend_atomic_size_t_load_ex(&buf->head_atomic);
-		tail = buf->tail;
+		const size_t head = zend_atomic_size_t_load_ex(&dedicated_buffer->head_atomic);
+		size_t tail = dedicated_buffer->tail;
+		size_t count = 0;
 
 		while (tail < head && count < max_count) {
-			void **slot = (void**)((char*)buf->data + (tail & (buf->capacity - 1)) * buf->item_size);
+			void **slot = (void**)((char*)dedicated_buffer->data + (tail & (dedicated_buffer->capacity - 1)) * dedicated_buffer->item_size);
 			items[count++] = *slot;
 			tail++;
 		}
 
-		buf->tail = tail;
+		dedicated_buffer->tail = tail;
 
-		/* Reset buffer for reuse */
-		zend_atomic_size_t_store_ex(&buf->head_atomic, 0);
-		buf->tail = 0;
+		zend_atomic_size_t_store_ex(&dedicated_buffer->head_atomic, 0);
+		dedicated_buffer->tail = 0;
 
-		/* Return buffer via CAS */
 		expected = NULL;
-		if (!zend_atomic_ptr_compare_exchange_ex(&q->buf[read_idx], &expected, buf)) {
-			/* Race: writer did realloc, free old buffer */
-			zend_ring_buffer_free(buf);
+		if (!zend_atomic_ptr_compare_exchange_ex(&q->buf[read_idx], &expected, dedicated_buffer)) {
+			zend_ring_buffer_free(dedicated_buffer);
 		}
 
+		return count;
 	} else {
 		/* Path 2: No dedicated buffer, read from active buffer */
-		buf = (zend_ring_buffer*)zend_atomic_ptr_load_ex(&q->buf[hint]);
-		if (!buf) {
+		zend_ring_buffer *active_buffer = zend_atomic_ptr_load_ex(&q->buf[write_hint]);
+		if (!active_buffer) {
 			return 0;
 		}
 
-		head = zend_atomic_size_t_load_ex(&buf->head_atomic);
-		tail = buf->tail;
+		const size_t head = zend_atomic_size_t_load_ex(&active_buffer->head_atomic);
+		size_t tail = active_buffer->tail;
+		size_t count = 0;
 
 		while (tail < head && count < max_count) {
-			void **slot = (void**)((char*)buf->data + (tail & (buf->capacity - 1)) * buf->item_size);
+			void **slot = (void**)((char*)active_buffer->data + (tail & (active_buffer->capacity - 1)) * active_buffer->item_size);
 			items[count++] = *slot;
 			tail++;
 		}
 
-		buf->tail = tail;
-	}
+		active_buffer->tail = tail;
 
-	return count;
+		return count;
+	}
 }

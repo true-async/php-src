@@ -12,9 +12,10 @@ static void test_init_destroy(void **state)
 	(void)state;
 
 	zend_spsc_queue q;
-	zend_spsc_queue_init(&q, 16, false);
+	bool result = zend_spsc_queue_init(&q, 16, false);
+	assert_true(result);
 
-	zend_ring_buffer *buf0 = (zend_ring_buffer*)zend_atomic_ptr_load_ex(&q.buf[0]);
+	zend_ring_buffer *buf0 = zend_atomic_ptr_load_ex(&q.buf[0]);
 	assert_non_null(buf0);
 	assert_int_equal(buf0->capacity, 16);
 
@@ -24,7 +25,7 @@ static void test_init_destroy(void **state)
 	int hint = zend_atomic_int_load_ex(&q.write_hint);
 	assert_int_equal(hint, 0);
 
-	zend_spsc_queue_destroy(&q);
+	zend_spsc_queue_free(&q);
 }
 
 static void test_push_pop_single(void **state)
@@ -43,7 +44,7 @@ static void test_push_pop_single(void **state)
 	assert_int_equal(count, 1);
 	assert_ptr_equal(popped[0], item);
 
-	zend_spsc_queue_destroy(&q);
+	zend_spsc_queue_free(&q);
 }
 
 static void test_push_pop_multiple(void **state)
@@ -70,7 +71,7 @@ static void test_push_pop_multiple(void **state)
 		assert_ptr_equal(popped[i], items[i]);
 	}
 
-	zend_spsc_queue_destroy(&q);
+	zend_spsc_queue_free(&q);
 }
 
 static void test_pop_empty(void **state)
@@ -84,7 +85,7 @@ static void test_pop_empty(void **state)
 	size_t count = zend_spsc_queue_pop_batch(&q, popped, 1);
 	assert_int_equal(count, 0);
 
-	zend_spsc_queue_destroy(&q);
+	zend_spsc_queue_free(&q);
 }
 
 static void test_resize(void **state)
@@ -108,7 +109,7 @@ static void test_resize(void **state)
 		assert_ptr_equal(popped[i], (void*)(uintptr_t)(i + 1));
 	}
 
-	zend_spsc_queue_destroy(&q);
+	zend_spsc_queue_free(&q);
 }
 
 static void test_pop_batch_limit(void **state)
@@ -138,7 +139,7 @@ static void test_pop_batch_limit(void **state)
 		assert_ptr_equal(popped[i], (void*)(uintptr_t)(i + 6));
 	}
 
-	zend_spsc_queue_destroy(&q);
+	zend_spsc_queue_free(&q);
 }
 
 static void test_power_of_2_rounding(void **state)
@@ -148,19 +149,19 @@ static void test_power_of_2_rounding(void **state)
 	zend_spsc_queue q;
 
 	zend_spsc_queue_init(&q, 13, false);
-	zend_ring_buffer *buf = (zend_ring_buffer*)zend_atomic_ptr_load_ex(&q.buf[0]);
+	zend_ring_buffer *buf = zend_atomic_ptr_load_ex(&q.buf[0]);
 	assert_int_equal(buf->capacity, 16);
-	zend_spsc_queue_destroy(&q);
+	zend_spsc_queue_free(&q);
 
 	zend_spsc_queue_init(&q, 32, false);
 	buf = (zend_ring_buffer*)zend_atomic_ptr_load_ex(&q.buf[0]);
 	assert_int_equal(buf->capacity, 32);
-	zend_spsc_queue_destroy(&q);
+	zend_spsc_queue_free(&q);
 
 	zend_spsc_queue_init(&q, 0, false);
 	buf = (zend_ring_buffer*)zend_atomic_ptr_load_ex(&q.buf[0]);
 	assert_int_equal(buf->capacity, 64);
-	zend_spsc_queue_destroy(&q);
+	zend_spsc_queue_free(&q);
 }
 
 typedef struct {
@@ -231,7 +232,7 @@ static void test_multithread_spsc(void **state)
 
 	assert_int_equal((uintptr_t)reader_result, 0);
 
-	zend_spsc_queue_destroy(&q);
+	zend_spsc_queue_free(&q);
 }
 
 int main(void)

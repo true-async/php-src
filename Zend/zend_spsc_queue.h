@@ -93,8 +93,8 @@ typedef struct _zend_spsc_queue {
 /*
  * Initialization & Cleanup
  */
-ZEND_API void zend_spsc_queue_init(zend_spsc_queue *q, size_t initial_capacity, bool persistent);
-ZEND_API void zend_spsc_queue_destroy(zend_spsc_queue *q);
+ZEND_API bool zend_spsc_queue_init(zend_spsc_queue *q, size_t initial_capacity, bool persistent);
+ZEND_API void zend_spsc_queue_free(zend_spsc_queue *q);
 
 /*
  * Writer Operations
