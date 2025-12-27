@@ -62,17 +62,16 @@ ZEND_API bool zend_spsc_queue_init(zend_spsc_queue *queue, size_t initial_capaci
 	zend_atomic_ptr_store_ex(&queue->buf[0], buf0);
 	zend_atomic_ptr_store_ex(&queue->buf[1], NULL);
 	zend_atomic_int_store_ex(&queue->write_hint, 0);
-	zend_atomic_int_store_ex(&queue->write_buffer_lock, 0);  /* lock free */
 
-	/* Initialize mutex for slow path contention */
+	/* Initialize handoff mutex */
 #ifndef ZEND_SPSC_QUEUE_STANDALONE
-	queue->write_buffer_mutex = tsrm_mutex_alloc();
-	if (UNEXPECTED(!queue->write_buffer_mutex)) {
+	queue->handoff_mutex = tsrm_mutex_alloc();
+	if (UNEXPECTED(!queue->handoff_mutex)) {
 		zend_ring_buffer_free(buf0);
 		return false;
 	}
 #else
-	if (pthread_mutex_init(&queue->write_buffer_mutex, NULL) != 0) {
+	if (pthread_mutex_init(&queue->handoff_mutex, NULL) != 0) {
 		zend_ring_buffer_free(buf0);
 		return false;
 	}
@@ -99,13 +98,13 @@ ZEND_API void zend_spsc_queue_free(zend_spsc_queue *queue)
 		zend_ring_buffer_free(buf1);
 	}
 
-	/* Free mutex */
+	/* Free handoff mutex */
 #ifndef ZEND_SPSC_QUEUE_STANDALONE
-	if (queue->write_buffer_mutex) {
-		tsrm_mutex_free(queue->write_buffer_mutex);
+	if (queue->handoff_mutex) {
+		tsrm_mutex_free(queue->handoff_mutex);
 	}
 #else
-	pthread_mutex_destroy(&queue->write_buffer_mutex);
+	pthread_mutex_destroy(&queue->handoff_mutex);
 #endif
 }
 
@@ -113,13 +112,13 @@ ZEND_API void zend_spsc_queue_free(zend_spsc_queue *queue)
  * Resize operation (writer slow path)
  *
  * Protocol:
- * 1. Writer tries to acquire write_buffer_lock via CAS
- * 2. If acquired (fast path):
- *    - Resize current buffer or switch to fallback
- *    - Release lock
- * 3. If failed (slow path):
- *    - Reader is switching buffers
- *    - Wait on mutex, then retry
+ * 1. Acquire handoff_mutex (serializes with reader buffer switching)
+ * 2. Perform resize or buffer switch
+ * 3. Release mutex
+ *
+ * Mutex provides efficient synchronization:
+ * - Fast path: uncontended lock via atomic op in userspace (futex)
+ * - Slow path: thread sleeps in kernel if reader holds lock
  *
  * State transitions:
  * Case A: Reader not using dedicated buffer (buf[read_idx] == NULL)
@@ -131,31 +130,12 @@ ZEND_API void zend_spsc_queue_free(zend_spsc_queue *queue)
  */
 zend_ring_buffer* zend_spsc_queue_resize(zend_spsc_queue *queue)
 {
-	/* Try to acquire lock (fast path) */
-	int expected_lock = 0;
-	if (UNEXPECTED(!zend_atomic_int_compare_exchange_ex(&queue->write_buffer_lock, &expected_lock, 1))) {
-		/*
-		 * Lock contention: reader is switching buffers (slow path - rare!)
-		 * Wait for reader to finish via mutex
-		 */
+	/* Acquire handoff mutex */
 #ifndef ZEND_SPSC_QUEUE_STANDALONE
-		tsrm_mutex_lock(queue->write_buffer_mutex);
-		tsrm_mutex_unlock(queue->write_buffer_mutex);
+	tsrm_mutex_lock(queue->handoff_mutex);
 #else
-		pthread_mutex_lock(&queue->write_buffer_mutex);
-		pthread_mutex_unlock(&queue->write_buffer_mutex);
+	pthread_mutex_lock(&queue->handoff_mutex);
 #endif
-		/* Retry - reader has released lock */
-		expected_lock = 0;
-		bool acquired = zend_atomic_int_compare_exchange_ex(&queue->write_buffer_lock, &expected_lock, 1);
-		ZEND_ASSERT(acquired && "Lock must be free after mutex wait");
-		(void)acquired;
-	}
-
-	/*
-	 * Lock acquired - proceed with resize
-	 * State: write_buffer_lock == 1, writer has exclusive access
-	 */
 	const int write_hint = zend_atomic_int_load_ex(&queue->write_hint);
 	const int read_idx = 1 - write_hint;
 
@@ -201,8 +181,12 @@ zend_ring_buffer* zend_spsc_queue_resize(zend_spsc_queue *queue)
 	}
 
 unlock:
-	/* Release lock */
-	zend_atomic_int_store_ex(&queue->write_buffer_lock, 0);
+	/* Release handoff mutex */
+#ifndef ZEND_SPSC_QUEUE_STANDALONE
+	tsrm_mutex_unlock(queue->handoff_mutex);
+#else
+	pthread_mutex_unlock(&queue->handoff_mutex);
+#endif
 	return result;
 }
 
@@ -266,36 +250,23 @@ ZEND_API bool zend_spsc_queue_pop(zend_spsc_queue *queue, void **item)
 			if (UNEXPECTED(tail >= head)) {
 				/*
 				 * Buffer empty - switch to writer's buffer (handoff protocol)
-				 * Try to acquire lock
+				 * Acquire mutex to serialize with writer resize
 				 */
-				int expected_lock = 0;
-				if (EXPECTED(zend_atomic_int_compare_exchange_ex(&queue->write_buffer_lock, &expected_lock, 1))) {
-					/* Lock acquired - switch write_hint */
-					zend_atomic_int_store_ex(&queue->write_hint, read_idx);
-
-					/* Release lock */
-					zend_atomic_int_store_ex(&queue->write_buffer_lock, 0);
-				} else {
-					/*
-					 * Lock contention: writer is resizing (slow path - rare!)
-					 * Acquire mutex to serialize with writer
-					 */
 #ifndef ZEND_SPSC_QUEUE_STANDALONE
-					tsrm_mutex_lock(queue->write_buffer_mutex);
+				tsrm_mutex_lock(queue->handoff_mutex);
 #else
-					pthread_mutex_lock(&queue->write_buffer_mutex);
+				pthread_mutex_lock(&queue->handoff_mutex);
 #endif
 
-					/* Now safe to switch */
-					zend_atomic_int_store_ex(&queue->write_hint, read_idx);
+				/* Switch write_hint */
+				zend_atomic_int_store_ex(&queue->write_hint, read_idx);
 
-					/* Release mutex */
+				/* Release mutex */
 #ifndef ZEND_SPSC_QUEUE_STANDALONE
-					tsrm_mutex_unlock(queue->write_buffer_mutex);
+				tsrm_mutex_unlock(queue->handoff_mutex);
 #else
-					pthread_mutex_unlock(&queue->write_buffer_mutex);
+				pthread_mutex_unlock(&queue->handoff_mutex);
 #endif
-				}
 			}
 
 			return true;

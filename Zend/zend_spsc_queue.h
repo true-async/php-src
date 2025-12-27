@@ -88,7 +88,7 @@ static inline bool zend_atomic_int_compare_exchange_ex(zend_atomic_int *obj, int
 #include <stdatomic.h>
 
 /*
- * SPSC queue structure (double-buffering design with lock-free handoff)
+ * SPSC queue structure (double-buffering design with mutex-based handoff)
  *
  * Double buffering scheme:
  * - buf[2]: two ring buffers for handoff between reader and writer
@@ -96,23 +96,22 @@ static inline bool zend_atomic_int_compare_exchange_ex(zend_atomic_int *obj, int
  * - Reader uses buf[1 - write_hint] as dedicated read buffer
  *
  * Handoff protocol:
- * - write_buffer_lock: atomic flag (0=free, 1=locked) for writer buffer access
+ * - handoff_mutex: serializes buffer switching between reader and writer
  *   * Reader locks when switching write_hint after exhausting read buffer
  *   * Writer locks when resizing buffer
- * - write_buffer_mutex: fallback mutex when lock is contended (slow path)
  *
- * Fast path (common): no contention, lock succeeds immediately
- * Slow path (rare): contention detected, thread waits on mutex
+ * Mutex is efficient (futex on Linux, CRITICAL_SECTION on Windows):
+ * - Fast path: atomic operation in userspace (no syscall if uncontended)
+ * - Slow path: thread sleeps in kernel (only if contention detected)
  */
 typedef struct _zend_spsc_queue {
 	zend_atomic_ptr buf[2];           /* double buffering: ring buffers */
 	zend_atomic_int write_hint;       /* active writer buffer index (0 or 1) */
-	zend_atomic_int write_buffer_lock; /* handoff lock: 0=free, 1=locked */
 
 #ifndef ZEND_SPSC_QUEUE_STANDALONE
-	MUTEX_T write_buffer_mutex;       /* slow path mutex for contention */
+	MUTEX_T handoff_mutex;            /* handoff serialization mutex */
 #else
-	pthread_mutex_t write_buffer_mutex; /* standalone mode uses pthread */
+	pthread_mutex_t handoff_mutex;    /* standalone mode uses pthread */
 #endif
 
 	size_t capacity;                  /* current buffer capacity */
