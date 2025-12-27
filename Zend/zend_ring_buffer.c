@@ -159,6 +159,15 @@ ZEND_API bool zend_ring_buffer_is_empty(const zend_ring_buffer *buffer)
 }
 
 /**
+ * Check if buffer is empty (atomic version for SPSC).
+ */
+ZEND_API bool zend_ring_buffer_is_empty_atomic(const zend_ring_buffer *buffer)
+{
+	ZEND_ASSERT(buffer->flags & ZEND_RING_BUFFER_ATOMIC_HEAD);
+	return zend_atomic_size_t_load_ex(&buffer->head_atomic) == buffer->tail;
+}
+
+/**
  * Check if buffer is full (atomic version for SPSC).
  */
 ZEND_API bool zend_ring_buffer_is_full_atomic(const zend_ring_buffer *buffer)
@@ -166,8 +175,7 @@ ZEND_API bool zend_ring_buffer_is_full_atomic(const zend_ring_buffer *buffer)
 	ZEND_ASSERT(buffer->flags & ZEND_RING_BUFFER_ATOMIC_HEAD);
 
 	const size_t head = zend_atomic_size_t_load_ex(&buffer->head_atomic);
-	const size_t tail_snap = buffer->tail;
-	const size_t available = buffer->capacity - (head - tail_snap);
+	const size_t available = buffer->capacity - (head - buffer->tail);
 
 	return available == 0;
 }
@@ -201,9 +209,16 @@ ZEND_API zend_result zend_ring_buffer_realloc(zend_ring_buffer *buffer, size_t n
 	ZEND_ASSERT(buffer != NULL && "Buffer cannot be NULL");
 	ZEND_ASSERT(buffer->data != NULL && "Buffer data cannot be NULL");
 	ZEND_ASSERT(buffer->capacity > 0 && "Buffer capacity must be positive");
-	ZEND_ASSERT(buffer->head < buffer->capacity && "Head index out of bounds");
-	ZEND_ASSERT(buffer->tail < buffer->capacity && "Tail index out of bounds");
 	ZEND_ASSERT(buffer->item_size > 0 && "Item size must be positive");
+
+#if ZEND_DEBUG
+	/* In non-atomic mode, head/tail must be < capacity (wrapped indices)
+	 * In atomic mode, head/tail can be >= capacity (monotonic counters) */
+	if (!(buffer->flags & ZEND_RING_BUFFER_ATOMIC_HEAD)) {
+		ZEND_ASSERT(buffer->head < buffer->capacity && "Head index out of bounds in non-atomic mode");
+		ZEND_ASSERT(buffer->tail < buffer->capacity && "Tail index out of bounds in non-atomic mode");
+	}
+#endif
 
 	/* Auto-determine new_count if not specified */
 	if (new_count == 0) {
@@ -253,6 +268,20 @@ ZEND_API zend_result zend_ring_buffer_realloc(zend_ring_buffer *buffer, size_t n
 	size_t count = zend_ring_buffer_count(buffer);
 
 	/*
+	 * For atomic mode: normalize monotonic counters to wrapped indices
+	 * Non-atomic mode: indices already wrapped
+	 */
+	size_t head_idx, tail_idx;
+	if (buffer->flags & ZEND_RING_BUFFER_ATOMIC_HEAD) {
+		size_t head_val = zend_atomic_size_t_load_ex(&buffer->head_atomic);
+		head_idx = head_val & (buffer->capacity - 1);
+		tail_idx = buffer->tail & (buffer->capacity - 1);
+	} else {
+		head_idx = buffer->head;
+		tail_idx = buffer->tail;
+	}
+
+	/*
 	 * Case 2: Linear order (head >= tail) - data is contiguous
 	 *
 	 * Example:
@@ -260,7 +289,7 @@ ZEND_API zend_result zend_ring_buffer_realloc(zend_ring_buffer *buffer, size_t n
 	 *              ^     ^
 	 *            tail  head
 	 */
-	if (buffer->head >= buffer->tail) {
+	if (head_idx >= tail_idx) {
 		if (EXPECTED(new_count > buffer->capacity)) {
 			/*
 			 * Increasing size - can use realloc safely
@@ -298,14 +327,21 @@ ZEND_API zend_result zend_ring_buffer_realloc(zend_ring_buffer *buffer, size_t n
 
 			/* Single memcpy for contiguous data */
 			memcpy(new_data,
-			       (char*)buffer->data + buffer->tail * buffer->item_size,
+			       (char*)buffer->data + tail_idx * buffer->item_size,
 			       count * buffer->item_size);
 
 			pefree(buffer->data, buffer->flags & ZEND_RING_BUFFER_PERSISTENT);
 			buffer->data = new_data;
 			buffer->capacity = new_count;
-			buffer->tail = 0;
-			buffer->head = count;
+
+			/* Update indices */
+			if (buffer->flags & ZEND_RING_BUFFER_ATOMIC_HEAD) {
+				buffer->tail = 0;
+				zend_atomic_size_t_store_ex(&buffer->head_atomic, count);
+			} else {
+				buffer->tail = 0;
+				buffer->head = count;
+			}
 		}
 	} else {
 		/*
@@ -331,28 +367,33 @@ ZEND_API zend_result zend_ring_buffer_realloc(zend_ring_buffer *buffer, size_t n
 		}
 
 		/* First part: copy [tail...end] to beginning of new buffer */
-		size_t first_part_count = buffer->capacity - buffer->tail;
+		size_t first_part_count = buffer->capacity - tail_idx;
 		memcpy(new_data,
-		       (char*)buffer->data + buffer->tail * buffer->item_size,
+		       (char*)buffer->data + tail_idx * buffer->item_size,
 		       first_part_count * buffer->item_size);
 
 		/* Second part: copy [start...head) after first part */
 		memcpy((char*)new_data + first_part_count * buffer->item_size,
 		       buffer->data,
-		       buffer->head * buffer->item_size);
+		       head_idx * buffer->item_size);
 
 		pefree(buffer->data, buffer->flags & ZEND_RING_BUFFER_PERSISTENT);
 		buffer->data = new_data;
 		buffer->capacity = new_count;
-		buffer->tail = 0;
-		buffer->head = count;
+
+		/* Update indices */
+		if (buffer->flags & ZEND_RING_BUFFER_ATOMIC_HEAD) {
+			buffer->tail = 0;
+			zend_atomic_size_t_store_ex(&buffer->head_atomic, count);
+		} else {
+			buffer->tail = 0;
+			buffer->head = count;
+		}
 	}
 
 	/* Verify consistency */
 	ZEND_ASSERT(buffer->data != NULL && "Buffer data should not be NULL after realloc");
 	ZEND_ASSERT(buffer->capacity == new_count && "Capacity should match new_count");
-	ZEND_ASSERT(buffer->head < buffer->capacity && "Head should be within new capacity");
-	ZEND_ASSERT(buffer->tail < buffer->capacity && "Tail should be within new capacity");
 	ZEND_ASSERT(zend_ring_buffer_count(buffer) == count && "Element count should be preserved");
 
 	recalc_decrease_threshold(buffer, new_count);

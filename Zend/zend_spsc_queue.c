@@ -191,7 +191,7 @@ zend_ring_buffer* zend_spsc_queue_resize(zend_spsc_queue *queue)
 		return fallback_buffer;
 	} else {
 		/*
-		 * Case B2: Used for reading, resize current buffer in-place
+		 * Case B2: Fallback used for reading, resize current buffer in-place
 		 * MUTEX REQUIRED: reader might finish fallback and switch to current_buffer
 		 * Must serialize resize with potential reader switch
 		 */

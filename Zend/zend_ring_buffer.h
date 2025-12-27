@@ -256,6 +256,12 @@ ZEND_API bool zend_ring_buffer_is_full(const zend_ring_buffer *buffer);
 ZEND_API bool zend_ring_buffer_is_empty(const zend_ring_buffer *buffer);
 
 /**
+ * Check if buffer is empty (atomic version for SPSC).
+ * Uses atomic head load and tail snapshot.
+ */
+ZEND_API bool zend_ring_buffer_is_empty_atomic(const zend_ring_buffer *buffer);
+
+/**
  * Check if buffer is full (atomic version for SPSC).
  * Uses atomic head load and tail snapshot.
  */
