@@ -235,13 +235,13 @@ ZEND_API zend_result zend_ring_buffer_realloc(zend_ring_buffer *buffer, size_t n
 	 * After:  [  |  |  |  |  |  ]  head=tail=0
 	 */
 	if (zend_ring_buffer_is_empty(buffer)) {
-		void *new_data = pemalloc(new_count * buffer->item_size, buffer->persistent);
+		void *new_data = pemalloc(new_count * buffer->item_size, buffer->flags & ZEND_RING_BUFFER_PERSISTENT);
 		if (UNEXPECTED(new_data == NULL)) {
 			RING_BUFFER_ERROR("Failed to reallocate ring buffer");
 			return FAILURE;
 		}
 
-		pefree(buffer->data, buffer->persistent);
+		pefree(buffer->data, buffer->flags & ZEND_RING_BUFFER_PERSISTENT);
 		buffer->data = new_data;
 		buffer->capacity = new_count;
 		buffer->head = 0;
@@ -272,7 +272,7 @@ ZEND_API zend_result zend_ring_buffer_realloc(zend_ring_buffer *buffer, size_t n
 			 */
 			void *new_data = perealloc(buffer->data,
 			                           new_count * buffer->item_size,
-			                           buffer->persistent);
+			                           buffer->flags & ZEND_RING_BUFFER_PERSISTENT);
 			if (UNEXPECTED(new_data == NULL)) {
 				RING_BUFFER_ERROR("Failed to reallocate ring buffer");
 				return FAILURE;
@@ -290,7 +290,7 @@ ZEND_API zend_result zend_ring_buffer_realloc(zend_ring_buffer *buffer, size_t n
 			 *           ^     ^
 			 *         tail  head
 			 */
-			void *new_data = pemalloc(new_count * buffer->item_size, buffer->persistent);
+			void *new_data = pemalloc(new_count * buffer->item_size, buffer->flags & ZEND_RING_BUFFER_PERSISTENT);
 			if (UNEXPECTED(new_data == NULL)) {
 				RING_BUFFER_ERROR("Failed to reallocate ring buffer");
 				return FAILURE;
@@ -301,7 +301,7 @@ ZEND_API zend_result zend_ring_buffer_realloc(zend_ring_buffer *buffer, size_t n
 			       (char*)buffer->data + buffer->tail * buffer->item_size,
 			       count * buffer->item_size);
 
-			pefree(buffer->data, buffer->persistent);
+			pefree(buffer->data, buffer->flags & ZEND_RING_BUFFER_PERSISTENT);
 			buffer->data = new_data;
 			buffer->capacity = new_count;
 			buffer->tail = 0;
@@ -324,7 +324,7 @@ ZEND_API zend_result zend_ring_buffer_realloc(zend_ring_buffer *buffer, size_t n
 		 *           ^           ^
 		 *         tail        head
 		 */
-		void *new_data = pemalloc(new_count * buffer->item_size, buffer->persistent);
+		void *new_data = pemalloc(new_count * buffer->item_size, buffer->flags & ZEND_RING_BUFFER_PERSISTENT);
 		if (UNEXPECTED(new_data == NULL)) {
 			RING_BUFFER_ERROR("Failed to reallocate ring buffer");
 			return FAILURE;
@@ -341,7 +341,7 @@ ZEND_API zend_result zend_ring_buffer_realloc(zend_ring_buffer *buffer, size_t n
 		       buffer->data,
 		       buffer->head * buffer->item_size);
 
-		pefree(buffer->data, buffer->persistent);
+		pefree(buffer->data, buffer->flags & ZEND_RING_BUFFER_PERSISTENT);
 		buffer->data = new_data;
 		buffer->capacity = new_count;
 		buffer->tail = 0;

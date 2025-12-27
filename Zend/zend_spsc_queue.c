@@ -85,8 +85,10 @@ ZEND_API void zend_spsc_queue_free(zend_spsc_queue *queue)
 
 /*
  * Resize operation (slow path)
- * Case A: buf[read_idx] == NULL → allocate new buffer
- * Case B: buf[read_idx] != NULL → writer switches to other buffer
+ * Case A: buf[read_idx] == NULL → allocate new buffer with doubled capacity
+ * Case B: buf[read_idx] != NULL (reader busy):
+ *   - If fallback not full → switch to fallback
+ *   - If fallback full → resize current buffer in-place
  */
 zend_ring_buffer* zend_spsc_queue_resize(zend_spsc_queue *queue)
 {
@@ -96,38 +98,45 @@ zend_ring_buffer* zend_spsc_queue_resize(zend_spsc_queue *queue)
 	zend_ring_buffer *current_buffer = zend_atomic_ptr_load_ex(&queue->buf[write_hint]);
 
 	ZEND_ASSERT(current_buffer != NULL);
-	const size_t new_capacity = current_buffer->capacity * 2;
-	queue->capacity = new_capacity;
 
 	uint32_t flags = ZEND_RING_BUFFER_ATOMIC_HEAD;
 	if (queue->persistent) {
 		flags |= ZEND_RING_BUFFER_PERSISTENT;
 	}
 
-	const zend_ring_buffer *fallback_buffer = zend_atomic_ptr_load_ex(&queue->buf[read_idx]);
+	zend_ring_buffer *fallback_buffer = zend_atomic_ptr_load_ex(&queue->buf[read_idx]);
 
 	if (EXPECTED(fallback_buffer == NULL)) {
-		/* Case A: Reader free, allocate new buffer */
-		zend_ring_buffer *buffer = zend_ring_buffer_new(new_capacity, sizeof(void *), flags);
-		if (UNEXPECTED(!buffer)) {
+		/* Case A: Reader free, allocate new buffer with doubled capacity */
+		const size_t new_capacity = current_buffer->capacity * 2;
+		queue->capacity = new_capacity;
+
+		zend_ring_buffer *new_buffer = zend_ring_buffer_new(new_capacity, sizeof(void *), flags);
+		if (UNEXPECTED(!new_buffer)) {
 			return NULL;
 		}
 
-		/* Try to install new buffer via CAS */
-		void *expected = NULL;
-		if (!zend_atomic_ptr_compare_exchange_ex(&queue->buf[read_idx], &expected, buffer)) {
-			/* Race: reader returned buffer, use it instead */
-			zend_ring_buffer_free(buffer);
-		}
-
-		/* Switch writer to the other buffer */
+		zend_atomic_ptr_store_ex(&queue->buf[read_idx], new_buffer);
 		zend_atomic_int_store_ex(&queue->write_hint, read_idx);
 
-		/* Return the buffer we'll write to */
-		return zend_atomic_ptr_load_ex(&queue->buf[read_idx]);
+		return new_buffer;
 
 	} else {
-		/* Case B: Reader busy, just return current buffer (will continue filling it) */
+		/* Case B: Reader busy with fallback buffer */
+		if (!zend_ring_buffer_is_full_atomic(fallback_buffer)) {
+			/*
+			 * Fallback not full, switch to it.
+			 * Now the reader will read from previous current_buffer, while the writer uses fallback_buffer.
+			 */
+			zend_atomic_int_store_ex(&queue->write_hint, read_idx);
+			return fallback_buffer;
+		}
+
+		/* Fallback full, resize current buffer in-place */
+		if (UNEXPECTED(zend_ring_buffer_realloc(current_buffer, 0) == FAILURE)) {
+			return NULL;
+		}
+
 		return current_buffer;
 	}
 }

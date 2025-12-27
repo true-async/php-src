@@ -375,21 +375,14 @@ zend_always_inline zend_result zend_ring_buffer_push_ptr_fast_atomic(zend_ring_b
 	ZEND_ASSERT(buffer->item_size == sizeof(void*));
 	ZEND_ASSERT(buffer->flags & ZEND_RING_BUFFER_ATOMIC_HEAD);
 
-	size_t head, tail_snap, available, slot;
-
-	/* Conservative check: read tail snapshot (may be stale) */
-	head = zend_atomic_size_t_load_ex(&buffer->head_atomic);
-	tail_snap = buffer->tail; /* Safe: reader won't modify while we read */
-	available = buffer->capacity - (head - tail_snap);
-
-	if (UNEXPECTED(available == 0)) {
+	/* Conservative check: read tail snapshot (maybe stale) */
+	if (UNEXPECTED((buffer->capacity - (zend_atomic_size_t_load_ex(&buffer->head_atomic) - buffer->tail)) == 0)) {
 		return FAILURE; /* Buffer full */
 	}
 
 	/* Claim slot via fetch_add (lock-free!) */
-	slot = zend_atomic_size_t_fetch_add_ex(&buffer->head_atomic, 1);
+	const size_t slot = zend_atomic_size_t_fetch_add_ex(&buffer->head_atomic, 1);
 
-	/* Write to ring buffer */
 	((void**)buffer->data)[slot & (buffer->capacity - 1)] = ptr;
 
 	return SUCCESS;
@@ -405,20 +398,13 @@ zend_always_inline zend_result zend_ring_buffer_pop_ptr_fast_atomic(zend_ring_bu
 	ZEND_ASSERT(buffer->item_size == sizeof(void*));
 	ZEND_ASSERT(buffer->flags & ZEND_RING_BUFFER_ATOMIC_HEAD);
 
-	size_t head, tail;
+	const size_t tail = buffer->tail;
 
-	/* Read current head (writer may increment it) */
-	head = zend_atomic_size_t_load_ex(&buffer->head_atomic);
-	tail = buffer->tail;
-
-	if (UNEXPECTED(tail >= head)) {
+	if (UNEXPECTED(tail >= zend_atomic_size_t_load_ex(&buffer->head_atomic))) {
 		return FAILURE; /* Buffer empty */
 	}
 
-	/* Read from ring buffer */
 	*ptr = ((void**)buffer->data)[tail & (buffer->capacity - 1)];
-
-	/* Increment tail (reader-only, no atomic needed) */
 	buffer->tail = tail + 1;
 
 	return SUCCESS;
