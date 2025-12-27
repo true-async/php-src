@@ -111,31 +111,21 @@ ZEND_API void zend_spsc_queue_free(zend_spsc_queue *queue)
 /*
  * Resize operation (writer slow path)
  *
- * Protocol:
- * 1. Acquire handoff_mutex (serializes with reader buffer switching)
- * 2. Perform resize or buffer switch
- * 3. Release mutex
- *
- * Mutex provides efficient synchronization:
- * - Fast path: uncontended lock via atomic op in userspace (futex)
- * - Slow path: thread sleeps in kernel if reader holds lock
+ * Mutex is used ONLY in case B2 (fallback full, resize in-place):
+ * - Reader is reading from fallback_buffer
+ * - Writer needs to resize current_buffer in-place
+ * - Must serialize: reader might switch to current_buffer during resize
  *
  * State transitions:
- * Case A: Reader not using dedicated buffer (buf[read_idx] == NULL)
- *   → Allocate new larger buffer, switch write_hint
+ * Case A: Reader free (buf[read_idx] == NULL)
+ *   → Allocate new larger buffer, switch write_hint (NO MUTEX)
  *
- * Case B: Reader using dedicated buffer (buf[read_idx] != NULL)
- *   B1: Fallback buffer not full → switch to it
- *   B2: Fallback buffer full → resize current buffer in-place
+ * Case B: Reader busy (buf[read_idx] != NULL)
+ *   B1: Fallback not full → switch to it (NO MUTEX - safe to switch)
+ *   B2: Fallback full → resize current in-place (MUTEX - serialize with reader switch)
  */
 zend_ring_buffer* zend_spsc_queue_resize(zend_spsc_queue *queue)
 {
-	/* Acquire handoff mutex */
-#ifndef ZEND_SPSC_QUEUE_STANDALONE
-	tsrm_mutex_lock(queue->handoff_mutex);
-#else
-	pthread_mutex_lock(&queue->handoff_mutex);
-#endif
 	const int write_hint = zend_atomic_int_load_ex(&queue->write_hint);
 	const int read_idx = 1 - write_hint;
 
@@ -148,46 +138,64 @@ zend_ring_buffer* zend_spsc_queue_resize(zend_spsc_queue *queue)
 	}
 
 	zend_ring_buffer *fallback_buffer = zend_atomic_ptr_load_ex(&queue->buf[read_idx]);
-	zend_ring_buffer *result = NULL;
 
 	if (EXPECTED(fallback_buffer == NULL)) {
-		/* Case A: Reader free, allocate new buffer with doubled capacity */
+		/*
+		 * Case A: Reader free, allocate new buffer with doubled capacity
+		 * NO MUTEX: reader not active, safe to allocate and switch
+		 */
 		const size_t new_capacity = current_buffer->capacity * 2;
 		queue->capacity = new_capacity;
 
 		zend_ring_buffer *new_buffer = zend_ring_buffer_new(new_capacity, sizeof(void *), flags);
 		if (UNEXPECTED(!new_buffer)) {
-			goto unlock;
+			return NULL;
 		}
 
 		zend_atomic_ptr_store_ex(&queue->buf[read_idx], new_buffer);
 		zend_atomic_int_store_ex(&queue->write_hint, read_idx);
 
-		result = new_buffer;
+		return new_buffer;
 
 	} else {
 		/* Case B: Reader busy with fallback buffer */
 		if (!zend_ring_buffer_is_full_atomic(fallback_buffer)) {
-			/* B1: Fallback not full, switch to it */
+			/*
+			 * B1: Fallback not full, switch to it
+			 * NO MUTEX: just switching write_hint, reader continues reading fallback
+			 */
 			zend_atomic_int_store_ex(&queue->write_hint, read_idx);
-			result = fallback_buffer;
+			return fallback_buffer;
 		} else {
-			/* B2: Fallback full, resize current buffer in-place */
+			/*
+			 * B2: Fallback full, resize current buffer in-place
+			 * MUTEX REQUIRED: reader might finish fallback and switch to current_buffer
+			 * Must serialize resize with potential reader switch
+			 */
+#ifndef ZEND_SPSC_QUEUE_STANDALONE
+			tsrm_mutex_lock(queue->handoff_mutex);
+#else
+			pthread_mutex_lock(&queue->handoff_mutex);
+#endif
+
 			if (UNEXPECTED(zend_ring_buffer_realloc(current_buffer, 0) == FAILURE)) {
-				goto unlock;
+#ifndef ZEND_SPSC_QUEUE_STANDALONE
+				tsrm_mutex_unlock(queue->handoff_mutex);
+#else
+				pthread_mutex_unlock(&queue->handoff_mutex);
+#endif
+				return NULL;
 			}
-			result = current_buffer;
+
+#ifndef ZEND_SPSC_QUEUE_STANDALONE
+			tsrm_mutex_unlock(queue->handoff_mutex);
+#else
+			pthread_mutex_unlock(&queue->handoff_mutex);
+#endif
+
+			return current_buffer;
 		}
 	}
-
-unlock:
-	/* Release handoff mutex */
-#ifndef ZEND_SPSC_QUEUE_STANDALONE
-	tsrm_mutex_unlock(queue->handoff_mutex);
-#else
-	pthread_mutex_unlock(&queue->handoff_mutex);
-#endif
-	return result;
 }
 
 /*
