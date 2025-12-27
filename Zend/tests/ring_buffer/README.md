@@ -80,7 +80,3 @@ make clean
 - pop from empty (atomic)
 - full buffer (atomic)
 - **multi-threaded SPSC** (writer + reader threads)
-
-## Known Issues
-
-- `test_multithread_spsc` currently hangs (deadlock investigation needed)
