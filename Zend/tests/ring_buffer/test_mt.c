@@ -168,6 +168,272 @@ static void test_multithread_spsc(void **state)
 	zend_ring_buffer_destroy(&buf);
 }
 
+/* ========== Additional Multi-threaded Atomic Tests ========== */
+
+typedef struct {
+	zend_ring_buffer *buf;
+	size_t count;
+	volatile bool done;
+	volatile size_t errors;
+} mt_test_data_t;
+
+static void* spsc_writer_integers(void *arg)
+{
+	mt_test_data_t *data = (mt_test_data_t*)arg;
+
+	for (size_t i = 0; i < data->count; i++) {
+		int value = (int)i;
+		while (zend_ring_buffer_push_atomic(data->buf, &value) != SUCCESS) {
+			usleep(1);
+		}
+	}
+
+	data->done = true;
+	return NULL;
+}
+
+static void* spsc_reader_integers(void *arg)
+{
+	mt_test_data_t *data = (mt_test_data_t*)arg;
+	size_t total_read = 0;
+	int expected = 0;
+
+	while (total_read < data->count || !data->done) {
+		int value;
+		if (zend_ring_buffer_pop_atomic(data->buf, &value) == SUCCESS) {
+			if (value != expected) {
+				__sync_fetch_and_add(&data->errors, 1);
+			}
+			expected++;
+			total_read++;
+		} else {
+			usleep(1);
+		}
+	}
+
+	return NULL;
+}
+
+static void test_mt_spsc_atomic_integers(void **state)
+{
+	(void)state;
+
+	zend_ring_buffer buf;
+	zend_ring_buffer_init(&buf, 32, sizeof(int), ZEND_RING_BUFFER_ATOMIC_HEAD);
+
+	mt_test_data_t data = {
+		.buf = &buf,
+		.count = 50000,
+		.done = false,
+		.errors = 0
+	};
+
+	pthread_t writer, reader;
+
+	pthread_create(&reader, NULL, spsc_reader_integers, &data);
+	pthread_create(&writer, NULL, spsc_writer_integers, &data);
+
+	pthread_join(writer, NULL);
+	pthread_join(reader, NULL);
+
+	assert_int_equal(data.errors, 0);
+	assert_true(zend_ring_buffer_is_empty_atomic(&buf));
+
+	zend_ring_buffer_destroy(&buf);
+}
+
+static void* spsc_writer_small_buffer(void *arg)
+{
+	mt_test_data_t *data = (mt_test_data_t*)arg;
+
+	for (size_t i = 0; i < data->count; i++) {
+		int value = (int)(i + 1000);
+		while (zend_ring_buffer_push_atomic(data->buf, &value) != SUCCESS) {
+			/* Buffer full, wait for reader */
+		}
+	}
+
+	data->done = true;
+	return NULL;
+}
+
+static void* spsc_reader_small_buffer(void *arg)
+{
+	mt_test_data_t *data = (mt_test_data_t*)arg;
+	size_t total_read = 0;
+	int expected = 1000;
+
+	while (total_read < data->count || !data->done) {
+		int value;
+		if (zend_ring_buffer_pop_atomic(data->buf, &value) == SUCCESS) {
+			if (value != expected) {
+				__sync_fetch_and_add(&data->errors, 1);
+			}
+			expected++;
+			total_read++;
+		}
+	}
+
+	return NULL;
+}
+
+static void test_mt_spsc_small_buffer(void **state)
+{
+	(void)state;
+
+	zend_ring_buffer buf;
+	zend_ring_buffer_init(&buf, 4, sizeof(int), ZEND_RING_BUFFER_ATOMIC_HEAD);
+
+	mt_test_data_t data = {
+		.buf = &buf,
+		.count = 10000,
+		.done = false,
+		.errors = 0
+	};
+
+	pthread_t writer, reader;
+
+	pthread_create(&reader, NULL, spsc_reader_small_buffer, &data);
+	pthread_create(&writer, NULL, spsc_writer_small_buffer, &data);
+
+	pthread_join(writer, NULL);
+	pthread_join(reader, NULL);
+
+	assert_int_equal(data.errors, 0);
+	assert_true(zend_ring_buffer_is_empty_atomic(&buf));
+
+	zend_ring_buffer_destroy(&buf);
+}
+
+static void* stress_writer(void *arg)
+{
+	mt_test_data_t *data = (mt_test_data_t*)arg;
+
+	for (size_t i = 0; i < data->count; i++) {
+		int value = (int)(i * 7 + 13);
+		while (zend_ring_buffer_push_atomic(data->buf, &value) != SUCCESS) {
+			/* Busy wait - high contention */
+		}
+	}
+
+	data->done = true;
+	return NULL;
+}
+
+static void* stress_reader(void *arg)
+{
+	mt_test_data_t *data = (mt_test_data_t*)arg;
+	size_t total_read = 0;
+
+	while (total_read < data->count || !data->done) {
+		int value;
+		if (zend_ring_buffer_pop_atomic(data->buf, &value) == SUCCESS) {
+			int expected = (int)(total_read * 7 + 13);
+			if (value != expected) {
+				__sync_fetch_and_add(&data->errors, 1);
+			}
+			total_read++;
+		}
+	}
+
+	return NULL;
+}
+
+static void test_mt_spsc_stress(void **state)
+{
+	(void)state;
+
+	zend_ring_buffer buf;
+	zend_ring_buffer_init(&buf, 16, sizeof(int), ZEND_RING_BUFFER_ATOMIC_HEAD);
+
+	mt_test_data_t data = {
+		.buf = &buf,
+		.count = 100000,
+		.done = false,
+		.errors = 0
+	};
+
+	pthread_t writer, reader;
+
+	pthread_create(&reader, NULL, stress_reader, &data);
+	pthread_create(&writer, NULL, stress_writer, &data);
+
+	pthread_join(writer, NULL);
+	pthread_join(reader, NULL);
+
+	assert_int_equal(data.errors, 0);
+	assert_true(zend_ring_buffer_is_empty_atomic(&buf));
+
+	zend_ring_buffer_destroy(&buf);
+}
+
+static void* burst_writer(void *arg)
+{
+	mt_test_data_t *data = (mt_test_data_t*)arg;
+
+	for (size_t burst = 0; burst < 100; burst++) {
+		for (size_t i = 0; i < 100; i++) {
+			int value = (int)(burst * 100 + i);
+			while (zend_ring_buffer_push_atomic(data->buf, &value) != SUCCESS) {
+				usleep(1);
+			}
+		}
+		usleep(10);
+	}
+
+	data->done = true;
+	return NULL;
+}
+
+static void* burst_reader(void *arg)
+{
+	mt_test_data_t *data = (mt_test_data_t*)arg;
+	size_t total_read = 0;
+	int expected = 0;
+
+	while (total_read < 10000 || !data->done) {
+		int value;
+		if (zend_ring_buffer_pop_atomic(data->buf, &value) == SUCCESS) {
+			if (value != expected) {
+				__sync_fetch_and_add(&data->errors, 1);
+			}
+			expected++;
+			total_read++;
+		} else {
+			usleep(1);
+		}
+	}
+
+	return NULL;
+}
+
+static void test_mt_spsc_burst_pattern(void **state)
+{
+	(void)state;
+
+	zend_ring_buffer buf;
+	zend_ring_buffer_init(&buf, 64, sizeof(int), ZEND_RING_BUFFER_ATOMIC_HEAD);
+
+	mt_test_data_t data = {
+		.buf = &buf,
+		.count = 10000,
+		.done = false,
+		.errors = 0
+	};
+
+	pthread_t writer, reader;
+
+	pthread_create(&reader, NULL, burst_reader, &data);
+	pthread_create(&writer, NULL, burst_writer, &data);
+
+	pthread_join(writer, NULL);
+	pthread_join(reader, NULL);
+
+	assert_int_equal(data.errors, 0);
+
+	zend_ring_buffer_destroy(&buf);
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -177,6 +443,11 @@ int main(void)
 		cmocka_unit_test(test_pop_empty_atomic),
 		cmocka_unit_test(test_full_buffer_atomic),
 		cmocka_unit_test(test_multithread_spsc),
+		/* Additional multi-threaded atomic tests */
+		cmocka_unit_test(test_mt_spsc_atomic_integers),
+		cmocka_unit_test(test_mt_spsc_small_buffer),
+		cmocka_unit_test(test_mt_spsc_stress),
+		cmocka_unit_test(test_mt_spsc_burst_pattern),
 	};
 
 	return cmocka_run_group_tests(tests, NULL, NULL);

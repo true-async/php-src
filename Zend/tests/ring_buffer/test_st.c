@@ -341,6 +341,204 @@ static void test_resize_with_wraparound(void **state)
 	zend_ring_buffer_destroy(&buf);
 }
 
+/* ========== Atomic Functions Tests (Single-threaded) ========== */
+
+static void test_atomic_is_empty(void **state)
+{
+	(void)state;
+
+	zend_ring_buffer buf;
+	zend_ring_buffer_init(&buf, 16, sizeof(int), ZEND_RING_BUFFER_ATOMIC_HEAD);
+
+	assert_true(zend_ring_buffer_is_empty_atomic(&buf));
+
+	int value = 42;
+	zend_ring_buffer_push_atomic(&buf, &value);
+	assert_false(zend_ring_buffer_is_empty_atomic(&buf));
+
+	zend_ring_buffer_pop_atomic(&buf, &value);
+	assert_true(zend_ring_buffer_is_empty_atomic(&buf));
+
+	zend_ring_buffer_destroy(&buf);
+}
+
+static void test_atomic_is_full(void **state)
+{
+	(void)state;
+
+	zend_ring_buffer buf;
+	zend_ring_buffer_init(&buf, 4, sizeof(int), ZEND_RING_BUFFER_ATOMIC_HEAD);
+
+	assert_false(zend_ring_buffer_is_full_atomic(&buf));
+
+	int value = 100;
+	for (int i = 0; i < 3; i++) {
+		zend_ring_buffer_push_atomic(&buf, &value);
+	}
+
+	assert_true(zend_ring_buffer_is_full_atomic(&buf));
+
+	zend_ring_buffer_pop_atomic(&buf, &value);
+	assert_false(zend_ring_buffer_is_full_atomic(&buf));
+
+	zend_ring_buffer_destroy(&buf);
+}
+
+static void test_atomic_push_pop_single(void **state)
+{
+	(void)state;
+
+	zend_ring_buffer buf;
+	zend_ring_buffer_init(&buf, 16, sizeof(int), ZEND_RING_BUFFER_ATOMIC_HEAD);
+
+	int value = 12345;
+	assert_int_equal(zend_ring_buffer_push_atomic(&buf, &value), SUCCESS);
+
+	int popped = 0;
+	assert_int_equal(zend_ring_buffer_pop_atomic(&buf, &popped), SUCCESS);
+	assert_int_equal(popped, value);
+	assert_true(zend_ring_buffer_is_empty_atomic(&buf));
+
+	zend_ring_buffer_destroy(&buf);
+}
+
+static void test_atomic_push_pop_multiple(void **state)
+{
+	(void)state;
+
+	zend_ring_buffer buf;
+	zend_ring_buffer_init(&buf, 16, sizeof(int), ZEND_RING_BUFFER_ATOMIC_HEAD);
+
+	const size_t count = 10;
+	for (size_t i = 0; i < count; i++) {
+		int value = (int)(i * 100);
+		assert_int_equal(zend_ring_buffer_push_atomic(&buf, &value), SUCCESS);
+	}
+
+	assert_int_equal(zend_ring_buffer_count(&buf), count);
+
+	for (size_t i = 0; i < count; i++) {
+		int popped = 0;
+		assert_int_equal(zend_ring_buffer_pop_atomic(&buf, &popped), SUCCESS);
+		assert_int_equal(popped, (int)(i * 100));
+	}
+
+	assert_true(zend_ring_buffer_is_empty_atomic(&buf));
+	zend_ring_buffer_destroy(&buf);
+}
+
+static void test_atomic_pop_empty(void **state)
+{
+	(void)state;
+
+	zend_ring_buffer buf;
+	zend_ring_buffer_init(&buf, 16, sizeof(int), ZEND_RING_BUFFER_ATOMIC_HEAD);
+
+	int value = 0;
+	assert_int_equal(zend_ring_buffer_pop_atomic(&buf, &value), FAILURE);
+
+	zend_ring_buffer_destroy(&buf);
+}
+
+static void test_atomic_push_full(void **state)
+{
+	(void)state;
+
+	zend_ring_buffer buf;
+	zend_ring_buffer_init(&buf, 4, sizeof(int), ZEND_RING_BUFFER_ATOMIC_HEAD);
+
+	int value = 999;
+	for (int i = 0; i < 3; i++) {
+		assert_int_equal(zend_ring_buffer_push_atomic(&buf, &value), SUCCESS);
+	}
+
+	assert_true(zend_ring_buffer_is_full_atomic(&buf));
+	assert_int_equal(zend_ring_buffer_push_atomic(&buf, &value), FAILURE);
+
+	zend_ring_buffer_destroy(&buf);
+}
+
+static void test_atomic_wraparound(void **state)
+{
+	(void)state;
+
+	zend_ring_buffer buf;
+	zend_ring_buffer_init(&buf, 4, sizeof(int), ZEND_RING_BUFFER_ATOMIC_HEAD);
+
+	for (int i = 1; i <= 3; i++) {
+		int value = i;
+		zend_ring_buffer_push_atomic(&buf, &value);
+	}
+
+	int popped;
+	zend_ring_buffer_pop_atomic(&buf, &popped);
+	assert_int_equal(popped, 1);
+	zend_ring_buffer_pop_atomic(&buf, &popped);
+	assert_int_equal(popped, 2);
+
+	int value = 4;
+	zend_ring_buffer_push_atomic(&buf, &value);
+	value = 5;
+	zend_ring_buffer_push_atomic(&buf, &value);
+
+	int expected[] = {3, 4, 5};
+	for (size_t i = 0; i < 3; i++) {
+		assert_int_equal(zend_ring_buffer_pop_atomic(&buf, &popped), SUCCESS);
+		assert_int_equal(popped, expected[i]);
+	}
+
+	assert_true(zend_ring_buffer_is_empty_atomic(&buf));
+	zend_ring_buffer_destroy(&buf);
+}
+
+static void test_atomic_count(void **state)
+{
+	(void)state;
+
+	zend_ring_buffer buf;
+	zend_ring_buffer_init(&buf, 16, sizeof(int), ZEND_RING_BUFFER_ATOMIC_HEAD);
+
+	assert_int_equal(zend_ring_buffer_count(&buf), 0);
+
+	int value = 100;
+	for (int i = 0; i < 5; i++) {
+		zend_ring_buffer_push_atomic(&buf, &value);
+	}
+
+	assert_int_equal(zend_ring_buffer_count(&buf), 5);
+
+	zend_ring_buffer_pop_atomic(&buf, &value);
+	zend_ring_buffer_pop_atomic(&buf, &value);
+	assert_int_equal(zend_ring_buffer_count(&buf), 3);
+
+	zend_ring_buffer_destroy(&buf);
+}
+
+static void test_atomic_full_cycle(void **state)
+{
+	(void)state;
+
+	zend_ring_buffer buf;
+	zend_ring_buffer_init(&buf, 8, sizeof(int), ZEND_RING_BUFFER_ATOMIC_HEAD);
+
+	for (int cycle = 0; cycle < 3; cycle++) {
+		for (int i = 0; i < 5; i++) {
+			int value = cycle * 100 + i;
+			zend_ring_buffer_push_atomic(&buf, &value);
+		}
+
+		for (int i = 0; i < 5; i++) {
+			int popped;
+			zend_ring_buffer_pop_atomic(&buf, &popped);
+			assert_int_equal(popped, cycle * 100 + i);
+		}
+
+		assert_true(zend_ring_buffer_is_empty_atomic(&buf));
+	}
+
+	zend_ring_buffer_destroy(&buf);
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -356,6 +554,16 @@ int main(void)
 		cmocka_unit_test(test_auto_grow),
 		cmocka_unit_test(test_auto_shrink),
 		cmocka_unit_test(test_resize_with_wraparound),
+		/* Atomic functions tests */
+		cmocka_unit_test(test_atomic_is_empty),
+		cmocka_unit_test(test_atomic_is_full),
+		cmocka_unit_test(test_atomic_push_pop_single),
+		cmocka_unit_test(test_atomic_push_pop_multiple),
+		cmocka_unit_test(test_atomic_pop_empty),
+		cmocka_unit_test(test_atomic_push_full),
+		cmocka_unit_test(test_atomic_wraparound),
+		cmocka_unit_test(test_atomic_count),
+		cmocka_unit_test(test_atomic_full_cycle),
 	};
 
 	return cmocka_run_group_tests(tests, NULL, NULL);
