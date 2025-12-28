@@ -175,16 +175,25 @@ ZEND_API zend_result zend_ring_buffer_init(zend_ring_buffer *buffer, size_t coun
 
 /**
  * Destroy ring buffer and free resources.
+ *
+ * @param buffer Buffer to destroy
  */
 ZEND_API void zend_ring_buffer_destroy(zend_ring_buffer *buffer);
 
 /**
  * Allocate and initialize new ring buffer.
+ *
+ * @param count     Initial capacity (will be rounded up to power of 2)
+ * @param item_size Size of each element in bytes
+ * @param flags     Configuration flags (ZEND_RING_BUFFER_*)
+ * @return Pointer to new buffer, or NULL on failure
  */
 ZEND_API zend_ring_buffer *zend_ring_buffer_new(size_t count, size_t item_size, uint32_t flags);
 
 /**
  * Destroy and free ring buffer.
+ *
+ * @param buffer Buffer to free
  */
 ZEND_API void zend_ring_buffer_free(zend_ring_buffer *buffer);
 
@@ -204,11 +213,20 @@ ZEND_API zend_result zend_ring_buffer_push(zend_ring_buffer *buffer, const void 
 
 /**
  * Push item to front of buffer (single-threaded version).
+ *
+ * @param buffer        Ring buffer
+ * @param value         Pointer to value to push
+ * @param should_resize If true, auto-resize when full
+ * @return SUCCESS or FAILURE
  */
 ZEND_API zend_result zend_ring_buffer_push_front(zend_ring_buffer *buffer, const void *value, bool should_resize);
 
 /**
  * Pop item from buffer (single-threaded version).
+ *
+ * @param buffer Ring buffer
+ * @param value  Pointer to store popped value
+ * @return SUCCESS or FAILURE
  */
 ZEND_API zend_result zend_ring_buffer_pop(zend_ring_buffer *buffer, void *value);
 
@@ -241,39 +259,59 @@ ZEND_API zend_result zend_ring_buffer_pop_atomic(zend_ring_buffer *buffer, void 
 /**
  * Manually resize buffer to new capacity.
  * WARNING: NOT thread-safe! Caller must ensure exclusive access.
+ *
+ * @param buffer    Buffer to resize
+ * @param new_count New capacity (0 = auto-determine based on current state)
+ * @return SUCCESS or FAILURE
  */
 ZEND_API zend_result zend_ring_buffer_realloc(zend_ring_buffer *buffer, size_t new_count);
 
 /**
  * Check if buffer is full.
+ *
+ * @param buffer Ring buffer
+ * @return true if full, false otherwise
  */
 ZEND_API bool zend_ring_buffer_is_full(const zend_ring_buffer *buffer);
 
 /**
  * Check if buffer is empty.
+ *
+ * @param buffer Ring buffer
+ * @return true if empty, false otherwise
  */
 ZEND_API bool zend_ring_buffer_is_empty(const zend_ring_buffer *buffer);
 
 /**
  * Check if buffer is empty (SPSC atomic version).
- * Reader checks: tail == atomic_load(head)
+ *
+ * @param buffer Ring buffer (must have ATOMIC_HEAD flag)
+ * @return true if empty, false otherwise
  */
 ZEND_API bool zend_ring_buffer_is_empty_atomic(const zend_ring_buffer *buffer);
 
 /**
  * Check if buffer is full (SPSC atomic version).
- * Writer checks: (head + 1) & (capacity - 1) == tail
- * Note: tail is read without atomic (stale read is safe, just conservative)
+ *
+ * @param buffer Ring buffer (must have ATOMIC_HEAD flag)
+ * @return true if full, false otherwise
  */
 ZEND_API bool zend_ring_buffer_is_full_atomic(const zend_ring_buffer *buffer);
 
 /**
  * Get number of items in buffer.
+ * Works for both atomic and non-atomic buffers.
+ *
+ * @param buffer Ring buffer
+ * @return Number of items currently in buffer
  */
 ZEND_API size_t zend_ring_buffer_count(const zend_ring_buffer *buffer);
 
 /**
  * Get buffer capacity.
+ *
+ * @param buffer Ring buffer
+ * @return Maximum number of items buffer can hold
  */
 ZEND_API size_t zend_ring_buffer_capacity(const zend_ring_buffer *buffer);
 
@@ -283,6 +321,9 @@ ZEND_API size_t zend_ring_buffer_capacity(const zend_ring_buffer *buffer);
 
 /**
  * Check if buffer is not empty (fast inline, single-threaded).
+ *
+ * @param buffer Ring buffer
+ * @return true if not empty, false if empty
  */
 zend_always_inline bool zend_ring_buffer_is_not_empty(const zend_ring_buffer *buffer)
 {
@@ -291,6 +332,8 @@ zend_always_inline bool zend_ring_buffer_is_not_empty(const zend_ring_buffer *bu
 
 /**
  * Clear buffer - reset to empty state (single-threaded).
+ *
+ * @param buffer Ring buffer to clear
  */
 zend_always_inline void zend_ring_buffer_clean(zend_ring_buffer *buffer)
 {
@@ -300,6 +343,10 @@ zend_always_inline void zend_ring_buffer_clean(zend_ring_buffer *buffer)
 /**
  * Fast inline push for pointer-sized items (single-threaded, hot path).
  * Does NOT auto-resize - returns FAILURE if full.
+ *
+ * @param buffer Ring buffer (must be configured with sizeof(void*) item_size)
+ * @param ptr    Pointer to push
+ * @return SUCCESS or FAILURE
  */
 zend_always_inline zend_result zend_ring_buffer_push_ptr_fast(zend_ring_buffer *buffer, void *ptr)
 {
@@ -318,6 +365,10 @@ zend_always_inline zend_result zend_ring_buffer_push_ptr_fast(zend_ring_buffer *
 
 /**
  * Fast inline pop for pointer-sized items (single-threaded, hot path).
+ *
+ * @param buffer Ring buffer (must be configured with sizeof(void*) item_size)
+ * @param ptr    Pointer to store popped value
+ * @return SUCCESS or FAILURE
  */
 zend_always_inline zend_result zend_ring_buffer_pop_ptr_fast(zend_ring_buffer *buffer, void **ptr)
 {
@@ -335,6 +386,10 @@ zend_always_inline zend_result zend_ring_buffer_pop_ptr_fast(zend_ring_buffer *b
 /**
  * Push pointer with automatic resize fallback (single-threaded).
  * First tries fast path, then falls back to slow path with resize.
+ *
+ * @param buffer Ring buffer (must be configured with sizeof(void*) item_size)
+ * @param ptr    Pointer to push
+ * @return SUCCESS or FAILURE
  */
 zend_always_inline zend_result zend_ring_buffer_push_ptr(zend_ring_buffer *buffer, void *ptr)
 {
@@ -353,6 +408,9 @@ zend_always_inline zend_result zend_ring_buffer_push_ptr(zend_ring_buffer *buffe
 
 /**
  * Check if buffer is not empty (SPSC reader version).
+ *
+ * @param buffer Ring buffer (must have ATOMIC_HEAD flag)
+ * @return true if not empty, false if empty
  */
 zend_always_inline bool zend_ring_buffer_is_not_empty_atomic(const zend_ring_buffer *buffer)
 {
@@ -363,6 +421,8 @@ zend_always_inline bool zend_ring_buffer_is_not_empty_atomic(const zend_ring_buf
 /**
  * Clear buffer - reset to empty state (SPSC reader version).
  * WARNING: Only safe if called by reader thread in SPSC!
+ *
+ * @param buffer Ring buffer (must have ATOMIC_HEAD flag)
  */
 zend_always_inline void zend_ring_buffer_clean_atomic(zend_ring_buffer *buffer)
 {
@@ -373,6 +433,10 @@ zend_always_inline void zend_ring_buffer_clean_atomic(zend_ring_buffer *buffer)
 /**
  * Fast inline push for pointer-sized items (SPSC writer, hot path).
  * Does NOT auto-resize - returns FAILURE if full.
+ *
+ * @param buffer Ring buffer (must have ATOMIC_HEAD flag, sizeof(void*) item_size)
+ * @param ptr    Pointer to push
+ * @return SUCCESS or FAILURE
  */
 zend_always_inline zend_result zend_ring_buffer_push_ptr_fast_atomic(zend_ring_buffer *buffer, void *ptr)
 {
@@ -394,6 +458,10 @@ zend_always_inline zend_result zend_ring_buffer_push_ptr_fast_atomic(zend_ring_b
 
 /**
  * Fast inline pop for pointer-sized items (SPSC reader, hot path).
+ *
+ * @param buffer Ring buffer (must have ATOMIC_HEAD flag, sizeof(void*) item_size)
+ * @param ptr    Pointer to store popped value
+ * @return SUCCESS or FAILURE
  */
 zend_always_inline zend_result zend_ring_buffer_pop_ptr_fast_atomic(zend_ring_buffer *buffer, void **ptr)
 {
@@ -417,6 +485,10 @@ zend_always_inline zend_result zend_ring_buffer_pop_ptr_fast_atomic(zend_ring_bu
 
 /**
  * Create a new ring buffer for zval storage.
+ *
+ * @param count      Initial capacity
+ * @param persistent Use persistent allocation
+ * @return Pointer to new buffer, or NULL on failure
  */
 static zend_always_inline zend_ring_buffer *zend_ring_buffer_new_zval(size_t count, bool persistent)
 {
@@ -426,12 +498,21 @@ static zend_always_inline zend_ring_buffer *zend_ring_buffer_new_zval(size_t cou
 /**
  * Push zval into buffer with reference counting.
  * The zval will be copied and its reference count increased.
+ *
+ * @param buffer        Ring buffer (must be configured with sizeof(zval) item_size)
+ * @param value         Pointer to zval to push
+ * @param should_resize If true, auto-resize when full
+ * @return SUCCESS or FAILURE
  */
 ZEND_API zend_result zend_ring_buffer_push_zval(zend_ring_buffer *buffer, zval *value, bool should_resize);
 
 /**
  * Pop zval from buffer.
  * The zval will be copied and ownership transferred to caller.
+ *
+ * @param buffer Ring buffer (must be configured with sizeof(zval) item_size)
+ * @param value  Pointer to store popped zval
+ * @return SUCCESS or FAILURE
  */
 ZEND_API zend_result zend_ring_buffer_pop_zval(zend_ring_buffer *buffer, zval *value);
 
