@@ -159,33 +159,54 @@ ZEND_API bool zend_ring_buffer_is_empty(const zend_ring_buffer *buffer)
 }
 
 /**
- * Check if buffer is empty (atomic version for SPSC).
+ * Check if buffer is empty (SPSC atomic version).
+ * Reader checks: tail == atomic_load(head)
  */
 ZEND_API bool zend_ring_buffer_is_empty_atomic(const zend_ring_buffer *buffer)
 {
 	ZEND_ASSERT(buffer->flags & ZEND_RING_BUFFER_ATOMIC_HEAD);
-	return zend_atomic_size_t_load_ex(&buffer->head_atomic) == buffer->tail;
+	return buffer->tail == zend_atomic_size_t_load_ex(&buffer->head_atomic);
 }
 
 /**
- * Check if buffer is full (atomic version for SPSC).
+ * Check if buffer is full (SPSC atomic version).
+ * Writer checks: (head + 1) & (capacity - 1) == tail
  */
 ZEND_API bool zend_ring_buffer_is_full_atomic(const zend_ring_buffer *buffer)
 {
 	ZEND_ASSERT(buffer->flags & ZEND_RING_BUFFER_ATOMIC_HEAD);
 
 	const size_t head = zend_atomic_size_t_load_ex(&buffer->head_atomic);
-	const size_t available = buffer->capacity - (head - buffer->tail);
+	const size_t next_head = (head + 1) & (buffer->capacity - 1);
 
-	return available == 0;
+	return next_head == buffer->tail;
 }
 
 /**
  * Get number of elements in buffer.
+ *
+ * For wrapped indices (always < capacity):
+ * - if head >= tail: count = head - tail
+ * - if head < tail (wrapped): count = capacity - tail + head
  */
 ZEND_API size_t zend_ring_buffer_count(const zend_ring_buffer *buffer)
 {
-	return (buffer->head - buffer->tail) & (buffer->capacity - 1);
+	size_t head, tail;
+
+	if (buffer->flags & ZEND_RING_BUFFER_ATOMIC_HEAD) {
+		head = zend_atomic_size_t_load_ex(&buffer->head_atomic);
+		tail = buffer->tail;
+	} else {
+		head = buffer->head;
+		tail = buffer->tail;
+	}
+
+	/* Wrapped indices: simple calculation */
+	if (head >= tail) {
+		return head - tail;
+	} else {
+		return buffer->capacity - tail + head;
+	}
 }
 
 /**
@@ -268,18 +289,20 @@ ZEND_API zend_result zend_ring_buffer_realloc(zend_ring_buffer *buffer, size_t n
 	size_t count = zend_ring_buffer_count(buffer);
 
 	/*
-	 * For atomic mode: normalize monotonic counters to wrapped indices
-	 * Non-atomic mode: indices already wrapped
+	 * Get wrapped indices (always < capacity in new SPSC design)
 	 */
 	size_t head_idx, tail_idx;
 	if (buffer->flags & ZEND_RING_BUFFER_ATOMIC_HEAD) {
-		size_t head_val = zend_atomic_size_t_load_ex(&buffer->head_atomic);
-		head_idx = head_val & (buffer->capacity - 1);
-		tail_idx = buffer->tail & (buffer->capacity - 1);
+		head_idx = zend_atomic_size_t_load_ex(&buffer->head_atomic);
+		tail_idx = buffer->tail;
 	} else {
 		head_idx = buffer->head;
 		tail_idx = buffer->tail;
 	}
+
+	/* Verify indices are wrapped */
+	ZEND_ASSERT(head_idx < buffer->capacity && "Head must be < capacity (wrapped)");
+	ZEND_ASSERT(tail_idx < buffer->capacity && "Tail must be < capacity (wrapped)");
 
 	/*
 	 * Case 2: Linear order (head >= tail) - data is contiguous
@@ -587,45 +610,71 @@ ZEND_API zend_result zend_ring_buffer_pop_zval(zend_ring_buffer *buffer, zval *v
 }
 #endif /* !ZEND_RING_BUFFER_STANDALONE */
 
+/**
+ * Push item to buffer (SPSC writer, atomic version).
+ *
+ * SPSC Algorithm (wrapped indices):
+ * 1. Load current head (non-atomic - writer owns it)
+ * 2. Calculate next_head = (head + 1) & (capacity - 1)
+ * 3. Check if full: next_head == tail (stale read OK)
+ * 4. Write data[head] = value
+ * 5. Store head = next_head with release barrier
+ */
 ZEND_API zend_result zend_ring_buffer_push_atomic(zend_ring_buffer *buffer, const void *value)
 {
+	ZEND_ASSERT(buffer != NULL);
+	ZEND_ASSERT(buffer->data != NULL);
+	ZEND_ASSERT(value != NULL);
 	ZEND_ASSERT(buffer->flags & ZEND_RING_BUFFER_ATOMIC_HEAD);
 
-	size_t head, tail_snap, available, slot;
+	/* Load current head (writer owns it) */
+	const size_t head = zend_atomic_size_t_load_ex(&buffer->head_atomic);
+	const size_t next_head = (head + 1) & (buffer->capacity - 1);
 
-	head = zend_atomic_size_t_load_ex(&buffer->head_atomic);
-	tail_snap = buffer->tail;
-	available = buffer->capacity - (head - tail_snap);
-
-	if (UNEXPECTED(available == 0)) {
+	/* Check if buffer is full (stale tail read is safe - just conservative) */
+	if (UNEXPECTED(next_head == buffer->tail)) {
 		return FAILURE;
 	}
 
-	slot = zend_atomic_size_t_fetch_add_ex(&buffer->head_atomic, 1);
-
-	void *dest = (char*)buffer->data + (slot & (buffer->capacity - 1)) * buffer->item_size;
+	/* Write data */
+	void *dest = (char*)buffer->data + head * buffer->item_size;
 	memcpy(dest, value, buffer->item_size);
+
+	/* Publish to reader with release barrier */
+	zend_atomic_size_t_store_ex(&buffer->head_atomic, next_head);
 
 	return SUCCESS;
 }
 
+/**
+ * Pop item from buffer (SPSC reader, atomic version).
+ *
+ * SPSC Algorithm (wrapped indices):
+ * 1. Load current tail (reader owns it)
+ * 2. Check if empty: tail == atomic_load(head)
+ * 3. Read data[tail]
+ * 4. Update tail = (tail + 1) & (capacity - 1) - no atomic needed!
+ */
 ZEND_API zend_result zend_ring_buffer_pop_atomic(zend_ring_buffer *buffer, void *value)
 {
+	ZEND_ASSERT(buffer != NULL);
+	ZEND_ASSERT(buffer->data != NULL);
+	ZEND_ASSERT(value != NULL);
 	ZEND_ASSERT(buffer->flags & ZEND_RING_BUFFER_ATOMIC_HEAD);
 
-	size_t head, tail;
+	const size_t tail = buffer->tail;
 
-	head = zend_atomic_size_t_load_ex(&buffer->head_atomic);
-	tail = buffer->tail;
-
-	if (UNEXPECTED(tail >= head)) {
+	/* Check if buffer is empty */
+	if (UNEXPECTED(tail == zend_atomic_size_t_load_ex(&buffer->head_atomic))) {
 		return FAILURE;
 	}
 
-	void *src = (char*)buffer->data + (tail & (buffer->capacity - 1)) * buffer->item_size;
+	/* Read data */
+	void *src = (char*)buffer->data + tail * buffer->item_size;
 	memcpy(value, src, buffer->item_size);
 
-	buffer->tail = tail + 1;
+	/* Update tail (no atomic needed - reader owns it) */
+	buffer->tail = (tail + 1) & (buffer->capacity - 1);
 
 	return SUCCESS;
 }

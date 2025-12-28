@@ -96,27 +96,32 @@
  * Ring buffer flags (packed into single uint32_t field).
  */
 #define ZEND_RING_BUFFER_PERSISTENT   (1u << 0)  /* Use persistent allocation */
-#define ZEND_RING_BUFFER_ATOMIC_HEAD  (1u << 1)  /* Use atomic head (writer in SPSC) */
-#define ZEND_RING_BUFFER_ATOMIC_TAIL  (1u << 2)  /* Use atomic tail (reader in SPSC, for MPMC) */
+#define ZEND_RING_BUFFER_ATOMIC_HEAD  (1u << 1)  /* Use atomic head (SPSC mode only) */
 #define ZEND_RING_BUFFER_AUTO_GROW    (1u << 3)  /* Auto-resize when full */
 #define ZEND_RING_BUFFER_AUTO_SHRINK  (1u << 4)  /* Auto-shrink when underutilized */
 
 /**
  * Generic ring buffer (circular buffer) implementation.
  *
+ * DESIGN: SPSC-only (Single Producer Single Consumer)
+ * - Uses wrapped indices (always < capacity), NOT monotonic counters
+ * - Writer owns head, Reader owns tail
+ * - Only head is atomic in SPSC mode (writer updates, reader reads)
+ * - Tail is never atomic in SPSC (reader owns it exclusively)
+ *
  * Features:
  * - Power-of-2 capacity for fast modulo via bitwise AND
- * - Optional atomic head/tail for multi-threaded access (SPSC/MPMC)
+ * - Optional atomic head for SPSC multi-threaded access
  * - Automatic growth when full (configurable via flags)
  * - Automatic shrinking when underutilized (configurable via flags)
  * - Generic item storage (configurable item_size)
  * - Optimized inline functions for pointer operations
- * - Branch-free API: separate functions for ST vs MT access
  *
  * Thread Safety Models:
  * - Single-threaded: No flags, use zend_ring_buffer_push/pop
- * - SPSC: ATOMIC_HEAD flag, use zend_ring_buffer_push_atomic/pop
- * - MPMC: ATOMIC_HEAD | ATOMIC_TAIL, use custom synchronization
+ * - SPSC: ATOMIC_HEAD flag, use zend_ring_buffer_push_atomic/pop_atomic
+ *
+ * IMPORTANT: MPMC (Multiple Producers/Consumers) is NOT supported!
  */
 typedef struct _zend_ring_buffer {
 	size_t item_size;      /* size of each element in bytes */
@@ -133,10 +138,10 @@ typedef struct _zend_ring_buffer {
 	size_t decrease_threshold;
 
 	/**
-	 * Head offset - next write position.
+	 * Head offset - next write position (wrapped, always < capacity).
 	 * Use union to support both atomic and non-atomic access.
 	 * - ST mode: access via .head
-	 * - MT mode: access via .head_atomic
+	 * - SPSC mode: access via .head_atomic (writer updates, reader reads)
 	 */
 	union {
 		size_t head;
@@ -144,16 +149,12 @@ typedef struct _zend_ring_buffer {
 	};
 
 	/**
-	 * Tail offset - next read position.
-	 * Use union to support both atomic and non-atomic access.
+	 * Tail offset - next read position (wrapped, always < capacity).
+	 * NEVER atomic in SPSC mode - reader owns tail exclusively!
 	 * - ST mode: access via .tail
-	 * - SPSC mode: access via .tail (reader-owned, no atomic needed)
-	 * - MPMC mode: access via .tail_atomic
+	 * - SPSC mode: access via .tail (reader-owned, writer only reads)
 	 */
-	union {
-		size_t tail;
-		zend_atomic_size_t tail_atomic;
-	};
+	size_t tail;
 } zend_ring_buffer;
 
 BEGIN_EXTERN_C()
@@ -212,12 +213,11 @@ ZEND_API zend_result zend_ring_buffer_push_front(zend_ring_buffer *buffer, const
 ZEND_API zend_result zend_ring_buffer_pop(zend_ring_buffer *buffer, void *value);
 
 /* ========================================================================
- * Core Operations - Multi-Threaded (with atomics, SPSC pattern)
+ * Core Operations - SPSC Multi-Threaded (with atomics)
  * ======================================================================== */
 
 /**
- * Push item to buffer (multi-threaded SPSC version).
- * Writer thread uses atomic fetch_add on head.
+ * Push item to buffer (SPSC writer version).
  *
  * @param buffer Ring buffer (must have ATOMIC_HEAD flag)
  * @param value  Pointer to value to push
@@ -226,8 +226,7 @@ ZEND_API zend_result zend_ring_buffer_pop(zend_ring_buffer *buffer, void *value)
 ZEND_API zend_result zend_ring_buffer_push_atomic(zend_ring_buffer *buffer, const void *value);
 
 /**
- * Pop item from buffer (multi-threaded SPSC reader version).
- * Reader thread owns tail (no atomic needed for SPSC).
+ * Pop item from buffer (SPSC reader version).
  *
  * @param buffer Ring buffer (must have ATOMIC_HEAD flag)
  * @param value  Pointer to store popped value
@@ -256,14 +255,15 @@ ZEND_API bool zend_ring_buffer_is_full(const zend_ring_buffer *buffer);
 ZEND_API bool zend_ring_buffer_is_empty(const zend_ring_buffer *buffer);
 
 /**
- * Check if buffer is empty (atomic version for SPSC).
- * Uses atomic head load and tail snapshot.
+ * Check if buffer is empty (SPSC atomic version).
+ * Reader checks: tail == atomic_load(head)
  */
 ZEND_API bool zend_ring_buffer_is_empty_atomic(const zend_ring_buffer *buffer);
 
 /**
- * Check if buffer is full (atomic version for SPSC).
- * Uses atomic head load and tail snapshot.
+ * Check if buffer is full (SPSC atomic version).
+ * Writer checks: (head + 1) & (capacity - 1) == tail
+ * Note: tail is read without atomic (stale read is safe, just conservative)
  */
 ZEND_API bool zend_ring_buffer_is_full_atomic(const zend_ring_buffer *buffer);
 
@@ -352,52 +352,48 @@ zend_always_inline zend_result zend_ring_buffer_push_ptr(zend_ring_buffer *buffe
  * ======================================================================== */
 
 /**
- * Check if buffer is not empty (atomic version for reader).
+ * Check if buffer is not empty (SPSC reader version).
  */
 zend_always_inline bool zend_ring_buffer_is_not_empty_atomic(const zend_ring_buffer *buffer)
 {
 	size_t head = zend_atomic_size_t_load_ex(&buffer->head_atomic);
-	return buffer->tail < head;
+	return buffer->tail != head;
 }
 
 /**
- * Clear buffer - reset to empty state (atomic version, reader-only!).
+ * Clear buffer - reset to empty state (SPSC reader version).
  * WARNING: Only safe if called by reader thread in SPSC!
  */
 zend_always_inline void zend_ring_buffer_clean_atomic(zend_ring_buffer *buffer)
 {
 	size_t head = zend_atomic_size_t_load_ex(&buffer->head_atomic);
-	buffer->tail = head; /* Catch up to writer */
+	buffer->tail = head;
 }
 
 /**
- * Fast inline push for pointer-sized items (atomic SPSC writer, hot path).
+ * Fast inline push for pointer-sized items (SPSC writer, hot path).
  * Does NOT auto-resize - returns FAILURE if full.
- *
- * SPSC-safe: Writer increments head atomically, reader never touches head.
  */
 zend_always_inline zend_result zend_ring_buffer_push_ptr_fast_atomic(zend_ring_buffer *buffer, void *ptr)
 {
 	ZEND_ASSERT(buffer->item_size == sizeof(void*));
 	ZEND_ASSERT(buffer->flags & ZEND_RING_BUFFER_ATOMIC_HEAD);
 
-	/* Conservative check: read tail snapshot (maybe stale) */
-	if (UNEXPECTED((buffer->capacity - (zend_atomic_size_t_load_ex(&buffer->head_atomic) - buffer->tail)) == 0)) {
-		return FAILURE; /* Buffer full */
+	size_t head = zend_atomic_size_t_load_ex(&buffer->head_atomic);
+	size_t next_head = (head + 1) & (buffer->capacity - 1);
+
+	if (UNEXPECTED(next_head == buffer->tail)) {
+		return FAILURE;
 	}
 
-	/* Claim slot via fetch_add (lock-free!) */
-	const size_t slot = zend_atomic_size_t_fetch_add_ex(&buffer->head_atomic, 1);
-
-	((void**)buffer->data)[slot & (buffer->capacity - 1)] = ptr;
+	((void**)buffer->data)[head] = ptr;
+	zend_atomic_size_t_store_ex(&buffer->head_atomic, next_head);
 
 	return SUCCESS;
 }
 
 /**
- * Fast inline pop for pointer-sized items (atomic SPSC reader, hot path).
- *
- * SPSC-safe: Reader owns tail, writer never touches it.
+ * Fast inline pop for pointer-sized items (SPSC reader, hot path).
  */
 zend_always_inline zend_result zend_ring_buffer_pop_ptr_fast_atomic(zend_ring_buffer *buffer, void **ptr)
 {
@@ -406,12 +402,12 @@ zend_always_inline zend_result zend_ring_buffer_pop_ptr_fast_atomic(zend_ring_bu
 
 	const size_t tail = buffer->tail;
 
-	if (UNEXPECTED(tail >= zend_atomic_size_t_load_ex(&buffer->head_atomic))) {
-		return FAILURE; /* Buffer empty */
+	if (UNEXPECTED(tail == zend_atomic_size_t_load_ex(&buffer->head_atomic))) {
+		return FAILURE;
 	}
 
-	*ptr = ((void**)buffer->data)[tail & (buffer->capacity - 1)];
-	buffer->tail = tail + 1;
+	*ptr = ((void**)buffer->data)[tail];
+	buffer->tail = (tail + 1) & (buffer->capacity - 1);
 
 	return SUCCESS;
 }
