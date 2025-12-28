@@ -34,7 +34,11 @@
 #include <stddef.h>
 #include <stdatomic.h>
 #include <assert.h>
+#ifndef ZEND_WIN32
 #include <pthread.h>
+#else
+#include <windows.h>
+#endif
 
 /* Standalone atomic types */
 typedef struct {
@@ -111,7 +115,11 @@ typedef struct _zend_spsc_queue {
 #ifndef ZEND_SPSC_QUEUE_STANDALONE
 	MUTEX_T handoff_mutex;            /* handoff serialization mutex */
 #else
+	#ifndef ZEND_WIN32
 	pthread_mutex_t handoff_mutex;    /* standalone mode uses pthread */
+	#else
+	CRITICAL_SECTION handoff_mutex;   /* standalone mode uses Windows CS */
+	#endif
 #endif
 
 	size_t capacity;                  /* current buffer capacity */

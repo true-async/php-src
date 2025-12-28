@@ -1,0 +1,9 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "php-src",
+  "version": "8.6.0",
+  "builtin-baseline": "11bbc873e00e9e58d4e9dffb30b7a5493a030e0b",
+  "dependencies": [
+    "cmocka"
+  ]
+}

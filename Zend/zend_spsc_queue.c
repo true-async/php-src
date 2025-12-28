@@ -85,10 +85,14 @@ ZEND_API bool zend_spsc_queue_init(zend_spsc_queue *queue, size_t initial_capaci
 		return false;
 	}
 #else
+	#ifndef ZEND_WIN32
 	if (pthread_mutex_init(&queue->handoff_mutex, NULL) != 0) {
 		zend_ring_buffer_free(buf0);
 		return false;
 	}
+	#else
+	InitializeCriticalSection(&queue->handoff_mutex);
+	#endif
 #endif
 
 	queue->capacity = buf0->capacity;
@@ -122,7 +126,11 @@ ZEND_API void zend_spsc_queue_free(zend_spsc_queue *queue)
 		tsrm_mutex_free(queue->handoff_mutex);
 	}
 #else
+	#ifndef ZEND_WIN32
 	pthread_mutex_destroy(&queue->handoff_mutex);
+	#else
+	DeleteCriticalSection(&queue->handoff_mutex);
+	#endif
 #endif
 }
 
@@ -198,14 +206,22 @@ zend_ring_buffer* zend_spsc_queue_resize(zend_spsc_queue *queue)
 #ifndef ZEND_SPSC_QUEUE_STANDALONE
 		tsrm_mutex_lock(queue->handoff_mutex);
 #else
+	#ifndef ZEND_WIN32
 		pthread_mutex_lock(&queue->handoff_mutex);
+	#else
+		EnterCriticalSection(&queue->handoff_mutex);
+	#endif
 #endif
 
 		if (UNEXPECTED(zend_ring_buffer_realloc(current_buffer, 0) == FAILURE)) {
 #ifndef ZEND_SPSC_QUEUE_STANDALONE
 			tsrm_mutex_unlock(queue->handoff_mutex);
 #else
+	#ifndef ZEND_WIN32
 			pthread_mutex_unlock(&queue->handoff_mutex);
+	#else
+			LeaveCriticalSection(&queue->handoff_mutex);
+	#endif
 #endif
 			return NULL;
 		}
@@ -213,7 +229,11 @@ zend_ring_buffer* zend_spsc_queue_resize(zend_spsc_queue *queue)
 #ifndef ZEND_SPSC_QUEUE_STANDALONE
 		tsrm_mutex_unlock(queue->handoff_mutex);
 #else
+	#ifndef ZEND_WIN32
 		pthread_mutex_unlock(&queue->handoff_mutex);
+	#else
+		LeaveCriticalSection(&queue->handoff_mutex);
+	#endif
 #endif
 
 		return current_buffer;
@@ -302,7 +322,11 @@ ZEND_API bool zend_spsc_queue_pop(zend_spsc_queue *queue, void **item)
 #ifndef ZEND_SPSC_QUEUE_STANDALONE
 		tsrm_mutex_lock(queue->handoff_mutex);
 #else
+	#ifndef ZEND_WIN32
 		pthread_mutex_lock(&queue->handoff_mutex);
+	#else
+		EnterCriticalSection(&queue->handoff_mutex);
+	#endif
 #endif
 
 		/* Switch write_hint to make current_buffer available for reading */
@@ -311,7 +335,11 @@ ZEND_API bool zend_spsc_queue_pop(zend_spsc_queue *queue, void **item)
 #ifndef ZEND_SPSC_QUEUE_STANDALONE
 		tsrm_mutex_unlock(queue->handoff_mutex);
 #else
+	#ifndef ZEND_WIN32
 		pthread_mutex_unlock(&queue->handoff_mutex);
+	#else
+		LeaveCriticalSection(&queue->handoff_mutex);
+	#endif
 #endif
 
 		/* Fall through to Path 3 to read from newly accessible buffer */

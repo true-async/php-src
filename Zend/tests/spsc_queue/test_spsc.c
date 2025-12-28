@@ -5,7 +5,19 @@
 #include <stddef.h>
 #include <setjmp.h>
 #include <cmocka.h>
+#ifndef ZEND_WIN32
 #include <pthread.h>
+#define THREAD_T pthread_t
+#define THREAD_CREATE(thread, func, arg) pthread_create(&(thread), NULL, func, arg)
+#define THREAD_JOIN(thread, result) pthread_join(thread, &(result))
+#define THREAD_RETURN_T void*
+#else
+#include <windows.h>
+#define THREAD_T HANDLE
+#define THREAD_CREATE(thread, func, arg) ((thread) = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)(func), arg, 0, NULL))
+#define THREAD_JOIN(thread, result) (WaitForSingleObject(thread, INFINITE), CloseHandle(thread), (result) = NULL)
+#define THREAD_RETURN_T DWORD WINAPI
+#endif
 
 static void test_init_destroy(void **state)
 {
@@ -138,7 +150,7 @@ typedef struct {
 	volatile bool writer_done;
 } thread_data_t;
 
-static void* writer_thread(void *arg)
+static THREAD_RETURN_T writer_thread(void *arg)
 {
 	thread_data_t *data = (thread_data_t*)arg;
 
@@ -150,10 +162,14 @@ static void* writer_thread(void *arg)
 	}
 
 	data->writer_done = true;
+#ifndef ZEND_WIN32
 	return NULL;
+#else
+	return 0;
+#endif
 }
 
-static void* reader_thread(void *arg)
+static THREAD_RETURN_T reader_thread(void *arg)
 {
 	thread_data_t *data = (thread_data_t*)arg;
 	size_t total_read = 0;
@@ -165,13 +181,21 @@ static void* reader_thread(void *arg)
 			uintptr_t actual = (uintptr_t)item;
 			if (actual != expected) {
 				fprintf(stderr, "Order violation: expected %zu, got %zu\n", expected, actual);
+#ifndef ZEND_WIN32
 				return (void*)1;
+#else
+				return 1;
+#endif
 			}
 			total_read++;
 		}
 	}
 
+#ifndef ZEND_WIN32
 	return (void*)(total_read == data->count ? 0 : 1);
+#else
+	return (total_read == data->count ? 0 : 1);
+#endif
 }
 
 static void test_reader_buffer_switch(void **state)
@@ -286,13 +310,13 @@ static void test_multithread_spsc(void **state)
 		.writer_done = false
 	};
 
-	pthread_t writer, reader;
-	pthread_create(&writer, NULL, writer_thread, &data);
-	pthread_create(&reader, NULL, reader_thread, &data);
+	THREAD_T writer, reader;
+	THREAD_CREATE(writer, writer_thread, &data);
+	THREAD_CREATE(reader, reader_thread, &data);
 
 	void *writer_result, *reader_result;
-	pthread_join(writer, &writer_result);
-	pthread_join(reader, &reader_result);
+	THREAD_JOIN(writer, writer_result);
+	THREAD_JOIN(reader, reader_result);
 
 	assert_int_equal((uintptr_t)reader_result, 0);
 
