@@ -454,7 +454,6 @@ zend_always_inline zend_result zend_ring_buffer_push_ptr_fast_atomic(zend_ring_b
 	}
 
 	((void**)buffer->data)[head] = ptr;
-	buffer->head = next_head;
 	zend_atomic_size_t_store(&buffer->head_atomic, next_head);
 
 	return SUCCESS;
@@ -481,7 +480,6 @@ zend_always_inline zend_result zend_ring_buffer_pop_ptr_fast_atomic(zend_ring_bu
 
 	*ptr = ((void**)buffer->data)[tail];
 	const size_t next_tail = (tail + 1) & (buffer->capacity - 1);
-	buffer->tail = next_tail;
 	zend_atomic_size_t_store(&buffer->tail_atomic, next_tail);
 
 	return SUCCESS;
