@@ -165,7 +165,7 @@ ZEND_API bool zend_ring_buffer_is_empty(const zend_ring_buffer *buffer)
 ZEND_API bool zend_ring_buffer_is_empty_atomic(const zend_ring_buffer *buffer)
 {
 	ZEND_ASSERT(buffer->flags & ZEND_RING_BUFFER_ATOMIC_HEAD);
-	return buffer->tail == zend_atomic_size_t_load_ex(&buffer->head_atomic);
+	return zend_atomic_size_t_load(&buffer->tail_atomic) == zend_atomic_size_t_load(&buffer->head_atomic);
 }
 
 /**
@@ -175,8 +175,8 @@ ZEND_API bool zend_ring_buffer_is_empty_atomic(const zend_ring_buffer *buffer)
 ZEND_API bool zend_ring_buffer_is_full_atomic(const zend_ring_buffer *buffer)
 {
 	ZEND_ASSERT(buffer->flags & ZEND_RING_BUFFER_ATOMIC_HEAD);
-
-	return next_index(zend_atomic_size_t_load_ex(&buffer->head_atomic), buffer->capacity) == buffer->tail;
+	return next_index(zend_atomic_size_t_load(&buffer->head_atomic), buffer->capacity)
+			== zend_atomic_size_t_load(&buffer->tail_atomic);
 }
 
 /**
@@ -191,7 +191,7 @@ ZEND_API size_t zend_ring_buffer_count(const zend_ring_buffer *buffer)
 	size_t head, tail;
 
 	if (buffer->flags & ZEND_RING_BUFFER_ATOMIC_HEAD) {
-		head = zend_atomic_size_t_load_ex(&buffer->head_atomic);
+		head = zend_atomic_size_t_load(&buffer->head_atomic);
 		tail = buffer->tail;
 	} else {
 		head = buffer->head;
@@ -290,7 +290,7 @@ ZEND_API zend_result zend_ring_buffer_realloc(zend_ring_buffer *buffer, size_t n
 	 */
 	size_t head_idx, tail_idx;
 	if (buffer->flags & ZEND_RING_BUFFER_ATOMIC_HEAD) {
-		head_idx = zend_atomic_size_t_load_ex(&buffer->head_atomic);
+		head_idx = zend_atomic_size_t_load(&buffer->head_atomic);
 		tail_idx = buffer->tail;
 	} else {
 		head_idx = buffer->head;
@@ -357,7 +357,7 @@ ZEND_API zend_result zend_ring_buffer_realloc(zend_ring_buffer *buffer, size_t n
 			/* Update indices */
 			if (buffer->flags & ZEND_RING_BUFFER_ATOMIC_HEAD) {
 				buffer->tail = 0;
-				zend_atomic_size_t_store_ex(&buffer->head_atomic, count);
+				zend_atomic_size_t_store(&buffer->head_atomic, count);
 			} else {
 				buffer->tail = 0;
 				buffer->head = count;
@@ -404,7 +404,7 @@ ZEND_API zend_result zend_ring_buffer_realloc(zend_ring_buffer *buffer, size_t n
 		/* Update indices */
 		if (buffer->flags & ZEND_RING_BUFFER_ATOMIC_HEAD) {
 			buffer->tail = 0;
-			zend_atomic_size_t_store_ex(&buffer->head_atomic, count);
+			zend_atomic_size_t_store(&buffer->head_atomic, count);
 		} else {
 			buffer->tail = 0;
 			buffer->head = count;
@@ -622,18 +622,16 @@ ZEND_API zend_result zend_ring_buffer_push_atomic(zend_ring_buffer *buffer, cons
 	ZEND_ASSERT(value != NULL);
 	ZEND_ASSERT(buffer->flags & ZEND_RING_BUFFER_ATOMIC_HEAD);
 
-	size_t head = zend_atomic_size_t_load_ex(&buffer->head_atomic);
+	const size_t head = zend_atomic_size_t_load(&buffer->head_atomic);
+	const size_t tail = zend_atomic_size_t_load(&buffer->tail_atomic);
 
-	/* Check if buffer is full (stale tail read is safe - just conservative) */
-	if (UNEXPECTED(next_index(head, buffer->capacity) == buffer->tail)) {
+	/* Check if buffer is full */
+	if (UNEXPECTED(next_index(head, buffer->capacity) == tail)) {
 		return FAILURE;
 	}
 
-	/* Write data */
 	memcpy((char*)buffer->data + head * buffer->item_size, value, buffer->item_size);
-
-	/* Publish to reader with release barrier */
-	zend_atomic_size_t_store_ex(&buffer->head_atomic, next_index(head, buffer->capacity));
+	zend_atomic_size_t_store(&buffer->head_atomic, next_index(head, buffer->capacity));
 
 	return SUCCESS;
 }
@@ -644,7 +642,7 @@ ZEND_API zend_result zend_ring_buffer_push_atomic(zend_ring_buffer *buffer, cons
  * SPSC Algorithm (wrapped indices):
  * 1. Check if empty: tail == atomic_load(head)
  * 2. Read data[tail]
- * 3. Update tail = next_index(tail) - no atomic needed!
+ * 3. Update tail = next_index(tail)
  */
 ZEND_API zend_result zend_ring_buffer_pop_atomic(zend_ring_buffer *buffer, void *value)
 {
@@ -653,16 +651,16 @@ ZEND_API zend_result zend_ring_buffer_pop_atomic(zend_ring_buffer *buffer, void 
 	ZEND_ASSERT(value != NULL);
 	ZEND_ASSERT(buffer->flags & ZEND_RING_BUFFER_ATOMIC_HEAD);
 
+	const size_t head = zend_atomic_size_t_load(&buffer->head_atomic);
+	const size_t tail = zend_atomic_size_t_load(&buffer->tail_atomic);
+
 	/* Check if buffer is empty */
-	if (UNEXPECTED(buffer->tail == zend_atomic_size_t_load_ex(&buffer->head_atomic))) {
+	if (UNEXPECTED(head == tail)) {
 		return FAILURE;
 	}
 
-	/* Read data */
-	memcpy(value, (char*)buffer->data + buffer->tail * buffer->item_size, buffer->item_size);
-
-	/* Update tail (no atomic needed - reader owns it) */
-	buffer->tail = next_index(buffer->tail, buffer->capacity);
+	memcpy(value, (char*)buffer->data + tail * buffer->item_size, buffer->item_size);
+	zend_atomic_size_t_store(&buffer->tail_atomic, next_index(tail, buffer->capacity));
 
 	return SUCCESS;
 }

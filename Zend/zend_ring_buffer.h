@@ -66,15 +66,15 @@
 		_Atomic(size_t) value;
 	} zend_atomic_size_t;
 
-	static inline size_t zend_atomic_size_t_load_ex(const zend_atomic_size_t *obj) {
+	static inline size_t zend_atomic_size_t_load(const zend_atomic_size_t *obj) {
 		return atomic_load_explicit(&obj->value, memory_order_acquire);
 	}
 
-	static inline void zend_atomic_size_t_store_ex(zend_atomic_size_t *obj, size_t desired) {
+	static inline void zend_atomic_size_t_store(zend_atomic_size_t *obj, size_t desired) {
 		atomic_store_explicit(&obj->value, desired, memory_order_release);
 	}
 
-	static inline size_t zend_atomic_size_t_fetch_add_ex(zend_atomic_size_t *obj, size_t value) {
+	static inline size_t zend_atomic_size_t_fetch_add(zend_atomic_size_t *obj, size_t value) {
 		return atomic_fetch_add_explicit(&obj->value, value, memory_order_acq_rel);
 	}
 
@@ -150,11 +150,13 @@ typedef struct _zend_ring_buffer {
 
 	/**
 	 * Tail offset - next read position (wrapped, always < capacity).
-	 * NEVER atomic in SPSC mode - reader owns tail exclusively!
 	 * - ST mode: access via .tail
-	 * - SPSC mode: access via .tail (reader-owned, writer only reads)
+	 * - SPSC mode: access via .tail_atomic (reader updates, writer reads)
 	 */
-	size_t tail;
+	union {
+		size_t tail;
+		zend_atomic_size_t tail_atomic;
+	};
 } zend_ring_buffer;
 
 BEGIN_EXTERN_C()
@@ -414,7 +416,7 @@ zend_always_inline zend_result zend_ring_buffer_push_ptr(zend_ring_buffer *buffe
  */
 zend_always_inline bool zend_ring_buffer_is_not_empty_atomic(const zend_ring_buffer *buffer)
 {
-	size_t head = zend_atomic_size_t_load_ex(&buffer->head_atomic);
+	size_t head = zend_atomic_size_t_load(&buffer->head_atomic);
 	return buffer->tail != head;
 }
 
@@ -426,7 +428,7 @@ zend_always_inline bool zend_ring_buffer_is_not_empty_atomic(const zend_ring_buf
  */
 zend_always_inline void zend_ring_buffer_clean_atomic(zend_ring_buffer *buffer)
 {
-	size_t head = zend_atomic_size_t_load_ex(&buffer->head_atomic);
+	size_t head = zend_atomic_size_t_load(&buffer->head_atomic);
 	buffer->tail = head;
 }
 
@@ -443,15 +445,16 @@ zend_always_inline zend_result zend_ring_buffer_push_ptr_fast_atomic(zend_ring_b
 	ZEND_ASSERT(buffer->item_size == sizeof(void*));
 	ZEND_ASSERT(buffer->flags & ZEND_RING_BUFFER_ATOMIC_HEAD);
 
-	size_t head = zend_atomic_size_t_load_ex(&buffer->head_atomic);
+	size_t head = zend_atomic_size_t_load(&buffer->head_atomic);
 	size_t next_head = (head + 1) & (buffer->capacity - 1);
+	size_t tail = zend_atomic_size_t_load(&buffer->tail_atomic);
 
-	if (UNEXPECTED(next_head == buffer->tail)) {
+	if (UNEXPECTED(next_head == tail)) {
 		return FAILURE;
 	}
 
 	((void**)buffer->data)[head] = ptr;
-	zend_atomic_size_t_store_ex(&buffer->head_atomic, next_head);
+	zend_atomic_size_t_store(&buffer->head_atomic, next_head);
 
 	return SUCCESS;
 }
@@ -468,14 +471,15 @@ zend_always_inline zend_result zend_ring_buffer_pop_ptr_fast_atomic(zend_ring_bu
 	ZEND_ASSERT(buffer->item_size == sizeof(void*));
 	ZEND_ASSERT(buffer->flags & ZEND_RING_BUFFER_ATOMIC_HEAD);
 
-	const size_t tail = buffer->tail;
+	const size_t tail = zend_atomic_size_t_load(&buffer->tail_atomic);
+	const size_t head = zend_atomic_size_t_load(&buffer->head_atomic);
 
-	if (UNEXPECTED(tail == zend_atomic_size_t_load_ex(&buffer->head_atomic))) {
+	if (UNEXPECTED(tail == head)) {
 		return FAILURE;
 	}
 
 	*ptr = ((void**)buffer->data)[tail];
-	buffer->tail = (tail + 1) & (buffer->capacity - 1);
+	zend_atomic_size_t_store(&buffer->tail_atomic, (tail + 1) & (buffer->capacity - 1));
 
 	return SUCCESS;
 }

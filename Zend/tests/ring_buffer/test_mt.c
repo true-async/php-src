@@ -1,5 +1,6 @@
 #include "../../zend_ring_buffer.h"
 
+#include <stdio.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <setjmp.h>
@@ -434,6 +435,34 @@ static void test_mt_spsc_burst_pattern(void **state)
 	zend_ring_buffer_destroy(&buf);
 }
 
+static void test_atomic_resize_order(void **state)
+{
+	(void)state;
+
+	zend_ring_buffer buf;
+	zend_ring_buffer_init(&buf, 4, sizeof(void*), ZEND_RING_BUFFER_ATOMIC_HEAD);
+
+	void *item;
+	assert_int_equal(zend_ring_buffer_push_ptr_fast_atomic(&buf, (void*)1), SUCCESS);
+	assert_int_equal(zend_ring_buffer_push_ptr_fast_atomic(&buf, (void*)2), SUCCESS);
+	assert_int_equal(zend_ring_buffer_push_ptr_fast_atomic(&buf, (void*)3), SUCCESS);
+
+	assert_int_equal(buf.capacity, 4);
+
+	assert_int_equal(zend_ring_buffer_realloc(&buf, 8), SUCCESS);
+
+	assert_int_equal(zend_ring_buffer_push_ptr_fast_atomic(&buf, (void*)4), SUCCESS);
+	assert_int_equal(zend_ring_buffer_push_ptr_fast_atomic(&buf, (void*)5), SUCCESS);
+	assert_int_equal(zend_ring_buffer_push_ptr_fast_atomic(&buf, (void*)6), SUCCESS);
+
+	for (int i = 1; i <= 6; i++) {
+		assert_int_equal(zend_ring_buffer_pop_ptr_fast_atomic(&buf, &item), SUCCESS);
+		assert_ptr_equal(item, (void*)(uintptr_t)i);
+	}
+
+	zend_ring_buffer_destroy(&buf);
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -442,8 +471,8 @@ int main(void)
 		cmocka_unit_test(test_push_pop_atomic_multiple),
 		cmocka_unit_test(test_pop_empty_atomic),
 		cmocka_unit_test(test_full_buffer_atomic),
+		cmocka_unit_test(test_atomic_resize_order),
 		cmocka_unit_test(test_multithread_spsc),
-		/* Additional multi-threaded atomic tests */
 		cmocka_unit_test(test_mt_spsc_atomic_integers),
 		cmocka_unit_test(test_mt_spsc_small_buffer),
 		cmocka_unit_test(test_mt_spsc_stress),

@@ -1,6 +1,7 @@
 #include "../../zend_spsc_queue.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <setjmp.h>
@@ -140,7 +141,7 @@ static void test_power_of_2_rounding(void **state)
 
 	zend_spsc_queue_init(&q, 0, false);
 	buf = (zend_ring_buffer*)zend_atomic_ptr_load_ex(&q.buf[0]);
-	assert_int_equal(buf->capacity, 64);
+	assert_int_equal(buf->capacity, 8);
 	zend_spsc_queue_free(&q);
 }
 
@@ -150,12 +151,14 @@ typedef struct {
 	volatile bool writer_done;
 } thread_data_t;
 
+
 static THREAD_RETURN_T writer_thread(void *arg)
 {
 	thread_data_t *data = (thread_data_t*)arg;
 
 	for (size_t i = 0; i < data->count; i++) {
 		void *item = (void*)(uintptr_t)(i + 1);
+
 		while (!zend_spsc_queue_push(data->q, item)) {
 			/* Retry on failure */
 		}
@@ -174,13 +177,12 @@ static THREAD_RETURN_T reader_thread(void *arg)
 	thread_data_t *data = (thread_data_t*)arg;
 	size_t total_read = 0;
 
-	while (total_read < data->count || !data->writer_done) {
+	while (total_read < data->count) {
 		void *item;
 		if (zend_spsc_queue_pop(data->q, &item)) {
 			uintptr_t expected = total_read + 1;
 			uintptr_t actual = (uintptr_t)item;
 			if (actual != expected) {
-				fprintf(stderr, "Order violation: expected %zu, got %zu\n", expected, actual);
 #ifndef ZEND_WIN32
 				return (void*)1;
 #else
@@ -188,13 +190,19 @@ static THREAD_RETURN_T reader_thread(void *arg)
 #endif
 			}
 			total_read++;
+		} else if (data->writer_done) {
+#ifndef ZEND_WIN32
+			return (void*)1;
+#else
+			return 1;
+#endif
 		}
 	}
 
 #ifndef ZEND_WIN32
-	return (void*)(total_read == data->count ? 0 : 1);
+	return NULL;
 #else
-	return (total_read == data->count ? 0 : 1);
+	return 0;
 #endif
 }
 
@@ -304,9 +312,11 @@ static void test_multithread_spsc(void **state)
 	zend_spsc_queue q;
 	zend_spsc_queue_init(&q, 64, false);
 
+	const size_t count = 10000;
+
 	thread_data_t data = {
 		.q = &q,
-		.count = 10000,
+		.count = count,
 		.writer_done = false
 	};
 

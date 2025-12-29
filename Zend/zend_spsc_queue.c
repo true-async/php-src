@@ -12,7 +12,37 @@
 
 #include "zend_spsc_queue.h"
 
-#define INITIAL_CAPACITY 64
+#ifdef ZEND_SPSC_QUEUE_STANDALONE
+#include <stdio.h>
+#endif
+
+#define INITIAL_CAPACITY 8
+
+static inline void spsc_mutex_lock(zend_spsc_queue *queue)
+{
+#ifndef ZEND_SPSC_QUEUE_STANDALONE
+	tsrm_mutex_lock(queue->handoff_mutex);
+#else
+	#ifndef ZEND_WIN32
+		pthread_mutex_lock(&queue->handoff_mutex);
+	#else
+		EnterCriticalSection(&queue->handoff_mutex);
+	#endif
+#endif
+}
+
+static inline void spsc_mutex_unlock(zend_spsc_queue *queue)
+{
+#ifndef ZEND_SPSC_QUEUE_STANDALONE
+	tsrm_mutex_unlock(queue->handoff_mutex);
+#else
+	#ifndef ZEND_WIN32
+		pthread_mutex_unlock(&queue->handoff_mutex);
+	#else
+		LeaveCriticalSection(&queue->handoff_mutex);
+	#endif
+#endif
+}
 
 /**
  * @brief Allocate new buffer for writer at given index
@@ -52,7 +82,7 @@ zend_always_inline zend_ring_buffer* allocate_buffer(zend_spsc_queue *queue, con
  * Creates initial buffer and initializes handoff mutex.
  *
  * @param queue Queue to initialize
- * @param initial_capacity Initial buffer capacity (0 = use default 64)
+ * @param initial_capacity Initial buffer capacity (0 = use default 8)
  * @param persistent Use persistent allocation
  * @return true on success, false on allocation failure
  */
@@ -203,39 +233,21 @@ zend_ring_buffer* zend_spsc_queue_resize(zend_spsc_queue *queue)
 		 * MUTEX REQUIRED: reader might finish fallback and switch to current_buffer
 		 * Must serialize resize with potential reader switch
 		 */
-#ifndef ZEND_SPSC_QUEUE_STANDALONE
-		tsrm_mutex_lock(queue->handoff_mutex);
-#else
-	#ifndef ZEND_WIN32
-		pthread_mutex_lock(&queue->handoff_mutex);
-	#else
-		EnterCriticalSection(&queue->handoff_mutex);
-	#endif
-#endif
+		spsc_mutex_lock(queue);
+
+		const int current_write_hint = zend_atomic_int_load_ex(&queue->write_hint);
+		if (current_write_hint != write_hint) {
+			/* Reader switched write_hint while we waited for mutex */
+			spsc_mutex_unlock(queue);
+			return zend_atomic_ptr_load_ex(&queue->buf[current_write_hint]);
+		}
 
 		if (UNEXPECTED(zend_ring_buffer_realloc(current_buffer, 0) == FAILURE)) {
-#ifndef ZEND_SPSC_QUEUE_STANDALONE
-			tsrm_mutex_unlock(queue->handoff_mutex);
-#else
-	#ifndef ZEND_WIN32
-			pthread_mutex_unlock(&queue->handoff_mutex);
-	#else
-			LeaveCriticalSection(&queue->handoff_mutex);
-	#endif
-#endif
+			spsc_mutex_unlock(queue);
 			return NULL;
 		}
 
-#ifndef ZEND_SPSC_QUEUE_STANDALONE
-		tsrm_mutex_unlock(queue->handoff_mutex);
-#else
-	#ifndef ZEND_WIN32
-		pthread_mutex_unlock(&queue->handoff_mutex);
-	#else
-		LeaveCriticalSection(&queue->handoff_mutex);
-	#endif
-#endif
-
+		spsc_mutex_unlock(queue);
 		return current_buffer;
 	}
 }
@@ -319,33 +331,15 @@ ZEND_API bool zend_spsc_queue_pop(zend_spsc_queue *queue, void **item)
 		 * Path 2 (SLOW - rare): Dedicated buffer empty, switch to writer's buffer
 		 * MUTEX: must serialize with writer's case B2 (resize current_buffer in-place)
 		 */
-#ifndef ZEND_SPSC_QUEUE_STANDALONE
-		tsrm_mutex_lock(queue->handoff_mutex);
-#else
-	#ifndef ZEND_WIN32
-		pthread_mutex_lock(&queue->handoff_mutex);
-	#else
-		EnterCriticalSection(&queue->handoff_mutex);
-	#endif
-#endif
+		spsc_mutex_lock(queue);
 
-		/* Switch write_hint to make current_buffer available for reading */
 		zend_atomic_int_store_ex(&queue->write_hint, read_idx);
+		spsc_mutex_unlock(queue);
 
-#ifndef ZEND_SPSC_QUEUE_STANDALONE
-		tsrm_mutex_unlock(queue->handoff_mutex);
-#else
-	#ifndef ZEND_WIN32
-		pthread_mutex_unlock(&queue->handoff_mutex);
-	#else
-		LeaveCriticalSection(&queue->handoff_mutex);
-	#endif
-#endif
-
-		/* Fall through to Path 3 to read from newly accessible buffer */
+		/* Fall through to Path 3 */
 	}
 
-	/* Path 3: Read from writer's active buffer (no dedicated buffer or just switched) */
+	/* Path 3: Read from writer's active buffer (no dedicated buffer) */
 	zend_ring_buffer *active_buffer = zend_atomic_ptr_load_ex(&queue->buf[write_hint]);
 
 	if (EXPECTED(active_buffer != NULL)) {
