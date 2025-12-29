@@ -106,6 +106,7 @@ ZEND_API bool zend_spsc_queue_init(zend_spsc_queue *queue, size_t initial_capaci
 	zend_atomic_ptr_store_ex(&queue->buf[0], buf0);
 	zend_atomic_ptr_store_ex(&queue->buf[1], NULL);
 	zend_atomic_int_store_ex(&queue->write_hint, 0);
+	zend_atomic_int_store_ex(&queue->read_hint, 0);
 
 	/* Initialize handoff mutex */
 #ifndef ZEND_SPSC_QUEUE_STANDALONE
@@ -167,30 +168,16 @@ ZEND_API void zend_spsc_queue_free(zend_spsc_queue *queue)
 /**
  * @brief Resize operation (writer slow path)
  *
- * Called when current buffer is full. Implements three strategies:
- *
- * **Case A: Reader free (fallback == NULL)**
- * - Allocate new buffer with doubled capacity
- * - Switch write_hint to new buffer
- * - NO MUTEX (reader not active)
- *
- * **Case B1: Fallback not full**
- * - Switch to existing fallback buffer
- * - NO MUTEX (safe to switch write_hint)
- *
- * **Case B2: Fallback full**
- * - Resize current buffer in-place
- * - MUTEX REQUIRED: reader might switch to current_buffer during resize
+ * Called when current buffer is full. Implements optimized two-hint strategy.
  *
  * @param queue The SPSC queue
  * @return Pointer to buffer for writing, NULL on failure
- *
- * @note Mutex used ONLY in case B2 (rarest scenario)
  */
 zend_ring_buffer* zend_spsc_queue_resize(zend_spsc_queue *queue)
 {
 	const int write_hint = zend_atomic_int_load_ex(&queue->write_hint);
-	const int read_idx = 1 - write_hint;
+	const int read_hint = zend_atomic_int_load_ex(&queue->read_hint);
+	const int fallback_idx = 1 - write_hint;
 
 	zend_ring_buffer *current_buffer = zend_atomic_ptr_load_ex(&queue->buf[write_hint]);
 	ZEND_ASSERT(current_buffer != NULL);
@@ -200,63 +187,55 @@ zend_ring_buffer* zend_spsc_queue_resize(zend_spsc_queue *queue)
 		flags |= ZEND_RING_BUFFER_PERSISTENT;
 	}
 
-	zend_ring_buffer *fallback_buffer = zend_atomic_ptr_load_ex(&queue->buf[read_idx]);
+	zend_ring_buffer *fallback_buffer = zend_atomic_ptr_load_ex(&queue->buf[fallback_idx]);
 
-	if (EXPECTED(fallback_buffer == NULL)) {
+	if (EXPECTED(read_hint == write_hint)) {
 		/*
-		 * Case A: Reader free, allocate new buffer with doubled capacity
-		 * NO MUTEX: reader not active, safe to allocate and switch
+		 * Case A-1: Reader and writer point to the same buffer
+		 * NO MUTEX: only writer modifies write_hint
 		 */
-		const size_t new_capacity = current_buffer->capacity * 2;
-		queue->capacity = new_capacity;
+		if (EXPECTED(fallback_buffer != NULL)) {
+			zend_atomic_int_store_ex(&queue->write_hint, fallback_idx);
+			return fallback_buffer;
+		}
 
-		zend_ring_buffer *new_buffer = zend_ring_buffer_new(new_capacity, sizeof(void *), flags);
+		/*
+		 * Case A-2: Fallback buffer not yet defined. Allocate new buffer with doubled capacity
+		 * NO MUTEX: only writer modifies write_hint
+		 */
+		zend_ring_buffer *new_buffer = zend_ring_buffer_new(current_buffer->capacity, sizeof(void *), flags);
 		if (UNEXPECTED(!new_buffer)) {
 			return NULL;
 		}
 
-		zend_atomic_ptr_store_ex(&queue->buf[read_idx], new_buffer);
-		zend_atomic_int_store_ex(&queue->write_hint, read_idx);
-
+		zend_atomic_ptr_store_ex(&queue->buf[fallback_idx], new_buffer);
+		zend_atomic_int_store_ex(&queue->write_hint, fallback_idx);
 		return new_buffer;
-
-	} else if (zend_ring_buffer_is_empty_reader(fallback_buffer)) {
-		/*
-		 * Case B1: Fallback empty, switch to it
-		 */
-		spsc_mutex_lock(queue);
-
-		// Reader might have switched while we waited for mutex
-		if (UNEXPECTED(zend_atomic_int_load_ex(&queue->write_hint) != write_hint)) {
-			return zend_atomic_ptr_load_ex(&queue->buf[read_idx]);
-		}
-
-		zend_atomic_int_store_ex(&queue->write_hint, read_idx);
-		spsc_mutex_unlock(queue);
-		return fallback_buffer;
-	} else {
-		/*
-		 * Case B2: Fallback used for reading, resize current buffer in-place
-		 * MUTEX REQUIRED: reader might finish fallback and switch to current_buffer
-		 * Must serialize resize with potential reader switch
-		 */
-		spsc_mutex_lock(queue);
-
-		const int current_write_hint = zend_atomic_int_load_ex(&queue->write_hint);
-		if (current_write_hint != write_hint) {
-			/* Reader switched write_hint while we waited for mutex */
-			spsc_mutex_unlock(queue);
-			return zend_atomic_ptr_load_ex(&queue->buf[current_write_hint]);
-		}
-
-		if (UNEXPECTED(zend_ring_buffer_realloc(current_buffer, 0) == FAILURE)) {
-			spsc_mutex_unlock(queue);
-			return NULL;
-		}
-
-		spsc_mutex_unlock(queue);
-		return current_buffer;
 	}
+
+	/*
+	 * Case B: Reader and writer point to different buffers
+	 * fallback_idx == read_hint
+	 * MUTEX: We need a mutex to coordinate switching the reader to the writer (if necessary).
+	 */
+	spsc_mutex_lock(queue);
+
+	const int current_read_hint = zend_atomic_int_load_ex(&queue->read_hint);
+	if (UNEXPECTED(current_read_hint == write_hint)) {
+		// While we were waiting for the mutex, the reader managed to switch to the writer?
+		spsc_mutex_unlock(queue);
+		return zend_spsc_queue_resize(queue);
+	}
+
+	// Resize the current buffer to double capacity
+	// No need to change write_hint, reader is already in the other buffer
+	if (UNEXPECTED(zend_ring_buffer_realloc(current_buffer, 0) == FAILURE)) {
+		spsc_mutex_unlock(queue);
+		return NULL;
+	}
+
+	spsc_mutex_unlock(queue);
+	return current_buffer;
 }
 
 /**
@@ -299,57 +278,57 @@ ZEND_API bool zend_spsc_queue_push(zend_spsc_queue *queue, void *item)
 /**
  * @brief Pop single item from queue (reader operation)
  *
- * Implements three paths ordered by frequency:
- *
- * **Path 1 (FAST - most common):**
- * - Dedicated buffer exists and not empty
- * - Direct read, NO MUTEX
- *
- * **Path 2 (SLOW - rare):**
- * - Dedicated buffer empty, need to switch
- * - MUTEX: serialize with writer's case B2 (resize in-place)
- * - Switch write_hint, fall through to Path 3
- *
- * **Path 3 (FALLBACK):**
- * - No dedicated buffer or just switched
- * - Read from writer's active buffer, NO MUTEX
- *
  * @param queue The SPSC queue
  * @param item Output pointer to store dequeued item
  * @return true if item retrieved, false if queue empty
- *
- * @note Thread-safe for single reader
- * @note Mutex used ONLY in Path 2 (buffer exhausted + switch)
  */
 ZEND_API bool zend_spsc_queue_pop(zend_spsc_queue *queue, void **item)
 {
-	const int write_hint = zend_atomic_int_load_ex(&queue->write_hint);
-	const int read_idx = 1 - write_hint;
+	const int read_hint = zend_atomic_int_load_ex(&queue->read_hint);
+	zend_ring_buffer *current_buffer = zend_atomic_ptr_load_ex(&queue->buf[read_hint]);
 
-	zend_ring_buffer *fallback_buffer = zend_atomic_ptr_load_ex(&queue->buf[read_idx]);
-
-	if (fallback_buffer != NULL) {
-		/* Try Path 1 (FAST): read from dedicated buffer - NO MUTEX */
-		if (EXPECTED(zend_ring_buffer_pop_ptr_fast_atomic(fallback_buffer, item) == SUCCESS)) {
+	/* Path 1 (FAST): Try reading from current buffer - NO MUTEX */
+	if (EXPECTED(current_buffer != NULL)) {
+		if (EXPECTED(zend_ring_buffer_pop_ptr_fast_atomic(current_buffer, item) == SUCCESS)) {
 			return true;
 		}
 
 		/*
-		 * Path 2 (SLOW - rare): Dedicated buffer empty, switch to writer's buffer
-		 * MUTEX: must serialize with writer's case B2 (resize current_buffer in-place)
+		 * Path 2 (SWITCH): Current buffer empty, check if writer moved
+		 */
+		const int write_hint = zend_atomic_int_load_ex(&queue->write_hint);
+
+		if (EXPECTED(read_hint == write_hint)) {
+			/* Writer still in same buffer - queue is empty */
+			return false;
+		}
+
+		/*
+		 * Writer switched to other buffer
+		 * MUTEX: coordinate read_hint update and optionally free old buffer
 		 */
 		spsc_mutex_lock(queue);
-		zend_atomic_int_store_ex(&queue->write_hint, read_idx);
+
+		/* Double-check write_hint didn't change while waiting for mutex */
+		const int current_write_hint = zend_atomic_int_load_ex(&queue->write_hint);
+		if (UNEXPECTED(current_write_hint == read_hint)) {
+			/* Writer moved */
+			zend_atomic_int_store_ex(&queue->read_hint, write_hint);
+			current_buffer = zend_atomic_ptr_load_ex(&queue->buf[write_hint]);
+			spsc_mutex_unlock(queue);
+			return zend_ring_buffer_pop_ptr_fast_atomic(current_buffer, item) == SUCCESS;
+		}
+
+		zend_atomic_int_store_ex(&queue->read_hint, write_hint);
+
+		/* Free old buffer if it's truly exhausted and can be released */
+		zend_atomic_ptr_store_ex(&queue->buf[read_hint], NULL);
+		zend_ring_buffer_free(current_buffer);
+
 		spsc_mutex_unlock(queue);
 
-		/* Fall through to Path 3 */
-	}
-
-	/* Path 3: Read from writer's active buffer (no dedicated buffer) */
-	zend_ring_buffer *active_buffer = zend_atomic_ptr_load_ex(&queue->buf[write_hint]);
-
-	if (EXPECTED(active_buffer != NULL)) {
-		return zend_ring_buffer_pop_ptr_fast_atomic(active_buffer, item) == SUCCESS;
+		current_buffer = zend_atomic_ptr_load_ex(&queue->buf[write_hint]);
+		return zend_ring_buffer_pop_ptr_fast_atomic(current_buffer, item) == SUCCESS;
 	}
 
 	return false;
