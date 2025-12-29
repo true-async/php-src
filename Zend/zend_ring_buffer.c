@@ -291,7 +291,7 @@ ZEND_API zend_result zend_ring_buffer_realloc(zend_ring_buffer *buffer, size_t n
 	size_t head_idx, tail_idx;
 	if (buffer->flags & ZEND_RING_BUFFER_ATOMIC_HEAD) {
 		head_idx = zend_atomic_size_t_load(&buffer->head_atomic);
-		tail_idx = buffer->tail;
+		tail_idx = zend_atomic_size_t_load(&buffer->tail_atomic);
 	} else {
 		head_idx = buffer->head;
 		tail_idx = buffer->tail;
@@ -622,16 +622,17 @@ ZEND_API zend_result zend_ring_buffer_push_atomic(zend_ring_buffer *buffer, cons
 	ZEND_ASSERT(value != NULL);
 	ZEND_ASSERT(buffer->flags & ZEND_RING_BUFFER_ATOMIC_HEAD);
 
-	const size_t head = zend_atomic_size_t_load(&buffer->head_atomic);
+	const size_t head = buffer->head;
 	const size_t tail = zend_atomic_size_t_load(&buffer->tail_atomic);
+	const size_t next_head = next_index(head, buffer->capacity);
 
-	/* Check if buffer is full */
-	if (UNEXPECTED(next_index(head, buffer->capacity) == tail)) {
+	if (UNEXPECTED(next_head == tail)) {
 		return FAILURE;
 	}
 
 	memcpy((char*)buffer->data + head * buffer->item_size, value, buffer->item_size);
-	zend_atomic_size_t_store(&buffer->head_atomic, next_index(head, buffer->capacity));
+	buffer->head = next_head;
+	zend_atomic_size_t_store(&buffer->head_atomic, next_head);
 
 	return SUCCESS;
 }
@@ -651,16 +652,17 @@ ZEND_API zend_result zend_ring_buffer_pop_atomic(zend_ring_buffer *buffer, void 
 	ZEND_ASSERT(value != NULL);
 	ZEND_ASSERT(buffer->flags & ZEND_RING_BUFFER_ATOMIC_HEAD);
 
+	const size_t tail = buffer->tail;
 	const size_t head = zend_atomic_size_t_load(&buffer->head_atomic);
-	const size_t tail = zend_atomic_size_t_load(&buffer->tail_atomic);
 
-	/* Check if buffer is empty */
 	if (UNEXPECTED(head == tail)) {
 		return FAILURE;
 	}
 
 	memcpy(value, (char*)buffer->data + tail * buffer->item_size, buffer->item_size);
-	zend_atomic_size_t_store(&buffer->tail_atomic, next_index(tail, buffer->capacity));
+	const size_t next_tail = next_index(tail, buffer->capacity);
+	buffer->tail = next_tail;
+	zend_atomic_size_t_store(&buffer->tail_atomic, next_tail);
 
 	return SUCCESS;
 }
