@@ -223,9 +223,16 @@ zend_ring_buffer* zend_spsc_queue_resize(zend_spsc_queue *queue)
 	} else if (zend_ring_buffer_is_empty_atomic(fallback_buffer)) {
 		/*
 		 * Case B1: Fallback empty, switch to it
-		 * NO MUTEX: just switching write_hint, reader continues reading fallback
 		 */
+		spsc_mutex_lock(queue);
+
+		// Reader might have switched while we waited for mutex
+		if (UNEXPECTED(zend_atomic_int_load_ex(&queue->write_hint) != write_hint)) {
+			return zend_atomic_ptr_load_ex(&queue->buf[read_idx]);
+		}
+
 		zend_atomic_int_store_ex(&queue->write_hint, read_idx);
+		spsc_mutex_unlock(queue);
 		return fallback_buffer;
 	} else {
 		/*
@@ -332,6 +339,19 @@ ZEND_API bool zend_spsc_queue_pop(zend_spsc_queue *queue, void **item)
 		 * MUTEX: must serialize with writer's case B2 (resize current_buffer in-place)
 		 */
 		spsc_mutex_lock(queue);
+
+		/* Optimization: If the write buffer is also empty,
+		 * then we simply release the current read buffer and do nothing. */
+		if (zend_atomic_int_load_ex(&queue->write_hint) == write_hint) {
+			zend_ring_buffer *writer_buffer = zend_atomic_ptr_load_ex(&queue->buf[write_hint]);
+			if (zend_ring_buffer_is_empty_atomic(writer_buffer)) {
+				zend_ring_buffer_free(fallback_buffer);
+				zend_atomic_ptr_store_ex(&queue->buf[read_idx], NULL);
+				spsc_mutex_unlock(queue);
+				return false;
+			}
+		}
+
 		zend_atomic_int_store_ex(&queue->write_hint, read_idx);
 		spsc_mutex_unlock(queue);
 
