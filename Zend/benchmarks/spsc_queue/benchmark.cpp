@@ -69,7 +69,7 @@ BenchmarkResult benchmark_moodycamel() {
 
 // Benchmark our SPSC queue
 BenchmarkResult benchmark_zend_spsc() {
-    void* queue = zend_queue_create(ITERATIONS);  // Same size as number of items
+    void* queue = zend_queue_create(8);  // Default small size, will auto-resize
 
     atomic<bool> done{false};
 

@@ -220,7 +220,7 @@ zend_ring_buffer* zend_spsc_queue_resize(zend_spsc_queue *queue)
 
 		return new_buffer;
 
-	} else if (zend_ring_buffer_is_empty_atomic(fallback_buffer)) {
+	} else if (zend_ring_buffer_is_empty_reader(fallback_buffer)) {
 		/*
 		 * Case B1: Fallback empty, switch to it
 		 */
@@ -286,7 +286,7 @@ ZEND_API bool zend_spsc_queue_push(zend_spsc_queue *queue, void *item)
 		}
 	}
 
-	if (UNEXPECTED(zend_ring_buffer_is_full_atomic(current_buffer))) {
+	if (UNEXPECTED(zend_ring_buffer_is_full_writer(current_buffer))) {
 		current_buffer = zend_spsc_queue_resize(queue);
 		if (UNEXPECTED(!current_buffer)) {
 			return false;
@@ -344,7 +344,7 @@ ZEND_API bool zend_spsc_queue_pop(zend_spsc_queue *queue, void **item)
 		 * then we simply release the current read buffer and do nothing. */
 		if (zend_atomic_int_load_ex(&queue->write_hint) == write_hint) {
 			zend_ring_buffer *writer_buffer = zend_atomic_ptr_load_ex(&queue->buf[write_hint]);
-			if (zend_ring_buffer_is_empty_atomic(writer_buffer)) {
+			if (zend_ring_buffer_is_empty_reader(writer_buffer)) {
 				zend_ring_buffer_free(fallback_buffer);
 				zend_atomic_ptr_store_ex(&queue->buf[read_idx], NULL);
 				spsc_mutex_unlock(queue);
