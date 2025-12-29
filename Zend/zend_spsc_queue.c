@@ -294,7 +294,7 @@ ZEND_API bool zend_spsc_queue_pop(zend_spsc_queue *queue, void **item)
 
 		if (EXPECTED(read_hint == write_hint)) {
 			/* Writer still in same buffer - queue is empty */
-			return false;
+			return zend_ring_buffer_pop_ptr_fast_atomic(current_buffer, item) == SUCCESS;
 		}
 
 		/*
@@ -306,11 +306,12 @@ ZEND_API bool zend_spsc_queue_pop(zend_spsc_queue *queue, void **item)
 		/* Double-check write_hint didn't change while waiting for mutex */
 		const int current_write_hint = zend_atomic_int_load_ex(&queue->write_hint);
 		if (UNEXPECTED(current_write_hint == read_hint)) {
-			/* Writer moved */
 			zend_atomic_int_store_ex(&queue->read_hint, write_hint);
 			current_buffer = zend_atomic_ptr_load_ex(&queue->buf[write_hint]);
+
+			const zend_result result = zend_ring_buffer_pop_ptr_fast_atomic(current_buffer, item);
 			spsc_mutex_unlock(queue);
-			return zend_ring_buffer_pop_ptr_fast_atomic(current_buffer, item) == SUCCESS;
+			return result == SUCCESS;
 		}
 
 		zend_atomic_int_store_ex(&queue->read_hint, write_hint);
@@ -320,9 +321,10 @@ ZEND_API bool zend_spsc_queue_pop(zend_spsc_queue *queue, void **item)
 		zend_ring_buffer_free(current_buffer);
 		current_buffer = zend_atomic_ptr_load_ex(&queue->buf[write_hint]);
 
+		const zend_result result = zend_ring_buffer_pop_ptr_fast_atomic(current_buffer, item);
 		spsc_mutex_unlock(queue);
 
-		return zend_ring_buffer_pop_ptr_fast_atomic(current_buffer, item) == SUCCESS;
+		return result == SUCCESS;
 	}
 
 	return false;
