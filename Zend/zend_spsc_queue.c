@@ -175,6 +175,13 @@ ZEND_API void zend_spsc_queue_free(zend_spsc_queue *queue)
  */
 zend_ring_buffer* zend_spsc_queue_resize(zend_spsc_queue *queue)
 {
+	uint32_t flags = ZEND_RING_BUFFER_ATOMIC_HEAD;
+	if (queue->persistent) {
+		flags |= ZEND_RING_BUFFER_PERSISTENT;
+	}
+
+	spsc_mutex_lock(queue);
+
 	const int write_hint = zend_atomic_int_load_ex(&queue->write_hint);
 	const int read_hint = zend_atomic_int_load_ex(&queue->read_hint);
 	const int fallback_idx = 1 - write_hint;
@@ -182,50 +189,37 @@ zend_ring_buffer* zend_spsc_queue_resize(zend_spsc_queue *queue)
 	zend_ring_buffer *current_buffer = zend_atomic_ptr_load_ex(&queue->buf[write_hint]);
 	ZEND_ASSERT(current_buffer != NULL);
 
-	uint32_t flags = ZEND_RING_BUFFER_ATOMIC_HEAD;
-	if (queue->persistent) {
-		flags |= ZEND_RING_BUFFER_PERSISTENT;
-	}
-
 	zend_ring_buffer *fallback_buffer = zend_atomic_ptr_load_ex(&queue->buf[fallback_idx]);
 
 	if (EXPECTED(read_hint == write_hint)) {
 		/*
 		 * Case A-1: Reader and writer point to the same buffer
-		 * NO MUTEX: only writer modifies write_hint
 		 */
 		if (EXPECTED(fallback_buffer != NULL)) {
 			zend_atomic_int_store_ex(&queue->write_hint, fallback_idx);
+			spsc_mutex_unlock(queue);
 			return fallback_buffer;
 		}
 
 		/*
 		 * Case A-2: Fallback buffer not yet defined. Allocate new buffer with doubled capacity
-		 * NO MUTEX: only writer modifies write_hint
 		 */
 		zend_ring_buffer *new_buffer = zend_ring_buffer_new(current_buffer->capacity, sizeof(void *), flags);
 		if (UNEXPECTED(!new_buffer)) {
+			spsc_mutex_unlock(queue);
 			return NULL;
 		}
 
 		zend_atomic_ptr_store_ex(&queue->buf[fallback_idx], new_buffer);
 		zend_atomic_int_store_ex(&queue->write_hint, fallback_idx);
+		spsc_mutex_unlock(queue);
 		return new_buffer;
 	}
 
 	/*
 	 * Case B: Reader and writer point to different buffers
 	 * fallback_idx == read_hint
-	 * MUTEX: We need a mutex to coordinate switching the reader to the writer (if necessary).
 	 */
-	spsc_mutex_lock(queue);
-
-	const int current_read_hint = zend_atomic_int_load_ex(&queue->read_hint);
-	if (UNEXPECTED(current_read_hint == write_hint)) {
-		// While we were waiting for the mutex, the reader managed to switch to the writer?
-		spsc_mutex_unlock(queue);
-		return zend_spsc_queue_resize(queue);
-	}
 
 	// Resize the current buffer to double capacity
 	// No need to change write_hint, reader is already in the other buffer
@@ -324,10 +318,10 @@ ZEND_API bool zend_spsc_queue_pop(zend_spsc_queue *queue, void **item)
 		/* Free old buffer if it's truly exhausted and can be released */
 		zend_atomic_ptr_store_ex(&queue->buf[read_hint], NULL);
 		zend_ring_buffer_free(current_buffer);
+		current_buffer = zend_atomic_ptr_load_ex(&queue->buf[write_hint]);
 
 		spsc_mutex_unlock(queue);
 
-		current_buffer = zend_atomic_ptr_load_ex(&queue->buf[write_hint]);
 		return zend_ring_buffer_pop_ptr_fast_atomic(current_buffer, item) == SUCCESS;
 	}
 
