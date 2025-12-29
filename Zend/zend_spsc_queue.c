@@ -330,8 +330,19 @@ ZEND_API bool zend_spsc_queue_pop(zend_spsc_queue *queue, void **item)
 		/*
 		 * Path 2 (SLOW - rare): Dedicated buffer empty, switch to writer's buffer
 		 * MUTEX: must serialize with writer's case B2 (resize current_buffer in-place)
+		 *
+		 * OPTIMIZATION: If writer's buffer is also empty, free the fallback buffer
+		 * to avoid keeping two buffers when only one is needed.
 		 */
 		spsc_mutex_lock(queue);
+
+		/* Check if writer's buffer is also empty */
+		zend_ring_buffer *writer_buffer = zend_atomic_ptr_load_ex(&queue->buf[write_hint]);
+		if (writer_buffer && zend_ring_buffer_is_empty_atomic(writer_buffer)) {
+			/* Both buffers empty - free the fallback buffer */
+			zend_ring_buffer_free(dedicated_buffer);
+			zend_atomic_ptr_store_ex(&queue->buf[read_idx], NULL);
+		}
 
 		zend_atomic_int_store_ex(&queue->write_hint, read_idx);
 		spsc_mutex_unlock(queue);
