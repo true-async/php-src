@@ -61,7 +61,7 @@ zend_always_inline zend_ring_buffer* allocate_buffer(zend_spsc_queue *queue, con
 		flags |= ZEND_RING_BUFFER_PERSISTENT;
 	}
 
-	zend_ring_buffer *new_buffer = zend_ring_buffer_new(queue->capacity, sizeof(void *), flags);
+	zend_ring_buffer *new_buffer = zend_ring_buffer_new(queue->capacity, queue->item_size, flags);
 	if (UNEXPECTED(!new_buffer)) {
 		return NULL;
 	}
@@ -97,7 +97,8 @@ ZEND_API bool zend_spsc_queue_init(zend_spsc_queue *queue, size_t initial_capaci
 		flags |= ZEND_RING_BUFFER_PERSISTENT;
 	}
 
-	zend_ring_buffer *buf0 = zend_ring_buffer_new(initial_capacity, sizeof(void *), flags);
+	queue->item_size = sizeof(void *);
+	zend_ring_buffer *buf0 = zend_ring_buffer_new(initial_capacity, queue->item_size, flags);
 	if (UNEXPECTED(!buf0)) {
 		return false;
 	}
@@ -118,6 +119,63 @@ ZEND_API bool zend_spsc_queue_init(zend_spsc_queue *queue, size_t initial_capaci
 #else
 	#ifndef ZEND_WIN32
 	if (pthread_mutex_init(&queue->handoff_mutex, NULL) != 0) {
+		zend_ring_buffer_free(buf0);
+		return false;
+	}
+	#else
+	InitializeCriticalSection(&queue->handoff_mutex);
+	#endif
+#endif
+
+	queue->capacity = buf0->capacity;
+	queue->persistent = persistent;
+
+	return true;
+}
+
+/**
+ * @brief Initialize SPSC queue for zval items
+ *
+ * Creates initial buffer and initializes handoff mutex.
+ *
+ * @param queue Queue to initialize
+ * @param initial_capacity Initial buffer capacity (0 = use default 8)
+ * @param persistent Use persistent allocation
+ * @return true on success, false on allocation failure
+ */
+ZEND_API bool zend_spsc_queue_init_zval(zend_spsc_queue *queue, size_t initial_capacity, bool persistent)
+{
+	if (initial_capacity == 0) {
+		initial_capacity = INITIAL_CAPACITY;
+	}
+
+	uint32_t flags = ZEND_RING_BUFFER_ATOMIC_HEAD;
+	if (persistent) {
+		flags |= ZEND_RING_BUFFER_PERSISTENT;
+	}
+
+	queue->item_size = sizeof(zval);
+	zend_ring_buffer *buf0 = zend_ring_buffer_new(initial_capacity, queue->item_size, flags);
+	if (UNEXPECTED(!buf0)) {
+		return false;
+	}
+
+	/* Initialize double-buffering state */
+	zend_atomic_ptr_store_ex(&queue->buf[0], buf0);
+	zend_atomic_ptr_store_ex(&queue->buf[1], NULL);
+	zend_atomic_int_store_ex(&queue->write_hint, 0);
+	zend_atomic_int_store_ex(&queue->read_hint, 0);
+
+	/* Initialize handoff mutex */
+#ifndef ZEND_SPSC_QUEUE_STANDALONE
+	queue->handoff_mutex = tsrm_mutex_alloc();
+	if (UNEXPECTED(!queue->handoff_mutex)) {
+		zend_ring_buffer_free(buf0);
+		return false;
+	}
+#else
+	#ifndef ZEND_WIN32
+	if (UNEXPECTED(pthread_mutex_init(&queue->handoff_mutex, NULL) != 0)) {
 		zend_ring_buffer_free(buf0);
 		return false;
 	}
@@ -204,7 +262,7 @@ zend_ring_buffer* zend_spsc_queue_resize(zend_spsc_queue *queue)
 		/*
 		 * Case A-2: Fallback buffer not yet defined. Allocate new buffer with doubled capacity
 		 */
-		zend_ring_buffer *new_buffer = zend_ring_buffer_new(current_buffer->capacity, sizeof(void *), flags);
+		zend_ring_buffer *new_buffer = zend_ring_buffer_new(current_buffer->capacity, queue->item_size, flags);
 		if (UNEXPECTED(!new_buffer)) {
 			spsc_mutex_unlock(queue);
 			return NULL;
@@ -334,6 +392,110 @@ ZEND_API bool zend_spsc_queue_pop(zend_spsc_queue *queue, void **item)
 		current_buffer = zend_atomic_ptr_load_ex(&queue->buf[write_hint]);
 
 		const zend_result result = zend_ring_buffer_pop_ptr_fast_atomic(current_buffer, item);
+		spsc_mutex_unlock(queue);
+
+		return result == SUCCESS;
+	}
+
+	return false;
+}
+
+/**
+ * @brief Push zval to queue (writer operation)
+ *
+ * Fast path (common):
+ * - Buffer has space: write directly, NO MUTEX
+ *
+ * Slow path (rare):
+ * - Buffer full: call resize, which may use MUTEX in case B2
+ *
+ * @param queue The SPSC queue
+ * @param zv Pointer to zval to enqueue
+ * @return true on success, false on allocation failure
+ *
+ * @note Thread-safe for single writer
+ */
+ZEND_API bool zend_spsc_queue_push_zval(zend_spsc_queue *queue, const zval *zv)
+{
+	const int write_hint = zend_atomic_int_load_ex(&queue->write_hint);
+	zend_ring_buffer *current_buffer = zend_atomic_ptr_load_ex(&queue->buf[write_hint]);
+
+	if (UNEXPECTED(!current_buffer)) {
+		current_buffer = allocate_buffer(queue, write_hint);
+		if (UNEXPECTED(!current_buffer)) {
+			return false;
+		}
+	}
+
+	if (UNEXPECTED(zend_ring_buffer_is_full_writer(current_buffer))) {
+		current_buffer = zend_spsc_queue_resize(queue);
+		if (UNEXPECTED(!current_buffer)) {
+			return false;
+		}
+	}
+
+	return zend_ring_buffer_push_zval_fast_atomic(current_buffer, zv) == SUCCESS;
+}
+
+/**
+ * @brief Pop single zval from queue (reader operation)
+ *
+ * @param queue The SPSC queue
+ * @param zv Output pointer to store dequeued zval
+ * @return true if item retrieved, false if queue empty
+ */
+ZEND_API bool zend_spsc_queue_pop_zval(zend_spsc_queue *queue, zval *zv)
+{
+	const int read_hint = zend_atomic_int_load_ex(&queue->read_hint);
+	zend_ring_buffer *current_buffer = zend_atomic_ptr_load_ex(&queue->buf[read_hint]);
+
+	/* Path 1 (FAST): Try reading from current buffer - NO MUTEX */
+	if (EXPECTED(current_buffer != NULL)) {
+		if (EXPECTED(zend_ring_buffer_pop_zval_fast_atomic(current_buffer, zv) == SUCCESS)) {
+			return true;
+		}
+
+		/*
+		 * Path 2 (SWITCH): Current buffer empty, check if writer moved
+		 */
+		const int write_hint = zend_atomic_int_load_ex(&queue->write_hint);
+
+		if (EXPECTED(read_hint == write_hint)) {
+			/* Writer still in same buffer - queue is empty */
+			return zend_ring_buffer_pop_zval_fast_atomic(current_buffer, zv) == SUCCESS;
+		}
+
+		/*
+		 * Writer switched to other buffer
+		 * MUTEX: coordinate read_hint update and optionally free old buffer
+		 */
+		spsc_mutex_lock(queue);
+
+		if (UNEXPECTED(false == zend_ring_buffer_is_empty_reader(current_buffer))) {
+			const zend_result result = zend_ring_buffer_pop_zval_fast_atomic(current_buffer, zv);
+			spsc_mutex_unlock(queue);
+			return result == SUCCESS;
+		}
+
+		/* Double-check write_hint didn't change while waiting for mutex */
+		const int current_write_hint = zend_atomic_int_load_ex(&queue->write_hint);
+		if (UNEXPECTED(current_write_hint == read_hint)) {
+			zend_atomic_int_store_ex(&queue->read_hint, write_hint);
+			current_buffer = zend_atomic_ptr_load_ex(&queue->buf[write_hint]);
+
+			const zend_result result = zend_ring_buffer_pop_zval_fast_atomic(current_buffer, zv);
+			spsc_mutex_unlock(queue);
+			return result == SUCCESS;
+		}
+
+		zend_atomic_int_store_ex(&queue->read_hint, write_hint);
+
+		/* Free old buffer if it's truly exhausted and can be released */
+		zend_atomic_ptr_store_ex(&queue->buf[read_hint], NULL);
+		zend_ring_buffer_free(current_buffer);
+		current_buffer = zend_atomic_ptr_load_ex(&queue->buf[write_hint]);
+
+		const zend_result result = zend_ring_buffer_pop_zval_fast_atomic(current_buffer, zv);
 		spsc_mutex_unlock(queue);
 
 		return result == SUCCESS;

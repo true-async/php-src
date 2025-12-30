@@ -133,6 +133,7 @@ typedef struct _zend_spsc_queue {
 #endif
 
 	size_t capacity;                  /* current buffer capacity */
+	size_t item_size;                 /* size of each item in bytes */
 	bool persistent;                  /* allocation type flag */
 } zend_spsc_queue;
 
@@ -140,17 +141,20 @@ typedef struct _zend_spsc_queue {
  * Initialization & Cleanup
  */
 ZEND_API bool zend_spsc_queue_init(zend_spsc_queue *queue, size_t initial_capacity, bool persistent);
+ZEND_API bool zend_spsc_queue_init_zval(zend_spsc_queue *queue, size_t initial_capacity, bool persistent);
 ZEND_API void zend_spsc_queue_free(zend_spsc_queue *queue);
 
 /*
  * Writer Operations
  */
 ZEND_API bool zend_spsc_queue_push(zend_spsc_queue *queue, void *item);
+ZEND_API bool zend_spsc_queue_push_zval(zend_spsc_queue *queue, const zval *zv);
 
 /*
  * Reader Operations
  */
 ZEND_API bool zend_spsc_queue_pop(zend_spsc_queue *queue, void **item);
+ZEND_API bool zend_spsc_queue_pop_zval(zend_spsc_queue *queue, zval *zv);
 
 /*
  * Internal helpers (exposed for testing)

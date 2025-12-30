@@ -474,6 +474,183 @@ static void test_stress_sequence(void **state)
 	}
 }
 
+typedef struct {
+	uint64_t data[2];
+} test_zval;
+
+static void make_test_zval(test_zval *zv, uintptr_t value)
+{
+	zv->data[0] = value;
+	zv->data[1] = value ^ 0xDEADBEEF;
+}
+
+static bool check_test_zval(const test_zval *zv, uintptr_t expected)
+{
+	return zv->data[0] == expected && zv->data[1] == (expected ^ 0xDEADBEEF);
+}
+
+static void test_zval_push_pop_single(void **state)
+{
+	(void)state;
+
+	zend_spsc_queue q;
+	zend_spsc_queue_init_zval(&q, 16, false);
+
+	test_zval zv_in, zv_out;
+	make_test_zval(&zv_in, 0x12345678);
+
+	bool result = zend_spsc_queue_push_zval(&q, (zval*)&zv_in);
+	assert_true(result);
+
+	result = zend_spsc_queue_pop_zval(&q, (zval*)&zv_out);
+	assert_true(result);
+	assert_true(check_test_zval(&zv_out, 0x12345678));
+
+	zend_spsc_queue_free(&q);
+}
+
+static void test_zval_push_pop_multiple(void **state)
+{
+	(void)state;
+
+	zend_spsc_queue q;
+	zend_spsc_queue_init_zval(&q, 16, false);
+
+	const size_t num_items = 10;
+	test_zval items[10];
+
+	for (size_t i = 0; i < num_items; i++) {
+		make_test_zval(&items[i], i + 1);
+		bool result = zend_spsc_queue_push_zval(&q, (zval*)&items[i]);
+		assert_true(result);
+	}
+
+	for (size_t i = 0; i < num_items; i++) {
+		test_zval zv_out;
+		bool result = zend_spsc_queue_pop_zval(&q, (zval*)&zv_out);
+		assert_true(result);
+		assert_true(check_test_zval(&zv_out, i + 1));
+	}
+
+	zend_spsc_queue_free(&q);
+}
+
+static void test_zval_resize(void **state)
+{
+	(void)state;
+
+	zend_spsc_queue q;
+	zend_spsc_queue_init_zval(&q, 4, false);
+
+	for (size_t i = 0; i < 10; i++) {
+		test_zval zv;
+		make_test_zval(&zv, i + 1);
+		bool result = zend_spsc_queue_push_zval(&q, (zval*)&zv);
+		assert_true(result);
+	}
+
+	for (size_t i = 0; i < 10; i++) {
+		test_zval zv_out;
+		bool result = zend_spsc_queue_pop_zval(&q, (zval*)&zv_out);
+		assert_true(result);
+		assert_true(check_test_zval(&zv_out, i + 1));
+	}
+
+	zend_spsc_queue_free(&q);
+}
+
+typedef struct {
+	zend_spsc_queue *q;
+	size_t count;
+	volatile bool writer_done;
+	volatile size_t read_count;
+	volatile bool sequence_error;
+} zval_test_data_t;
+
+static THREAD_RETURN_T zval_writer_thread(void *arg)
+{
+	zval_test_data_t *data = (zval_test_data_t *)arg;
+
+	for (size_t i = 0; i < data->count; i++) {
+		test_zval zv;
+		make_test_zval(&zv, i + 1);
+		while (!zend_spsc_queue_push_zval(data->q, (zval*)&zv)) {
+		}
+	}
+
+	data->writer_done = true;
+	return (THREAD_RETURN_T)0;
+}
+
+static THREAD_RETURN_T zval_reader_thread(void *arg)
+{
+	zval_test_data_t *data = (zval_test_data_t *)arg;
+	test_zval zv;
+	size_t expected = 1;
+	size_t spin_count = 0;
+	const size_t max_spin = 10000000;
+
+	while (expected <= data->count) {
+		if (zend_spsc_queue_pop_zval(data->q, (zval*)&zv)) {
+			if (!check_test_zval(&zv, expected)) {
+				data->sequence_error = true;
+				return (THREAD_RETURN_T)1;
+			}
+			expected++;
+			data->read_count = expected - 1;
+			spin_count = 0;
+		} else {
+			spin_count++;
+			if (data->writer_done && spin_count > max_spin) {
+				return (THREAD_RETURN_T)2;
+			}
+		}
+	}
+
+	return (THREAD_RETURN_T)0;
+}
+
+static void test_zval_sequence_integrity(void **state)
+{
+	(void)state;
+
+	zend_spsc_queue q;
+	zend_spsc_queue_init_zval(&q, 8, false);
+
+	const size_t count = 100000;
+
+	zval_test_data_t data = {
+		.q = &q,
+		.count = count,
+		.writer_done = false,
+		.read_count = 0,
+		.sequence_error = false
+	};
+
+	THREAD_T writer, reader;
+	THREAD_CREATE(writer, zval_writer_thread, &data);
+	THREAD_CREATE(reader, zval_reader_thread, &data);
+
+	void *writer_result, *reader_result;
+	THREAD_JOIN(writer, writer_result);
+	THREAD_JOIN(reader, reader_result);
+
+	uintptr_t reader_status = (uintptr_t)reader_result;
+
+	if (reader_status == 1) {
+		fail_msg("Zval sequence error detected");
+	} else if (reader_status == 2) {
+		fail_msg("Zval reader stuck - read %zu items, expected %zu",
+			data.read_count, count);
+	}
+
+	assert_int_equal(reader_status, 0);
+	assert_false(data.sequence_error);
+	assert_int_equal(data.read_count, count);
+
+	zend_spsc_queue_free(&q);
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -488,7 +665,11 @@ int main(void)
 		cmocka_unit_test(test_case_b2_resize_in_place),
 		cmocka_unit_test(test_multithread_spsc),
 		cmocka_unit_test(test_sequence_integrity),
-		cmocka_unit_test(test_stress_sequence)
+		cmocka_unit_test(test_stress_sequence),
+		cmocka_unit_test(test_zval_push_pop_single),
+		cmocka_unit_test(test_zval_push_pop_multiple),
+		cmocka_unit_test(test_zval_resize),
+		cmocka_unit_test(test_zval_sequence_integrity)
 	};
 
 	return cmocka_run_group_tests(tests, NULL, NULL);

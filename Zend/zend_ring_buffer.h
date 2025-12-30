@@ -32,6 +32,10 @@
 	#define SUCCESS 0
 	#define FAILURE -1
 
+	typedef struct _zval_struct {
+		uint64_t data[2];
+	} zval;
+
 	#define pemalloc(size, persistent) malloc(size)
 	#define pefree(ptr, persistent) free(ptr)
 	#define perealloc(ptr, new_size, persistent) realloc(ptr, new_size)
@@ -479,6 +483,66 @@ zend_always_inline zend_result zend_ring_buffer_pop_ptr_fast_atomic(zend_ring_bu
 	}
 
 	*ptr = ((void**)buffer->data)[tail];
+	const size_t next_tail = (tail + 1) & (buffer->capacity - 1);
+	zend_atomic_size_t_store(&buffer->tail_atomic, next_tail);
+
+	return SUCCESS;
+}
+
+/**
+ * Fast inline push for zval-sized items (SPSC writer, hot path).
+ *
+ * @param buffer Ring buffer (must have ATOMIC_HEAD flag, sizeof(zval) item_size)
+ * @param zv     Pointer to zval to push
+ * @return SUCCESS or FAILURE
+ */
+zend_always_inline zend_result zend_ring_buffer_push_zval_fast_atomic(zend_ring_buffer *buffer, const zval *zv)
+{
+	ZEND_ASSERT(buffer->item_size == sizeof(zval));
+	ZEND_ASSERT(buffer->flags & ZEND_RING_BUFFER_ATOMIC_HEAD);
+
+	const size_t head = buffer->head;
+	const size_t next_head = (head + 1) & (buffer->capacity - 1);
+	const size_t tail = zend_atomic_size_t_load(&buffer->tail_atomic);
+
+	if (UNEXPECTED(next_head == tail)) {
+		return FAILURE;
+	}
+
+	uint64_t *dst = (uint64_t*)((char*)buffer->data + head * sizeof(zval));
+	const uint64_t *src = (const uint64_t*)zv;
+	dst[0] = src[0];
+	dst[1] = src[1];
+
+	zend_atomic_size_t_store(&buffer->head_atomic, next_head);
+
+	return SUCCESS;
+}
+
+/**
+ * Fast inline pop for zval-sized items (SPSC reader, hot path).
+ *
+ * @param buffer Ring buffer (must have ATOMIC_HEAD flag, sizeof(zval) item_size)
+ * @param zv     Pointer to store popped zval
+ * @return SUCCESS or FAILURE
+ */
+zend_always_inline zend_result zend_ring_buffer_pop_zval_fast_atomic(zend_ring_buffer *buffer, zval *zv)
+{
+	ZEND_ASSERT(buffer->item_size == sizeof(zval));
+	ZEND_ASSERT(buffer->flags & ZEND_RING_BUFFER_ATOMIC_HEAD);
+
+	const size_t tail = buffer->tail;
+	const size_t head = zend_atomic_size_t_load(&buffer->head_atomic);
+
+	if (UNEXPECTED(tail == head)) {
+		return FAILURE;
+	}
+
+	const uint64_t *src = (const uint64_t*)((char*)buffer->data + tail * sizeof(zval));
+	uint64_t *dst = (uint64_t*)zv;
+	dst[0] = src[0];
+	dst[1] = src[1];
+
 	const size_t next_tail = (tail + 1) & (buffer->capacity - 1);
 	zend_atomic_size_t_store(&buffer->tail_atomic, next_tail);
 
