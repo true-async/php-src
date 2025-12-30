@@ -303,9 +303,19 @@ ZEND_API bool zend_spsc_queue_pop(zend_spsc_queue *queue, void **item)
 		 */
 		spsc_mutex_lock(queue);
 
+		if (UNEXPECTED(false == zend_ring_buffer_is_empty_reader(current_buffer))) {
+			// Another thread wrote to the old buffer while we were waiting for the mutex.
+			// We can read from it now.
+			const zend_result result = zend_ring_buffer_pop_ptr_fast_atomic(current_buffer, item);
+			spsc_mutex_unlock(queue);
+			return result == SUCCESS;
+		}
+
 		/* Double-check write_hint didn't change while waiting for mutex */
 		const int current_write_hint = zend_atomic_int_load_ex(&queue->write_hint);
 		if (UNEXPECTED(current_write_hint == read_hint)) {
+			// The reader wants to read from the write buffer, which is no longer occupied by the writer.
+			// write_hint pointed to the old writer buffer, which may have new data.
 			zend_atomic_int_store_ex(&queue->read_hint, write_hint);
 			current_buffer = zend_atomic_ptr_load_ex(&queue->buf[write_hint]);
 
@@ -314,6 +324,8 @@ ZEND_API bool zend_spsc_queue_pop(zend_spsc_queue *queue, void **item)
 			return result == SUCCESS;
 		}
 
+		// current_write_hint == write_hint && current_write_hint != read_hint
+		// Move the reader to the writer-buffer
 		zend_atomic_int_store_ex(&queue->read_hint, write_hint);
 
 		/* Free old buffer if it's truly exhausted and can be released */

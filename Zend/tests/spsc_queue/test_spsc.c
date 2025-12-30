@@ -235,9 +235,9 @@ static void test_reader_buffer_switch(void **state)
 	assert_true(result);
 	assert_ptr_equal(popped, (void*)(uintptr_t)5);
 
-	/* Verify write_hint switched */
-	int hint = zend_atomic_int_load_ex(&q.write_hint);
-	assert_int_equal(hint, 0);
+	/* Verify read_hint switched to writer's buffer */
+	int read_hint = zend_atomic_int_load_ex(&q.read_hint);
+	assert_int_equal(read_hint, 1);
 
 	zend_spsc_queue_free(&q);
 }
@@ -333,6 +333,147 @@ static void test_multithread_spsc(void **state)
 	zend_spsc_queue_free(&q);
 }
 
+typedef struct {
+	zend_spsc_queue *q;
+	size_t count;
+	volatile bool writer_done;
+	volatile size_t read_count;
+	volatile bool sequence_error;
+} sequence_test_data_t;
+
+static THREAD_RETURN_T sequence_writer_thread(void *arg)
+{
+	sequence_test_data_t *data = (sequence_test_data_t *)arg;
+
+	for (size_t i = 0; i < data->count; i++) {
+		void *item = (void *)(uintptr_t)(i + 1);
+		while (!zend_spsc_queue_push(data->q, item)) {
+			// Spin
+		}
+	}
+
+	data->writer_done = true;
+	return (THREAD_RETURN_T)0;
+}
+
+static THREAD_RETURN_T sequence_reader_thread(void *arg)
+{
+	sequence_test_data_t *data = (sequence_test_data_t *)arg;
+	void *item;
+	size_t expected = 1;
+	size_t spin_count = 0;
+	const size_t max_spin = 10000000;
+
+	while (expected <= data->count) {
+		if (zend_spsc_queue_pop(data->q, &item)) {
+			size_t value = (size_t)(uintptr_t)item;
+			if (value != expected) {
+				data->sequence_error = true;
+				return (THREAD_RETURN_T)1;
+			}
+			expected++;
+			data->read_count = expected - 1;
+			spin_count = 0;
+		} else {
+			spin_count++;
+			if (data->writer_done && spin_count > max_spin) {
+				// Writer is done and we're spinning too long - stuck!
+				return (THREAD_RETURN_T)2;
+			}
+		}
+	}
+
+	return (THREAD_RETURN_T)0;
+}
+
+static void test_sequence_integrity(void **state)
+{
+	(void)state;
+
+	zend_spsc_queue q;
+	zend_spsc_queue_init(&q, 8, false);
+
+	const size_t count = 100000;
+
+	sequence_test_data_t data = {
+		.q = &q,
+		.count = count,
+		.writer_done = false,
+		.read_count = 0,
+		.sequence_error = false
+	};
+
+	THREAD_T writer, reader;
+	THREAD_CREATE(writer, sequence_writer_thread, &data);
+	THREAD_CREATE(reader, sequence_reader_thread, &data);
+
+	void *writer_result, *reader_result;
+	THREAD_JOIN(writer, writer_result);
+	THREAD_JOIN(reader, reader_result);
+
+	uintptr_t reader_status = (uintptr_t)reader_result;
+
+	if (reader_status == 1) {
+		fail_msg("Sequence error detected - reader got out-of-order items");
+	} else if (reader_status == 2) {
+		fail_msg("Reader stuck in infinite loop - read %zu items, expected %zu",
+			data.read_count, count);
+	}
+
+	assert_int_equal(reader_status, 0);
+	assert_false(data.sequence_error);
+	assert_int_equal(data.read_count, count);
+
+	zend_spsc_queue_free(&q);
+}
+
+static void test_stress_sequence(void **state)
+{
+	(void)state;
+
+	// Run sequence test multiple times with different buffer sizes
+	const size_t iterations = 10;
+	const size_t buffer_sizes[] = {8, 16, 64, 256};
+
+	for (size_t iter = 0; iter < iterations; iter++) {
+		for (size_t i = 0; i < sizeof(buffer_sizes) / sizeof(buffer_sizes[0]); i++) {
+			zend_spsc_queue q;
+			zend_spsc_queue_init(&q, buffer_sizes[i], false);
+
+			const size_t count = 50000;
+
+			sequence_test_data_t data = {
+				.q = &q,
+				.count = count,
+				.writer_done = false,
+				.read_count = 0,
+				.sequence_error = false
+			};
+
+			THREAD_T writer, reader;
+			THREAD_CREATE(writer, sequence_writer_thread, &data);
+			THREAD_CREATE(reader, sequence_reader_thread, &data);
+
+			void *writer_result, *reader_result;
+			THREAD_JOIN(writer, writer_result);
+			THREAD_JOIN(reader, reader_result);
+
+			uintptr_t reader_status = (uintptr_t)reader_result;
+
+			if (reader_status == 1) {
+				fail_msg("Iteration %zu, buffer size %zu: Sequence error", iter, buffer_sizes[i]);
+			} else if (reader_status == 2) {
+				fail_msg("Iteration %zu, buffer size %zu: Reader stuck - read %zu/%zu items",
+					iter, buffer_sizes[i], data.read_count, count);
+			}
+
+			assert_int_equal(reader_status, 0);
+
+			zend_spsc_queue_free(&q);
+		}
+	}
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -345,7 +486,9 @@ int main(void)
 		cmocka_unit_test(test_reader_buffer_switch),
 		cmocka_unit_test(test_case_b1_switch_to_fallback),
 		cmocka_unit_test(test_case_b2_resize_in_place),
-		cmocka_unit_test(test_multithread_spsc)
+		cmocka_unit_test(test_multithread_spsc),
+		cmocka_unit_test(test_sequence_integrity),
+		cmocka_unit_test(test_stress_sequence)
 	};
 
 	return cmocka_run_group_tests(tests, NULL, NULL);
