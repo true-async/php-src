@@ -278,7 +278,8 @@ static struct {
  */
 
 #ifdef ZTS
-#include "zend_ring_buffer.h"
+#include "zend_spsc_queue.h"
+#include "zend_atomic.h"
 
 /* Message types for cross-thread deallocation */
 typedef enum {
@@ -306,11 +307,9 @@ typedef struct _zend_mm_remote_free_msg {
 	} data;
 } zend_mm_remote_free_msg;
 
-/* Incoming queue from one remote heap */
-typedef struct _zend_mm_incoming_queue {
-	zend_ring_buffer buffer;
-	MUTEX_T lock;  /* protects buffer access */
-} zend_mm_incoming_queue;
+#define ZEND_MM_INCOMING_QUEUES_INITIAL_CAPACITY 16
+#define ZEND_MM_SPSC_QUEUE_INITIAL_SIZE 8
+
 #endif
 
 struct _zend_mm_heap {
@@ -374,13 +373,16 @@ struct _zend_mm_heap {
 
 #ifdef ZTS
 	/* Cross-thread support */
-	uint32_t           heap_id;                 /* unique heap ID */
-	THREAD_T           thread_id;               /* current owner thread */
-	zend_mm_incoming_queue *incoming_queues;    /* array[heap_id] of incoming queues */
-	int                incoming_queues_capacity; /* size of incoming_queues array */
+	uint32_t           heap_id;                      /* unique heap ID */
+	THREAD_T           thread_id;                    /* current owner thread */
+
+	/* MPSC incoming queues (array of SPSC queues) */
+	zend_atomic_ptr    incoming_queues;              /* atomic pointer to zend_atomic_ptr[capacity] */
+	zend_atomic_int    incoming_queues_capacity;     /* atomic capacity */
+	MUTEX_T            incoming_queues_lock;         /* for resize/lazy init */
 #else
-	uint32_t           heap_id;                 /* always 0 in non-ZTS */
-	THREAD_T           thread_id;               /* always 0 in non-ZTS */
+	uint32_t           heap_id;                      /* always 0 in non-ZTS */
+	THREAD_T           thread_id;                    /* always 0 in non-ZTS */
 #endif
 };
 
@@ -1534,52 +1536,97 @@ static zend_always_inline void zend_mm_free_small(zend_mm_heap *heap, void *ptr,
 
 #ifdef ZTS
 /**
- * Get or create incoming queue from sender heap to owner heap.
- * Uses lazy allocation - queue created only on first remote free.
+ * Get or create SPSC queue for cross-thread deallocation.
+ * Uses atomic operations + double-checked locking for thread safety.
+ * Fast path: lock-free atomic loads (hot path).
+ * Slow path: mutex-protected resize/allocation (rare).
  */
-static zend_mm_incoming_queue *zend_mm_get_or_create_incoming_queue(zend_mm_heap *owner_heap, uint32_t sender_heap_id)
+static zend_spsc_queue *zend_mm_get_or_create_incoming_queue(zend_mm_heap *owner_heap, uint32_t sender_heap_id)
 {
-	/* Ensure capacity */
-	if (UNEXPECTED(sender_heap_id >= owner_heap->incoming_queues_capacity)) {
-		int new_capacity = sender_heap_id + 1;
-		new_capacity = (new_capacity + 15) & ~15;  /* round up to 16 */
+	/* Fast path: atomic load (lock-free!) */
+	zend_atomic_ptr *queues_array =
+		(zend_atomic_ptr*)zend_atomic_ptr_load_ex(&owner_heap->incoming_queues);
+	int capacity = zend_atomic_int_load_ex(&owner_heap->incoming_queues_capacity);
 
-		zend_mm_incoming_queue *new_queues = (zend_mm_incoming_queue *)realloc(
-			owner_heap->incoming_queues,
-			new_capacity * sizeof(zend_mm_incoming_queue)
-		);
+	if (EXPECTED(queues_array != NULL && sender_heap_id < capacity)) {
+		zend_spsc_queue *queue =
+			(zend_spsc_queue*)zend_atomic_ptr_load_ex(&queues_array[sender_heap_id]);
+
+		if (EXPECTED(queue != NULL)) {
+			return queue;  /* HOT PATH: ~7 cycles */
+		}
+	}
+
+	/* Slow path: double-checked locking */
+	tsrm_mutex_lock(owner_heap->incoming_queues_lock);
+
+	/* Re-check after acquiring lock */
+	queues_array = (zend_atomic_ptr*)zend_atomic_ptr_load_ex(&owner_heap->incoming_queues);
+	capacity = zend_atomic_int_load_ex(&owner_heap->incoming_queues_capacity);
+
+	/* Expand array if needed */
+	if (sender_heap_id >= capacity) {
+		int new_cap = (sender_heap_id + 1 > ZEND_MM_INCOMING_QUEUES_INITIAL_CAPACITY)
+			? sender_heap_id + 1
+			: ZEND_MM_INCOMING_QUEUES_INITIAL_CAPACITY;
+
+		zend_atomic_ptr *new_queues =
+			(zend_atomic_ptr*)calloc(new_cap, sizeof(zend_atomic_ptr));
 
 		if (UNEXPECTED(!new_queues)) {
+			tsrm_mutex_unlock(owner_heap->incoming_queues_lock);
 			return NULL;
 		}
 
-		/* Zero-initialize new slots */
-		memset(new_queues + owner_heap->incoming_queues_capacity, 0,
-			(new_capacity - owner_heap->incoming_queues_capacity) * sizeof(zend_mm_incoming_queue));
+		/* Copy old queues */
+		if (queues_array != NULL) {
+			memcpy(new_queues, queues_array, capacity * sizeof(zend_atomic_ptr));
+			free(queues_array);
+		}
 
-		owner_heap->incoming_queues = new_queues;
-		owner_heap->incoming_queues_capacity = new_capacity;
+		/* Atomic store new array */
+		zend_atomic_ptr_store_ex(&owner_heap->incoming_queues, new_queues);
+		zend_atomic_int_store_ex(&owner_heap->incoming_queues_capacity, new_cap);
+
+		queues_array = new_queues;
+		capacity = new_cap;
 	}
 
-	zend_mm_incoming_queue *queue = &owner_heap->incoming_queues[sender_heap_id];
+	/* Create queue if NULL */
+	zend_spsc_queue *queue =
+		(zend_spsc_queue*)zend_atomic_ptr_load_ex(&queues_array[sender_heap_id]);
 
-	/* Lazy initialize queue */
-	if (UNEXPECTED(!queue->lock)) {
-		zend_ring_buffer_init(&queue->buffer, 32, sizeof(void*), false);  /* 32 pointers, non-persistent */
-		queue->lock = tsrm_mutex_alloc();
+	if (queue == NULL) {
+		queue = (zend_spsc_queue*)malloc(sizeof(zend_spsc_queue));
+
+		if (UNEXPECTED(!queue)) {
+			tsrm_mutex_unlock(owner_heap->incoming_queues_lock);
+			return NULL;
+		}
+
+		/* Initialize SPSC queue */
+		if (!zend_spsc_queue_init(queue, ZEND_MM_SPSC_QUEUE_INITIAL_SIZE, false)) {
+			free(queue);
+			tsrm_mutex_unlock(owner_heap->incoming_queues_lock);
+			return NULL;
+		}
+
+		/* Atomic store queue pointer */
+		zend_atomic_ptr_store_ex(&queues_array[sender_heap_id], queue);
 	}
 
+	tsrm_mutex_unlock(owner_heap->incoming_queues_lock);
 	return queue;
 }
 
 /**
  * Cross-thread free for small blocks.
- * Enqueues message to owner heap's incoming queue.
+ * Enqueues message to owner heap's SPSC incoming queue.
  */
 static void zend_mm_free_small_remote(zend_mm_heap *owner_heap, void *ptr, int bin_num ZEND_FILE_LINE_DC ZEND_FILE_LINE_ORIG_DC)
 {
 	zend_mm_heap *current_heap = zend_mm_get_heap();
-	zend_mm_incoming_queue *queue = zend_mm_get_or_create_incoming_queue(owner_heap, current_heap->heap_id);
+	zend_spsc_queue *queue = zend_mm_get_or_create_incoming_queue(owner_heap, current_heap->heap_id);
 
 	if (UNEXPECTED(!queue)) {
 		zend_mm_panic("Failed to create incoming queue for remote free");
@@ -1592,12 +1639,8 @@ static void zend_mm_free_small_remote(zend_mm_heap *owner_heap, void *ptr, int b
 	msg->ptr = ptr;
 	msg->data.small.bin_num = bin_num;
 
-	/* Enqueue to owner's incoming queue */
-	tsrm_mutex_lock(queue->lock);
-	zend_result result = zend_ring_buffer_push(&queue->buffer, &msg, true);
-	tsrm_mutex_unlock(queue->lock);
-
-	if (UNEXPECTED(result == FAILURE)) {
+	/* Push to SPSC queue (lock-free on writer side!) */
+	if (UNEXPECTED(!zend_spsc_queue_push(queue, &msg))) {
 		efree(msg);
 		zend_mm_panic("Failed to enqueue remote free message");
 	}
@@ -1605,12 +1648,12 @@ static void zend_mm_free_small_remote(zend_mm_heap *owner_heap, void *ptr, int b
 
 /**
  * Cross-thread free for large blocks.
- * Enqueues message to owner heap's incoming queue.
+ * Enqueues message to owner heap's SPSC incoming queue.
  */
 static void zend_mm_free_large_remote(zend_mm_heap *owner_heap, zend_mm_chunk *chunk, int page_num, int pages_count ZEND_FILE_LINE_DC ZEND_FILE_LINE_ORIG_DC)
 {
 	zend_mm_heap *current_heap = zend_mm_get_heap();
-	zend_mm_incoming_queue *queue = zend_mm_get_or_create_incoming_queue(owner_heap, current_heap->heap_id);
+	zend_spsc_queue *queue = zend_mm_get_or_create_incoming_queue(owner_heap, current_heap->heap_id);
 
 	if (UNEXPECTED(!queue)) {
 		zend_mm_panic("Failed to create incoming queue for remote free");
@@ -1625,12 +1668,8 @@ static void zend_mm_free_large_remote(zend_mm_heap *owner_heap, zend_mm_chunk *c
 	msg->data.large.page_num = page_num;
 	msg->data.large.pages_count = pages_count;
 
-	/* Enqueue to owner's incoming queue */
-	tsrm_mutex_lock(queue->lock);
-	zend_result result = zend_ring_buffer_push(&queue->buffer, &msg, true);
-	tsrm_mutex_unlock(queue->lock);
-
-	if (UNEXPECTED(result == FAILURE)) {
+	/* Push to SPSC queue (lock-free on writer side!) */
+	if (UNEXPECTED(!zend_spsc_queue_push(queue, &msg))) {
 		efree(msg);
 		zend_mm_panic("Failed to enqueue remote free message");
 	}
@@ -1644,7 +1683,7 @@ static void zend_mm_free_large_remote(zend_mm_heap *owner_heap, zend_mm_chunk *c
 static void zend_mm_free_huge_remote(zend_mm_heap *owner_heap, void *ptr ZEND_FILE_LINE_DC ZEND_FILE_LINE_ORIG_DC)
 {
 	zend_mm_heap *current_heap = zend_mm_get_heap();
-	zend_mm_incoming_queue *queue = zend_mm_get_or_create_incoming_queue(owner_heap, current_heap->heap_id);
+	zend_spsc_queue *queue = zend_mm_get_or_create_incoming_queue(owner_heap, current_heap->heap_id);
 
 	if (UNEXPECTED(!queue)) {
 		zend_mm_panic("Failed to create incoming queue for remote free");
@@ -1657,12 +1696,8 @@ static void zend_mm_free_huge_remote(zend_mm_heap *owner_heap, void *ptr ZEND_FI
 	msg->ptr = ptr;
 	msg->data.huge.size = 0;  /* owner will lookup size */
 
-	/* Enqueue to owner's incoming queue */
-	tsrm_mutex_lock(queue->lock);
-	zend_result result = zend_ring_buffer_push(&queue->buffer, &msg, true);
-	tsrm_mutex_unlock(queue->lock);
-
-	if (UNEXPECTED(result == FAILURE)) {
+	/* Push to SPSC queue (lock-free on writer side!) */
+	if (UNEXPECTED(!zend_spsc_queue_push(queue, &msg))) {
 		efree(msg);
 		zend_mm_panic("Failed to enqueue remote free message");
 	}
@@ -1674,24 +1709,25 @@ static void zend_mm_free_huge_remote(zend_mm_heap *owner_heap, void *ptr ZEND_FI
  */
 static void zend_mm_collect_remote_frees(zend_mm_heap *heap)
 {
-	if (!heap->incoming_queues) {
+	/* Fast path: check if any queues exist */
+	zend_atomic_ptr *queues_array = (zend_atomic_ptr*)zend_atomic_ptr_load_ex(&heap->incoming_queues);
+	if (!queues_array) {
 		return;  /* no queues allocated yet */
 	}
 
-	/* Process all incoming queues */
-	for (int i = 0; i < heap->incoming_queues_capacity; i++) {
-		zend_mm_incoming_queue *queue = &heap->incoming_queues[i];
+	int capacity = zend_atomic_int_load_ex(&heap->incoming_queues_capacity);
 
-		if (!queue->lock) {
-			continue;  /* queue not initialized */
+	/* Process all incoming SPSC queues */
+	for (int i = 0; i < capacity; i++) {
+		zend_spsc_queue *queue = (zend_spsc_queue*)zend_atomic_ptr_load_ex(&queues_array[i]);
+
+		if (!queue) {
+			continue;  /* queue not initialized for this sender */
 		}
 
-		/* Lock and swap buffer */
-		tsrm_mutex_lock(queue->lock);
-
-		/* Process all messages in queue */
+		/* Pop all messages from SPSC queue (lock-free) */
 		void *msg_ptr;
-		while (zend_ring_buffer_pop(&queue->buffer, &msg_ptr) == SUCCESS) {
+		while (zend_spsc_queue_pop(queue, &msg_ptr)) {
 			zend_mm_remote_free_msg *msg = (zend_mm_remote_free_msg *)msg_ptr;
 
 			switch (msg->type) {
@@ -1712,8 +1748,6 @@ static void zend_mm_collect_remote_frees(zend_mm_heap *heap)
 			/* Free message */
 			efree(msg);
 		}
-
-		tsrm_mutex_unlock(queue->lock);
 	}
 }
 #endif
@@ -2510,9 +2544,10 @@ static zend_mm_heap *zend_mm_init(void)
 	heap->heap_id = zend_mm_registry_allocate_id(heap);
 	heap->thread_id = tsrm_thread_id();
 
-	/* Initialize incoming queues array (lazy allocation) */
-	heap->incoming_queues = NULL;
-	heap->incoming_queues_capacity = 0;
+	/* Initialize MPSC incoming queues (atomic pointers, lazy allocation) */
+	zend_atomic_ptr_store_ex(&heap->incoming_queues, NULL);
+	zend_atomic_int_store_ex(&heap->incoming_queues_capacity, 0);
+	heap->incoming_queues_lock = tsrm_mutex_alloc();
 #else
 	heap->heap_id = 0;
 	heap->thread_id = 0;
@@ -2923,18 +2958,26 @@ ZEND_API void zend_mm_shutdown(zend_mm_heap *heap, bool full, bool silent)
 
 	if (full) {
 #ifdef ZTS
-		/* Cleanup incoming queues */
-		if (heap->incoming_queues) {
-			for (int i = 0; i < heap->incoming_queues_capacity; i++) {
-				zend_mm_incoming_queue *queue = &heap->incoming_queues[i];
-				if (queue->lock) {
-					zend_ring_buffer_destroy(&queue->buffer);
-					tsrm_mutex_free(queue->lock);
+		/* Cleanup MPSC incoming queues */
+		zend_atomic_ptr *queues_array =
+			(zend_atomic_ptr*)zend_atomic_ptr_load_ex(&heap->incoming_queues);
+
+		if (queues_array != NULL) {
+			int capacity = zend_atomic_int_load_ex(&heap->incoming_queues_capacity);
+
+			for (int i = 0; i < capacity; i++) {
+				zend_spsc_queue *queue =
+					(zend_spsc_queue*)zend_atomic_ptr_load_ex(&queues_array[i]);
+
+				if (queue != NULL) {
+					zend_spsc_queue_free(queue);
+					free(queue);
 				}
 			}
-			free(heap->incoming_queues);
-			heap->incoming_queues = NULL;
+			free(queues_array);
 		}
+
+		tsrm_mutex_free(heap->incoming_queues_lock);
 
 		/* Unregister from global registry */
 		zend_mm_registry_free_id(heap->heap_id);

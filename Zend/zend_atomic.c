@@ -95,8 +95,7 @@ ZEND_API size_t zend_atomic_size_t_fetch_add(zend_atomic_size_t *obj, size_t val
 	return zend_atomic_size_t_fetch_add_ex(obj, value);
 }
 
-#if defined(ZEND_WIN32) || defined(HAVE_SYNC_ATOMICS)
-/* On these platforms it is non-const due to underlying APIs. */
+#ifdef HAVE_SYNC_ATOMICS
 ZEND_API bool zend_atomic_bool_load(zend_atomic_bool *obj) {
 	return zend_atomic_bool_load_ex(obj);
 }

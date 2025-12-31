@@ -89,8 +89,6 @@ static inline bool zend_atomic_int_compare_exchange_ex(zend_atomic_int *obj, int
 #include "TSRM.h"  /* for MUTEX_T */
 #endif
 
-#include <stdatomic.h>
-
 /*
  * SPSC queue structure (double-buffering design with mutex-based handoff)
  *

@@ -51,7 +51,7 @@ typedef struct zend_atomic_int_s {
 # endif
 } zend_atomic_int;
 typedef struct zend_atomic_ptr_s {
-	volatile void *value;
+	void * volatile value;
 } zend_atomic_ptr;
 typedef struct zend_atomic_size_t_s {
 # ifdef ZEND_WIN32
@@ -81,7 +81,7 @@ typedef struct zend_atomic_int_s {
 	volatile int value;
 } zend_atomic_int;
 typedef struct zend_atomic_ptr_s {
-	volatile void *value;
+	void * volatile value;  /* Consistent with other platforms */
 } zend_atomic_ptr;
 typedef struct zend_atomic_size_t_s {
 	volatile size_t value;
@@ -212,7 +212,7 @@ static zend_always_inline bool zend_atomic_size_t_compare_exchange_ex(zend_atomi
 	}
 }
 
-static zend_always_inline size_t zend_atomic_size_t_load_ex(zend_atomic_size_t *obj) {
+static zend_always_inline size_t zend_atomic_size_t_load_ex(const zend_atomic_size_t *obj) {
 	return (size_t)InterlockedOr64((volatile LONG64*)&obj->value, 0);
 }
 
@@ -238,7 +238,7 @@ static zend_always_inline bool zend_atomic_size_t_compare_exchange_ex(zend_atomi
 	}
 }
 
-static zend_always_inline size_t zend_atomic_size_t_load_ex(zend_atomic_size_t *obj) {
+static zend_always_inline size_t zend_atomic_size_t_load_ex(const zend_atomic_size_t *obj) {
 	return (size_t)InterlockedOr((volatile LONG*)&obj->value, 0);
 }
 
@@ -698,8 +698,7 @@ ZEND_API void zend_atomic_size_t_store(zend_atomic_size_t *obj, size_t desired);
 
 ZEND_API size_t zend_atomic_size_t_fetch_add(zend_atomic_size_t *obj, size_t value);
 
-#if defined(ZEND_WIN32) || defined(HAVE_SYNC_ATOMICS)
-/* On these platforms it is non-const due to underlying APIs. */
+#ifdef HAVE_SYNC_ATOMICS
 ZEND_API bool zend_atomic_bool_load(zend_atomic_bool *obj);
 ZEND_API int zend_atomic_int_load(zend_atomic_int *obj);
 ZEND_API void* zend_atomic_ptr_load(zend_atomic_ptr *obj);
