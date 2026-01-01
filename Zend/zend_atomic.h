@@ -698,17 +698,10 @@ ZEND_API void zend_atomic_size_t_store(zend_atomic_size_t *obj, size_t desired);
 
 ZEND_API size_t zend_atomic_size_t_fetch_add(zend_atomic_size_t *obj, size_t value);
 
-#ifdef HAVE_SYNC_ATOMICS
-ZEND_API bool zend_atomic_bool_load(zend_atomic_bool *obj);
-ZEND_API int zend_atomic_int_load(zend_atomic_int *obj);
-ZEND_API void* zend_atomic_ptr_load(zend_atomic_ptr *obj);
-ZEND_API size_t zend_atomic_size_t_load(zend_atomic_size_t *obj);
-#else
 ZEND_API bool zend_atomic_bool_load(const zend_atomic_bool *obj);
 ZEND_API int zend_atomic_int_load(const zend_atomic_int *obj);
 ZEND_API void* zend_atomic_ptr_load(const zend_atomic_ptr *obj);
 ZEND_API size_t zend_atomic_size_t_load(const zend_atomic_size_t *obj);
-#endif
 
 END_EXTERN_C()
 

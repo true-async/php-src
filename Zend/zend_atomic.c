@@ -96,19 +96,6 @@ ZEND_API size_t zend_atomic_size_t_fetch_add(zend_atomic_size_t *obj, size_t val
 }
 
 #ifdef HAVE_SYNC_ATOMICS
-ZEND_API bool zend_atomic_bool_load(zend_atomic_bool *obj) {
-	return zend_atomic_bool_load_ex(obj);
-}
-ZEND_API int zend_atomic_int_load(zend_atomic_int *obj) {
-	return zend_atomic_int_load_ex(obj);
-}
-ZEND_API void* zend_atomic_ptr_load(zend_atomic_ptr *obj) {
-	return zend_atomic_ptr_load_ex(obj);
-}
-ZEND_API size_t zend_atomic_size_t_load(zend_atomic_size_t *obj) {
-	return zend_atomic_size_t_load_ex(obj);
-}
-#else
 ZEND_API bool zend_atomic_bool_load(const zend_atomic_bool *obj) {
 	return zend_atomic_bool_load_ex(obj);
 }
@@ -120,5 +107,18 @@ ZEND_API void* zend_atomic_ptr_load(const zend_atomic_ptr *obj) {
 }
 ZEND_API size_t zend_atomic_size_t_load(const zend_atomic_size_t *obj) {
 	return zend_atomic_size_t_load_ex(obj);
+}
+#else
+ZEND_API bool zend_atomic_bool_load(const zend_atomic_bool *obj) {
+	return zend_atomic_bool_load_ex((zend_atomic_bool *)obj);
+}
+ZEND_API int zend_atomic_int_load(const zend_atomic_int *obj) {
+	return zend_atomic_int_load_ex((zend_atomic_int *)obj);
+}
+ZEND_API void* zend_atomic_ptr_load(const zend_atomic_ptr *obj) {
+	return zend_atomic_ptr_load_ex((zend_atomic_ptr *)obj);
+}
+ZEND_API size_t zend_atomic_size_t_load(const zend_atomic_size_t *obj) {
+	return zend_atomic_size_t_load_ex((zend_atomic_size_t *)obj);
 }
 #endif
