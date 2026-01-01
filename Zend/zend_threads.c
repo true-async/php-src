@@ -326,6 +326,18 @@ ZEND_METHOD(Thread, kill)
 #endif
 }
 
+/* Thread::isSupported(): bool */
+ZEND_METHOD(Thread, isSupported)
+{
+	ZEND_PARSE_PARAMETERS_NONE();
+
+#ifdef ZTS
+	RETURN_TRUE;
+#else
+	RETURN_FALSE;
+#endif
+}
+
 static zend_object *zend_thread_create_object(zend_class_entry *ce)
 {
 	zend_thread_t *thread = zend_object_alloc(sizeof(zend_thread_t), ce);

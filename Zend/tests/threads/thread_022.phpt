@@ -1,9 +1,10 @@
 --TEST--
 Thread: Thread with indexed and associative array keys
---EXTENSIONS--
-zts
 --SKIPIF--
 <?php
+if (!Thread::isSupported()) {
+    die('skip Thread support not available (requires ZTS build)');
+}
 if (!class_exists('Thread')) {
     die('skip Thread class not available');
 }

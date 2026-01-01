@@ -50,9 +50,10 @@ The Thread class provides native thread support in PHP (ZTS builds only).
 - Return value handling
 - Recursive array structures
 
-### Reflection & Metadata (036-037)
+### Reflection & Metadata (036-038)
 - Class reflection
 - instanceof checks
+- Thread::isSupported() static method
 
 ## Running Tests
 
@@ -80,10 +81,20 @@ php run-tests.php Zend/tests/threads/thread_001.phpt
 
 Tests use the standard PHP .phpt format:
 - `--TEST--`: Test description
-- `--EXTENSIONS--`: Required extensions (zts)
-- `--SKIPIF--`: Skip conditions
+- `--SKIPIF--`: Skip conditions (using Thread::isSupported())
 - `--FILE--`: Test code
 - `--EXPECT--` or `--EXPECTF--`: Expected output
+
+All tests check for thread support using `Thread::isSupported()` which returns `true` on ZTS builds and `false` otherwise.
+
+## Thread API
+
+### Methods
+- `__construct(?string $bootstrap = null)`: Create new thread with optional bootstrap file
+- `run(Closure $task, array $args = [])`: Start thread execution with closure and arguments
+- `join()`: Wait for thread completion
+- `kill()`: Forcefully terminate thread execution
+- `static isSupported()`: Check if thread support is available (ZTS build)
 
 ## Notes
 
@@ -93,3 +104,4 @@ Tests use the standard PHP .phpt format:
 - Objects (except Closures) cannot be passed between threads
 - Deep copy is performed for arrays and closures
 - Return values from thread closures are not accessible
+- Use `Thread::isSupported()` to check for ZTS availability before using threads

@@ -11,4 +11,6 @@ final class Thread
     public function join(): void {}
 
     public function kill(): void {}
+
+    public static function isSupported(): bool {}
 }

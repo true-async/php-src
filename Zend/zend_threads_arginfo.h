@@ -1,5 +1,5 @@
 /* This is a generated file, edit the .stub.php file instead.
- * Stub hash: e89a8fe1a0ee170b408f3686777896e03820ec1f */
+ * Stub hash: 737344a661d1b198b419eb3e40bdf61f081e7ea5 */
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_class_Thread___construct, 0, 0, 0)
 	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, bootstrap, IS_STRING, 1, "null")
@@ -15,16 +15,21 @@ ZEND_END_ARG_INFO()
 
 #define arginfo_class_Thread_kill arginfo_class_Thread_join
 
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Thread_isSupported, 0, 0, _IS_BOOL, 0)
+ZEND_END_ARG_INFO()
+
 ZEND_METHOD(Thread, __construct);
 ZEND_METHOD(Thread, run);
 ZEND_METHOD(Thread, join);
 ZEND_METHOD(Thread, kill);
+ZEND_METHOD(Thread, isSupported);
 
 static const zend_function_entry class_Thread_methods[] = {
 	ZEND_ME(Thread, __construct, arginfo_class_Thread___construct, ZEND_ACC_PUBLIC)
 	ZEND_ME(Thread, run, arginfo_class_Thread_run, ZEND_ACC_PUBLIC)
 	ZEND_ME(Thread, join, arginfo_class_Thread_join, ZEND_ACC_PUBLIC)
 	ZEND_ME(Thread, kill, arginfo_class_Thread_kill, ZEND_ACC_PUBLIC)
+	ZEND_ME(Thread, isSupported, arginfo_class_Thread_isSupported, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
 	ZEND_FE_END
 };
 
