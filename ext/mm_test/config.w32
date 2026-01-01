@@ -1,0 +1,13 @@
+// config.w32 for extension mm_test
+
+ARG_ENABLE("mm-test", "Enable mm_test support", "no");
+
+if (PHP_MM_TEST != "no") {
+	// Check for ZTS - REQUIRED
+	if (!PHP_ZTS) {
+		ERROR("mm_test extension requires ZTS. Please configure with --enable-zts");
+	}
+
+	EXTENSION("mm_test", "mm_test.c");
+	AC_DEFINE('HAVE_MM_TEST', 1, 'Have mm_test extension');
+}
