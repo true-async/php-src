@@ -29,8 +29,12 @@
 
 #ifdef ZTS
 # include "TSRM.h"
-# include "main/php.h"
+# ifdef TSRM_WIN32
+#  include <process.h>
+# endif
 #endif
+
+#include "main/php.h"
 
 ZEND_API zend_class_entry *zend_ce_thread;
 static zend_object_handlers zend_thread_handlers;
@@ -120,9 +124,6 @@ static zend_function *zend_thread_deep_copy_closure(zval *closure)
 		memcpy(dest, source, sizeof(zend_function));
 	} else {
 		dest = source;
-		if (ZEND_MAP_PTR_GET(dest->op_array.run_time_cache)) {
-			efree(ZEND_MAP_PTR_GET(dest->op_array.run_time_cache));
-		}
 		GC_ADDREF(Z_COUNTED_P(closure));
 	}
 
@@ -401,8 +402,13 @@ ZEND_API int zend_thread_create(zend_thread_handle_t *handle, void *(*start_rout
 	return -1;
 #else
 # ifdef TSRM_WIN32
-	*handle = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)start_routine, arg, 0, NULL);
-	return (*handle == NULL) ? -1 : 0;
+	/* Use _beginthreadex instead of CreateThread to properly initialize C runtime TLS.
+	 * CreateThread does not initialize thread-local storage (__declspec(thread)) variables,
+	 * which causes access violations when accessing TSRMLS_CACHE and other TLS variables. */
+	uintptr_t handle_val = _beginthreadex(NULL, 0,
+		(unsigned (__stdcall *)(void *))start_routine, arg, 0, NULL);
+	*handle = (HANDLE)handle_val;
+	return (handle_val == 0) ? -1 : 0;
 # else
 	return pthread_create(handle, NULL, start_routine, arg);
 # endif
