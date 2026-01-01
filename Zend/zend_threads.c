@@ -26,10 +26,10 @@
 #include "zend_threads_arginfo.h"
 #include "zend_closures.h"
 #include "zend_exceptions.h"
-#include "TSRM.h"
 
 #ifdef ZTS
-# include "main/php_main.h"
+# include "TSRM.h"
+# include "main/php.h"
 #endif
 
 ZEND_API zend_class_entry *zend_ce_thread;
