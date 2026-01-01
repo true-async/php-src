@@ -162,26 +162,7 @@ static void *zend_thread_func(void *arg)
 	ts_resource(0);
 	TSRMLS_CACHE_UPDATE();
 
-	/* TEMPORARY WORKAROUND: Disable SAPI deactivate callback to avoid cross-module TLS issues.
-	 *
-	 * Problem: On Windows with DLL builds, sapi_cli_deactivate (in php.exe) accesses SG()
-	 * which uses TLS initialized in php8ts.dll. This causes access violations when crossing
-	 * the DLL/EXE boundary in spawned threads.
-	 *
-	 * This is the same workaround used by ext/parallel (see parallel.c:159-161).
-	 *
-	 * TODO: Find a proper solution that doesn't require disabling SAPI deactivation.
-	 * Possible approaches:
-	 * - Make sapi_globals accessible across module boundaries
-	 * - Implement thread-safe SAPI deactivation that doesn't cross DLL boundaries
-	 * - Use a different threading model that doesn't require full request lifecycle
-	 */
-	int (*original_sapi_deactivate)(void) = sapi_module.deactivate;
-	sapi_module.deactivate = NULL;
-
 	if (php_request_startup() == FAILURE) {
-		/* Restore original SAPI deactivate callback on failure */
-		sapi_module.deactivate = original_sapi_deactivate;
 		efree(task->func);
 		if (task->args) {
 			zend_hash_destroy(task->args);
@@ -226,10 +207,12 @@ static void *zend_thread_func(void *arg)
 	efree(task->func);
 	efree(task);
 
-	php_request_shutdown(NULL);
+	/* DEBUG: Check TLS before shutdown */
+	void *tls_cache = tsrm_get_ls_cache();
+	fprintf(stderr, "[DEBUG] Before php_request_shutdown: tsrm_get_ls_cache() = %p\n", tls_cache);
+	fflush(stderr);
 
-	/* Restore original SAPI deactivate callback */
-	sapi_module.deactivate = original_sapi_deactivate;
+	php_request_shutdown(NULL);
 
 	ts_free_thread();
 
