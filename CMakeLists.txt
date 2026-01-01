@@ -39,6 +39,7 @@ target_compile_definitions(php PRIVATE
         PHP_ASYNC
         PHP_ASYNC_LIBUV
         ZTS
+        TSRM_WIN32
         ZEND_WIN32
         PHP_WIN32
         _WIN32
