@@ -804,6 +804,9 @@ sapi_module_struct cli_server_sapi_module = {
 	NULL,							/* activate */
 	NULL,							/* deactivate */
 
+	NULL,							/* thread_begin */
+	NULL,							/* thread_end */
+
 	sapi_cli_server_ub_write,		/* unbuffered write */
 	sapi_cli_server_flush,			/* flush */
 	NULL,							/* get uid */

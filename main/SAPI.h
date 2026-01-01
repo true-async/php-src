@@ -247,6 +247,9 @@ struct _sapi_module_struct {
 	int (*activate)(void);
 	int (*deactivate)(void);
 
+	void (*thread_begin)(void);
+	void (*thread_end)(void);
+
 	size_t (*ub_write)(const char *str, size_t str_length);
 	void (*flush)(void *server_context);
 	zend_stat_t *(*get_stat)(void);

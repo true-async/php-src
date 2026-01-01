@@ -161,8 +161,10 @@ static void *zend_thread_func(void *arg)
 
 	ts_resource(0);
 	TSRMLS_CACHE_UPDATE();
+	sapi_thread_begin();
 
 	if (php_request_startup() == FAILURE) {
+		sapi_thread_end();
 		efree(task->func);
 		if (task->args) {
 			zend_hash_destroy(task->args);
@@ -207,13 +209,9 @@ static void *zend_thread_func(void *arg)
 	efree(task->func);
 	efree(task);
 
-	/* DEBUG: Check TLS before shutdown */
-	void *tls_cache = tsrm_get_ls_cache();
-	fprintf(stderr, "[DEBUG] Before php_request_shutdown: tsrm_get_ls_cache() = %p\n", tls_cache);
-	fflush(stderr);
-
 	php_request_shutdown(NULL);
 
+	sapi_thread_end();
 	ts_free_thread();
 
 	return NULL;
