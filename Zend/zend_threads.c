@@ -215,8 +215,8 @@ static void *zend_thread_func(void *arg)
 
 #endif /* ZTS */
 
-/* PHP_Thread::__construct(?string $bootstrap = null) */
-ZEND_METHOD(PHP_Thread, __construct)
+/* Thread::__construct(?string $bootstrap = null) */
+ZEND_METHOD(Thread, __construct)
 {
 	zend_string *bootstrap = NULL;
 
@@ -237,8 +237,8 @@ ZEND_METHOD(PHP_Thread, __construct)
 #endif
 }
 
-/* PHP_Thread::run(Closure $task, array $args = []): void */
-ZEND_METHOD(PHP_Thread, run)
+/* Thread::run(Closure $task, array $args = []): void */
+ZEND_METHOD(Thread, run)
 {
 	zval *task;
 	zval *args = NULL;
@@ -286,8 +286,8 @@ ZEND_METHOD(PHP_Thread, run)
 #endif
 }
 
-/* PHP_Thread::join(): void */
-ZEND_METHOD(PHP_Thread, join)
+/* Thread::join(): void */
+ZEND_METHOD(Thread, join)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 
@@ -306,8 +306,8 @@ ZEND_METHOD(PHP_Thread, join)
 #endif
 }
 
-/* PHP_Thread::kill(): void */
-ZEND_METHOD(PHP_Thread, kill)
+/* Thread::kill(): void */
+ZEND_METHOD(Thread, kill)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 
@@ -359,7 +359,7 @@ static void zend_thread_free_object(zend_object *object)
 
 void zend_register_thread_ce(void)
 {
-	zend_ce_thread = register_class_PHP_Thread();
+	zend_ce_thread = register_class_Thread();
 	zend_ce_thread->create_object = zend_thread_create_object;
 
 	memcpy(&zend_thread_handlers, &std_object_handlers, sizeof(zend_object_handlers));
