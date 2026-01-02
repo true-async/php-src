@@ -1541,9 +1541,8 @@ static zend_always_inline void zend_mm_free_small(zend_mm_heap *heap, void *ptr,
  * Fast path: lock-free atomic loads (hot path).
  * Slow path: mutex-protected resize/allocation (rare).
  */
-static zend_spsc_queue *zend_mm_get_or_create_incoming_queue(zend_mm_heap *owner_heap, uint32_t sender_heap_id)
+static zend_spsc_queue *zend_mm_get_or_create_incoming_queue(zend_mm_heap *owner_heap, const int sender_heap_id)
 {
-	/* Fast path: atomic load (lock-free!) */
 	zend_atomic_ptr *queues_array =
 		(zend_atomic_ptr*)zend_atomic_ptr_load_ex(&owner_heap->incoming_queues);
 	int capacity = zend_atomic_int_load_ex(&owner_heap->incoming_queues_capacity);
@@ -1553,46 +1552,39 @@ static zend_spsc_queue *zend_mm_get_or_create_incoming_queue(zend_mm_heap *owner
 			(zend_spsc_queue*)zend_atomic_ptr_load_ex(&queues_array[sender_heap_id]);
 
 		if (EXPECTED(queue != NULL)) {
-			return queue;  /* HOT PATH: ~7 cycles */
+			return queue;
 		}
 	}
 
-	/* Slow path: double-checked locking */
 	tsrm_mutex_lock(owner_heap->incoming_queues_lock);
 
-	/* Re-check after acquiring lock */
 	queues_array = (zend_atomic_ptr*)zend_atomic_ptr_load_ex(&owner_heap->incoming_queues);
 	capacity = zend_atomic_int_load_ex(&owner_heap->incoming_queues_capacity);
 
-	/* Expand array if needed */
 	if (sender_heap_id >= capacity) {
-		int new_cap = (sender_heap_id + 1 > ZEND_MM_INCOMING_QUEUES_INITIAL_CAPACITY)
+		const int new_capacity = (sender_heap_id + 1 > ZEND_MM_INCOMING_QUEUES_INITIAL_CAPACITY)
 			? sender_heap_id + 1
 			: ZEND_MM_INCOMING_QUEUES_INITIAL_CAPACITY;
 
-		zend_atomic_ptr *new_queues =
-			(zend_atomic_ptr*)calloc(new_cap, sizeof(zend_atomic_ptr));
+		zend_atomic_ptr *new_queues = calloc(new_capacity, sizeof(zend_atomic_ptr));
 
 		if (UNEXPECTED(!new_queues)) {
 			tsrm_mutex_unlock(owner_heap->incoming_queues_lock);
 			return NULL;
 		}
 
-		/* Copy old queues */
 		if (queues_array != NULL) {
 			memcpy(new_queues, queues_array, capacity * sizeof(zend_atomic_ptr));
 			free(queues_array);
 		}
 
-		/* Atomic store new array */
 		zend_atomic_ptr_store_ex(&owner_heap->incoming_queues, new_queues);
-		zend_atomic_int_store_ex(&owner_heap->incoming_queues_capacity, new_cap);
+		zend_atomic_int_store_ex(&owner_heap->incoming_queues_capacity, new_capacity);
 
 		queues_array = new_queues;
-		capacity = new_cap;
+		capacity = new_capacity;
 	}
 
-	/* Create queue if NULL */
 	zend_spsc_queue *queue =
 		(zend_spsc_queue*)zend_atomic_ptr_load_ex(&queues_array[sender_heap_id]);
 
@@ -1604,14 +1596,12 @@ static zend_spsc_queue *zend_mm_get_or_create_incoming_queue(zend_mm_heap *owner
 			return NULL;
 		}
 
-		/* Initialize SPSC queue */
-		if (!zend_spsc_queue_init(queue, ZEND_MM_SPSC_QUEUE_INITIAL_SIZE, false)) {
+		if (!zend_spsc_queue_init(queue, ZEND_MM_SPSC_QUEUE_INITIAL_SIZE, true)) {
 			free(queue);
 			tsrm_mutex_unlock(owner_heap->incoming_queues_lock);
 			return NULL;
 		}
 
-		/* Atomic store queue pointer */
 		zend_atomic_ptr_store_ex(&queues_array[sender_heap_id], queue);
 	}
 
@@ -1625,23 +1615,26 @@ static zend_spsc_queue *zend_mm_get_or_create_incoming_queue(zend_mm_heap *owner
  */
 static void zend_mm_free_small_remote(zend_mm_heap *owner_heap, void *ptr, int bin_num ZEND_FILE_LINE_DC ZEND_FILE_LINE_ORIG_DC)
 {
-	zend_mm_heap *current_heap = zend_mm_get_heap();
-	zend_spsc_queue *queue = zend_mm_get_or_create_incoming_queue(owner_heap, current_heap->heap_id);
+	const zend_mm_heap *current_heap = zend_mm_get_heap();
+	zend_spsc_queue *queue = zend_mm_get_or_create_incoming_queue(owner_heap, (int)current_heap->heap_id);
 
 	if (UNEXPECTED(!queue)) {
 		zend_mm_panic("Failed to create incoming queue for remote free");
 		return;
 	}
 
-	/* Allocate message */
-	zend_mm_remote_free_msg *msg = (zend_mm_remote_free_msg *)emalloc(sizeof(zend_mm_remote_free_msg));
+	zend_mm_remote_free_msg *msg = malloc(sizeof(zend_mm_remote_free_msg));
+	if (UNEXPECTED(!msg)) {
+		zend_mm_panic("Failed to allocate remote free message");
+		return;
+	}
+
 	msg->type = ZEND_MM_FREE_SMALL;
 	msg->ptr = ptr;
 	msg->data.small.bin_num = bin_num;
 
-	/* Push to SPSC queue (lock-free on writer side!) */
 	if (UNEXPECTED(!zend_spsc_queue_push(queue, &msg))) {
-		efree(msg);
+		free(msg);
 		zend_mm_panic("Failed to enqueue remote free message");
 	}
 }
@@ -1652,25 +1645,28 @@ static void zend_mm_free_small_remote(zend_mm_heap *owner_heap, void *ptr, int b
  */
 static void zend_mm_free_large_remote(zend_mm_heap *owner_heap, zend_mm_chunk *chunk, int page_num, int pages_count ZEND_FILE_LINE_DC ZEND_FILE_LINE_ORIG_DC)
 {
-	zend_mm_heap *current_heap = zend_mm_get_heap();
-	zend_spsc_queue *queue = zend_mm_get_or_create_incoming_queue(owner_heap, current_heap->heap_id);
+	const zend_mm_heap *current_heap = zend_mm_get_heap();
+	zend_spsc_queue *queue = zend_mm_get_or_create_incoming_queue(owner_heap, (int)current_heap->heap_id);
 
 	if (UNEXPECTED(!queue)) {
 		zend_mm_panic("Failed to create incoming queue for remote free");
 		return;
 	}
 
-	/* Allocate message */
-	zend_mm_remote_free_msg *msg = (zend_mm_remote_free_msg *)emalloc(sizeof(zend_mm_remote_free_msg));
+	zend_mm_remote_free_msg *msg = (zend_mm_remote_free_msg *)malloc(sizeof(zend_mm_remote_free_msg));
+	if (UNEXPECTED(!msg)) {
+		zend_mm_panic("Failed to allocate remote free message");
+		return;
+	}
+
 	msg->type = ZEND_MM_FREE_LARGE;
 	msg->ptr = ZEND_MM_PAGE_ADDR(chunk, page_num);
 	msg->data.large.chunk = chunk;
 	msg->data.large.page_num = page_num;
 	msg->data.large.pages_count = pages_count;
 
-	/* Push to SPSC queue (lock-free on writer side!) */
 	if (UNEXPECTED(!zend_spsc_queue_push(queue, &msg))) {
-		efree(msg);
+		free(msg);
 		zend_mm_panic("Failed to enqueue remote free message");
 	}
 }
@@ -1682,23 +1678,26 @@ static void zend_mm_free_large_remote(zend_mm_heap *owner_heap, zend_mm_chunk *c
  */
 static void zend_mm_free_huge_remote(zend_mm_heap *owner_heap, void *ptr ZEND_FILE_LINE_DC ZEND_FILE_LINE_ORIG_DC)
 {
-	zend_mm_heap *current_heap = zend_mm_get_heap();
-	zend_spsc_queue *queue = zend_mm_get_or_create_incoming_queue(owner_heap, current_heap->heap_id);
+	const zend_mm_heap *current_heap = zend_mm_get_heap();
+	zend_spsc_queue *queue = zend_mm_get_or_create_incoming_queue(owner_heap, (int)current_heap->heap_id);
 
 	if (UNEXPECTED(!queue)) {
 		zend_mm_panic("Failed to create incoming queue for remote free");
 		return;
 	}
 
-	/* Allocate message */
-	zend_mm_remote_free_msg *msg = (zend_mm_remote_free_msg *)emalloc(sizeof(zend_mm_remote_free_msg));
+	zend_mm_remote_free_msg *msg = (zend_mm_remote_free_msg *)malloc(sizeof(zend_mm_remote_free_msg));
+	if (UNEXPECTED(!msg)) {
+		zend_mm_panic("Failed to allocate remote free message");
+		return;
+	}
+
 	msg->type = ZEND_MM_FREE_HUGE;
 	msg->ptr = ptr;
-	msg->data.huge.size = 0;  /* owner will lookup size */
+	msg->data.huge.size = 0;
 
-	/* Push to SPSC queue (lock-free on writer side!) */
 	if (UNEXPECTED(!zend_spsc_queue_push(queue, &msg))) {
-		efree(msg);
+		free(msg);
 		zend_mm_panic("Failed to enqueue remote free message");
 	}
 }
@@ -1709,23 +1708,20 @@ static void zend_mm_free_huge_remote(zend_mm_heap *owner_heap, void *ptr ZEND_FI
  */
 static void zend_mm_collect_remote_frees(zend_mm_heap *heap)
 {
-	/* Fast path: check if any queues exist */
 	zend_atomic_ptr *queues_array = (zend_atomic_ptr*)zend_atomic_ptr_load_ex(&heap->incoming_queues);
 	if (!queues_array) {
-		return;  /* no queues allocated yet */
+		return;
 	}
 
 	int capacity = zend_atomic_int_load_ex(&heap->incoming_queues_capacity);
 
-	/* Process all incoming SPSC queues */
 	for (int i = 0; i < capacity; i++) {
 		zend_spsc_queue *queue = (zend_spsc_queue*)zend_atomic_ptr_load_ex(&queues_array[i]);
 
 		if (!queue) {
-			continue;  /* queue not initialized for this sender */
+			continue;
 		}
 
-		/* Pop all messages from SPSC queue (lock-free) */
 		void *msg_ptr;
 		while (zend_spsc_queue_pop(queue, &msg_ptr)) {
 			zend_mm_remote_free_msg *msg = (zend_mm_remote_free_msg *)msg_ptr;
@@ -1745,8 +1741,7 @@ static void zend_mm_collect_remote_frees(zend_mm_heap *heap)
 					break;
 			}
 
-			/* Free message */
-			efree(msg);
+			free(msg);
 		}
 	}
 }
@@ -2958,14 +2953,13 @@ ZEND_API void zend_mm_shutdown(zend_mm_heap *heap, bool full, bool silent)
 
 	if (full) {
 #ifdef ZTS
-		/* Cleanup MPSC incoming queues */
 		zend_atomic_ptr *queues_array =
 			(zend_atomic_ptr*)zend_atomic_ptr_load_ex(&heap->incoming_queues);
 
 		if (queues_array != NULL) {
-			int capacity = zend_atomic_int_load_ex(&heap->incoming_queues_capacity);
+			uint32_t capacity = zend_atomic_int_load_ex(&heap->incoming_queues_capacity);
 
-			for (int i = 0; i < capacity; i++) {
+			for (uint32_t i = 0; i < capacity; i++) {
 				zend_spsc_queue *queue =
 					(zend_spsc_queue*)zend_atomic_ptr_load_ex(&queues_array[i]);
 
@@ -2978,17 +2972,13 @@ ZEND_API void zend_mm_shutdown(zend_mm_heap *heap, bool full, bool silent)
 		}
 
 		tsrm_mutex_free(heap->incoming_queues_lock);
-
-		/* Unregister from global registry */
 		zend_mm_registry_free_id(heap->heap_id);
 #endif
-		/* free all cached chunks */
 		while (heap->cached_chunks) {
 			p = heap->cached_chunks;
 			heap->cached_chunks = p->next;
 			zend_mm_chunk_free(heap, p, ZEND_MM_CHUNK_SIZE);
 		}
-		/* free the first chunk */
 		zend_mm_chunk_free(heap, heap->main_chunk, ZEND_MM_CHUNK_SIZE);
 	} else {
 		/* free some cached chunks to keep average count */

@@ -155,7 +155,7 @@ static zend_always_inline zend_thread_t *zend_thread_from_obj(zend_object *obj)
 
 static void *zend_thread_func(void *arg)
 {
-	zend_thread_task_t *task = (zend_thread_task_t *)arg;
+	zend_thread_task_t *task = arg;
 	zval retval;
 	uint32_t argc = 0;
 
@@ -258,7 +258,6 @@ ZEND_METHOD(Thread, run)
 	RETURN_THROWS();
 #else
 	zend_thread_t *thread = Z_THREAD_P(ZEND_THIS);
-	zend_thread_task_t *thread_task;
 	const zend_function *func;
 
 	if (thread->started) {
@@ -266,7 +265,7 @@ ZEND_METHOD(Thread, run)
 		RETURN_THROWS();
 	}
 
-	thread_task = emalloc(sizeof(zend_thread_task_t));
+	zend_thread_task_t *thread_task = emalloc(sizeof(zend_thread_task_t));
 	thread_task->func = zend_thread_deep_copy_closure(task);
 	thread_task->args = NULL;
 
