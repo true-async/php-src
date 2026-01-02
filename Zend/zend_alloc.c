@@ -2761,6 +2761,38 @@ static zend_long zend_mm_find_leaks_huge(zend_mm_heap *heap, zend_mm_huge_list *
 	return count;
 }
 
+static bool zend_mm_chunk_is_empty(const zend_mm_chunk *chunk)
+{
+	/* Check if all pages in chunk are free */
+	for (uint32_t i = ZEND_MM_FIRST_PAGE; i < chunk->free_tail; i++) {
+		if (zend_mm_bitset_is_set(chunk->free_map, i)) {
+			return false; /* Found allocated page */
+		}
+	}
+	return true;
+}
+
+static bool zend_mm_has_active_allocations(const zend_mm_heap *heap)
+{
+	const zend_mm_chunk *p;
+
+	/* Check for huge blocks */
+	if (heap->huge_list != NULL) {
+		return true;
+	}
+
+	/* Check all chunks for allocated pages */
+	p = heap->main_chunk;
+	do {
+		if (!zend_mm_chunk_is_empty(p)) {
+			return true;
+		}
+		p = p->next;
+	} while (p != heap->main_chunk);
+
+	return false;
+}
+
 static void zend_mm_check_leaks(zend_mm_heap *heap)
 {
 	zend_mm_huge_list *list;
@@ -2884,6 +2916,85 @@ static void zend_mm_check_freelists(zend_mm_heap *heap)
 }
 #endif
 
+/**
+ * Free empty chunks and move them to cache according to average usage.
+ * Walks through active chunks list, checks each chunk for allocations.
+ * Empty chunks are either moved to cache or freed based on avg_chunks_count formula.
+ *
+ * Returns true if all chunks (except main_chunk) are empty, false otherwise.
+ */
+static bool zend_mm_free_empty_chunks(zend_mm_heap *heap)
+{
+	bool all_chunks_empty = true;
+
+	zend_mm_chunk *prev = heap->main_chunk;
+	zend_mm_chunk *chunk = heap->main_chunk->next;
+
+	while (chunk != heap->main_chunk) {
+		zend_mm_chunk *next = chunk->next;
+
+		if (zend_mm_chunk_is_empty(chunk)) {
+			/* Remove from active list */
+			prev->next = next;
+			next->prev = prev;
+			heap->chunks_count--;
+
+			/* Decide: move to cache OR free immediately based on average formula */
+			if (heap->chunks_count + heap->cached_chunks_count < heap->avg_chunks_count + 0.1) {
+				/* Move to cache for future reuse */
+				chunk->next = heap->cached_chunks;
+				heap->cached_chunks = chunk;
+				heap->cached_chunks_count++;
+			} else {
+				/* Free immediately - too many cached already */
+#if ZEND_MM_STAT || ZEND_MM_LIMIT
+				heap->real_size -= ZEND_MM_CHUNK_SIZE;
+#endif
+				zend_mm_chunk_free(heap, chunk, ZEND_MM_CHUNK_SIZE);
+			}
+		} else {
+			/* Chunk has active allocations, keep in list */
+			all_chunks_empty = false;
+			prev = chunk;
+		}
+
+		chunk = next;
+	}
+
+	return all_chunks_empty;
+}
+
+/**
+ * Cleanup cached chunks based on average usage formula.
+ * Frees some cached chunks to maintain optimal cache size,
+ * clears (memsets to 0) remaining cached chunks.
+ */
+static void zend_mm_cleanup_cached_chunks(zend_mm_heap *heap)
+{
+	zend_mm_chunk *p;
+
+	/* Update average chunks count based on peak usage */
+	heap->avg_chunks_count = (heap->avg_chunks_count + (double)heap->peak_chunks_count) / 2.0;
+
+	/* Free cached chunks exceeding average count */
+	while ((double)heap->cached_chunks_count + 0.9 > heap->avg_chunks_count &&
+	       heap->cached_chunks) {
+		p = heap->cached_chunks;
+		heap->cached_chunks = p->next;
+		zend_mm_chunk_free(heap, p, ZEND_MM_CHUNK_SIZE);
+		heap->cached_chunks_count--;
+	}
+
+	/* Clear remaining cached chunks (memset to 0) */
+	p = heap->cached_chunks;
+	while (p != NULL) {
+		zend_mm_chunk *q = p->next;
+		memset(p, 0, sizeof(zend_mm_chunk));
+		p->next = q;
+		p = q;
+	}
+}
+
 ZEND_API void zend_mm_shutdown(zend_mm_heap *heap, bool full, bool silent)
 {
 	zend_mm_chunk *p;
@@ -2922,8 +3033,21 @@ ZEND_API void zend_mm_shutdown(zend_mm_heap *heap, bool full, bool silent)
 	}
 #endif
 
+#ifdef ZTS
+	/* Process all pending remote frees before checking for leaks */
+	zend_mm_collect_remote_frees(heap);
+
+	const bool has_active_allocations = zend_mm_has_active_allocations(heap);
+#else
+	const bool has_active_allocations = false;
+#endif
+
 #if ZEND_DEBUG
-	if (!silent) {
+	/* Only check for leaks if:
+	 * - full shutdown is requested (final cleanup), OR
+	 * - there are no active allocations held by other threads
+	 */
+	if (!silent && (full || !has_active_allocations)) {
 		char *tmp = getenv("ZEND_ALLOC_PRINT_LEAKS");
 		if (!tmp || ZEND_ATOL(tmp)) {
 			zend_mm_check_leaks(heap);
@@ -2931,7 +3055,12 @@ ZEND_API void zend_mm_shutdown(zend_mm_heap *heap, bool full, bool silent)
 	}
 #endif
 
-	/* free huge blocks */
+	/*
+	 * Free huge blocks that should be empty at this point.
+	 * If heap->huge_list is not empty after remote frees were processed,
+	 * it indicates either a memory leak or cross-thread references.
+	 * We free them anyway at this stage.
+	 */
 	list = heap->huge_list;
 	heap->huge_list = NULL;
 	while (list) {
@@ -2940,15 +3069,20 @@ ZEND_API void zend_mm_shutdown(zend_mm_heap *heap, bool full, bool silent)
 		zend_mm_chunk_free(heap, q->ptr, q->size);
 	}
 
-	/* move all chunks except of the first one into the cache */
-	p = heap->main_chunk->next;
-	while (p != heap->main_chunk) {
-		zend_mm_chunk *q = p->next;
-		p->next = heap->cached_chunks;
-		heap->cached_chunks = p;
-		p = q;
-		heap->chunks_count--;
-		heap->cached_chunks_count++;
+	/*
+	 * Free empty chunks and move them to cache.
+	 * Non-empty chunks (with active allocations) remain in the active list.
+	 * Returns true if all chunks (except main_chunk) are empty.
+	 */
+	const bool all_chunks_freed = zend_mm_free_empty_chunks(heap);
+
+	/*
+	 * If not full shutdown and some chunks still have allocations,
+	 * cleanup cached chunks only and keep heap alive for remote frees.
+	 */
+	if (!full && !all_chunks_freed) {
+		zend_mm_cleanup_cached_chunks(heap);
+		return;
 	}
 
 	if (full) {
@@ -2981,23 +3115,8 @@ ZEND_API void zend_mm_shutdown(zend_mm_heap *heap, bool full, bool silent)
 		}
 		zend_mm_chunk_free(heap, heap->main_chunk, ZEND_MM_CHUNK_SIZE);
 	} else {
-		/* free some cached chunks to keep average count */
-		heap->avg_chunks_count = (heap->avg_chunks_count + (double)heap->peak_chunks_count) / 2.0;
-		while ((double)heap->cached_chunks_count + 0.9 > heap->avg_chunks_count &&
-		       heap->cached_chunks) {
-			p = heap->cached_chunks;
-			heap->cached_chunks = p->next;
-			zend_mm_chunk_free(heap, p, ZEND_MM_CHUNK_SIZE);
-			heap->cached_chunks_count--;
-		}
-		/* clear cached chunks */
-		p = heap->cached_chunks;
-		while (p != NULL) {
-			zend_mm_chunk *q = p->next;
-			memset(p, 0, sizeof(zend_mm_chunk));
-			p->next = q;
-			p = q;
-		}
+		/* Cleanup cached chunks */
+		zend_mm_cleanup_cached_chunks(heap);
 
 		/* reinitialize the first chunk and heap */
 		p = heap->main_chunk;
