@@ -1543,13 +1543,12 @@ static zend_always_inline void zend_mm_free_small(zend_mm_heap *heap, void *ptr,
  */
 static zend_spsc_queue *zend_mm_get_or_create_incoming_queue(zend_mm_heap *owner_heap, const int sender_heap_id)
 {
-	zend_atomic_ptr *queues_array =
-		(zend_atomic_ptr*)zend_atomic_ptr_load_ex(&owner_heap->incoming_queues);
+	zend_atomic_ptr *queues_array = zend_atomic_ptr_load_ex(&owner_heap->incoming_queues);
 	int capacity = zend_atomic_int_load_ex(&owner_heap->incoming_queues_capacity);
+	const int sender_heap_index = sender_heap_id - 1;
 
 	if (EXPECTED(queues_array != NULL && sender_heap_id < capacity)) {
-		zend_spsc_queue *queue =
-			(zend_spsc_queue*)zend_atomic_ptr_load_ex(&queues_array[sender_heap_id]);
+		zend_spsc_queue *queue = zend_atomic_ptr_load_ex(&queues_array[sender_heap_index]);
 
 		if (EXPECTED(queue != NULL)) {
 			return queue;
@@ -1585,11 +1584,10 @@ static zend_spsc_queue *zend_mm_get_or_create_incoming_queue(zend_mm_heap *owner
 		capacity = new_capacity;
 	}
 
-	zend_spsc_queue *queue =
-		(zend_spsc_queue*)zend_atomic_ptr_load_ex(&queues_array[sender_heap_id]);
+	zend_spsc_queue *queue = zend_atomic_ptr_load_ex(&queues_array[sender_heap_index]);
 
 	if (queue == NULL) {
-		queue = (zend_spsc_queue*)malloc(sizeof(zend_spsc_queue));
+		queue = malloc(sizeof(zend_spsc_queue));
 
 		if (UNEXPECTED(!queue)) {
 			tsrm_mutex_unlock(owner_heap->incoming_queues_lock);
@@ -1602,7 +1600,7 @@ static zend_spsc_queue *zend_mm_get_or_create_incoming_queue(zend_mm_heap *owner
 			return NULL;
 		}
 
-		zend_atomic_ptr_store_ex(&queues_array[sender_heap_id], queue);
+		zend_atomic_ptr_store_ex(&queues_array[sender_heap_index], queue);
 	}
 
 	tsrm_mutex_unlock(owner_heap->incoming_queues_lock);
@@ -1633,7 +1631,7 @@ static void zend_mm_free_small_remote(zend_mm_heap *owner_heap, void *ptr, int b
 	msg->ptr = ptr;
 	msg->data.small.bin_num = bin_num;
 
-	if (UNEXPECTED(!zend_spsc_queue_push(queue, &msg))) {
+	if (UNEXPECTED(!zend_spsc_queue_push(queue, msg))) {
 		free(msg);
 		zend_mm_panic("Failed to enqueue remote free message");
 	}
@@ -3086,21 +3084,20 @@ ZEND_API void zend_mm_shutdown(zend_mm_heap *heap, bool full, bool silent)
 
 	if (full) {
 #ifdef ZTS
-		zend_atomic_ptr *queues_array =
-			(zend_atomic_ptr*)zend_atomic_ptr_load_ex(&heap->incoming_queues);
+		zend_atomic_ptr *queues_array = zend_atomic_ptr_load_ex(&heap->incoming_queues);
 
 		if (queues_array != NULL) {
-			uint32_t capacity = zend_atomic_int_load_ex(&heap->incoming_queues_capacity);
+			const uint32_t capacity = zend_atomic_int_load_ex(&heap->incoming_queues_capacity);
 
 			for (uint32_t i = 0; i < capacity; i++) {
-				zend_spsc_queue *queue =
-					(zend_spsc_queue*)zend_atomic_ptr_load_ex(&queues_array[i]);
+				zend_spsc_queue *queue = zend_atomic_ptr_load_ex(&queues_array[i]);
 
 				if (queue != NULL) {
 					zend_spsc_queue_free(queue);
 					free(queue);
 				}
 			}
+
 			free(queues_array);
 		}
 
