@@ -670,7 +670,7 @@ ZEND_ATTRIBUTE_CONST static zend_always_inline int zend_mm_bitset_nts(zend_mm_bi
 #endif
 }
 
-static zend_always_inline int zend_mm_bitset_is_set(zend_mm_bitset *bitset, int bit)
+static zend_always_inline int zend_mm_bitset_is_set(const zend_mm_bitset *bitset, const int bit)
 {
 	return ZEND_BIT_TEST(bitset, bit);
 }
@@ -1708,23 +1708,23 @@ static void zend_mm_free_huge_remote(zend_mm_heap *owner_heap, void *ptr ZEND_FI
  */
 static void zend_mm_collect_remote_frees(zend_mm_heap *heap)
 {
-	zend_atomic_ptr *queues_array = (zend_atomic_ptr*)zend_atomic_ptr_load_ex(&heap->incoming_queues);
-	if (!queues_array) {
+	zend_atomic_ptr *queues_array = zend_atomic_ptr_load_ex(&heap->incoming_queues);
+	if (UNEXPECTED(queues_array == NULL)) {
 		return;
 	}
 
-	int capacity = zend_atomic_int_load_ex(&heap->incoming_queues_capacity);
+	const int capacity = zend_atomic_int_load_ex(&heap->incoming_queues_capacity);
 
 	for (int i = 0; i < capacity; i++) {
-		zend_spsc_queue *queue = (zend_spsc_queue*)zend_atomic_ptr_load_ex(&queues_array[i]);
+		zend_spsc_queue *queue = zend_atomic_ptr_load_ex(&queues_array[i]);
 
-		if (!queue) {
+		if (EXPECTED(queue == NULL)) {
 			continue;
 		}
 
 		void *msg_ptr;
 		while (zend_spsc_queue_pop(queue, &msg_ptr)) {
-			zend_mm_remote_free_msg *msg = (zend_mm_remote_free_msg *)msg_ptr;
+			zend_mm_remote_free_msg *msg = msg_ptr;
 
 			switch (msg->type) {
 				case ZEND_MM_FREE_SMALL:
@@ -2765,7 +2765,7 @@ static bool zend_mm_chunk_is_empty(const zend_mm_chunk *chunk)
 {
 	/* Check if all pages in chunk are free */
 	for (uint32_t i = ZEND_MM_FIRST_PAGE; i < chunk->free_tail; i++) {
-		if (zend_mm_bitset_is_set(chunk->free_map, i)) {
+		if (zend_mm_bitset_is_set(chunk->free_map, (int)i)) {
 			return false; /* Found allocated page */
 		}
 	}
@@ -2774,15 +2774,13 @@ static bool zend_mm_chunk_is_empty(const zend_mm_chunk *chunk)
 
 static bool zend_mm_has_active_allocations(const zend_mm_heap *heap)
 {
-	const zend_mm_chunk *p;
-
 	/* Check for huge blocks */
 	if (heap->huge_list != NULL) {
 		return true;
 	}
 
 	/* Check all chunks for allocated pages */
-	p = heap->main_chunk;
+	const zend_mm_chunk *p = heap->main_chunk;
 	do {
 		if (!zend_mm_chunk_is_empty(p)) {
 			return true;
@@ -3037,6 +3035,7 @@ ZEND_API void zend_mm_shutdown(zend_mm_heap *heap, bool full, bool silent)
 	/* Process all pending remote frees before checking for leaks */
 	zend_mm_collect_remote_frees(heap);
 
+	// TODO: optimize it: Instead of calling this function, it’s better to immediately free everything that can be freed.
 	const bool has_active_allocations = zend_mm_has_active_allocations(heap);
 #else
 	const bool has_active_allocations = false;
