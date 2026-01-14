@@ -618,6 +618,34 @@ TSRM_API int pclose(FILE *stream)
 
 
 #define TSRM_BASE_SHM_KEY_ADDRESS 0x20000000
+
+/* Converts Windows GetLastError() codes to POSIX errno values */
+static void tsrm_set_errno_from_win32_error(DWORD win32_error) {
+	switch (win32_error) {
+		case ERROR_ACCESS_DENIED:
+			errno = EACCES;
+			break;
+		case ERROR_NOT_ENOUGH_MEMORY:
+		case ERROR_OUTOFMEMORY:
+			errno = ENOMEM;
+			break;
+		case ERROR_INVALID_PARAMETER:
+		case ERROR_INVALID_HANDLE:
+			errno = EINVAL;
+			break;
+		case ERROR_ALREADY_EXISTS:
+			errno = EEXIST;
+			break;
+		case ERROR_FILE_NOT_FOUND:
+		case ERROR_PATH_NOT_FOUND:
+			errno = ENOENT;
+			break;
+		default:
+			errno = EINVAL;
+			break;
+	}
+}
+
 /* Returns a number between 0x2000_0000 and 0x3fff_ffff. On Windows, key_t is int. */
 static key_t tsrm_choose_random_shm_key(key_t prev_key) {
 	unsigned char buf[4];
@@ -641,16 +669,15 @@ TSRM_API int shmget(key_t key, size_t size, int flags)
 
 	if (key != IPC_PRIVATE) {
 		snprintf(shm_segment, sizeof(shm_segment), SEGMENT_PREFIX "%d", key);
-
-		shm_handle  = OpenFileMapping(FILE_MAP_ALL_ACCESS, FALSE, shm_segment);
+		shm_handle = OpenFileMapping(FILE_MAP_ALL_ACCESS, FALSE, shm_segment);
 	} else {
-		/* IPC_PRIVATE always creates a new segment even if IPC_CREAT flag isn't passed. */
 		flags |= IPC_CREAT;
 	}
 
 	if (!shm_handle) {
 		if (flags & IPC_CREAT) {
 			if (size == 0 || size > SIZE_MAX - sizeof(shm->descriptor)) {
+				errno = EINVAL;
 				return -1;
 			}
 			size += sizeof(shm->descriptor);
@@ -661,15 +688,17 @@ TSRM_API int shmget(key_t key, size_t size, int flags)
 			DWORD high = 0;
 			DWORD low = size;
 #endif
-			shm_handle	= CreateFileMapping(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, high, low, key == IPC_PRIVATE ? NULL : shm_segment);
-			created		= TRUE;
+			shm_handle = CreateFileMapping(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, high, low, key == IPC_PRIVATE ? NULL : shm_segment);
+			created = TRUE;
 		}
 		if (!shm_handle) {
+			tsrm_set_errno_from_win32_error(GetLastError());
 			return -1;
 		}
 	} else {
 		if (flags & IPC_EXCL) {
 			CloseHandle(shm_handle);
+			errno = EEXIST;
 			return -1;
 		}
 	}
@@ -690,6 +719,7 @@ TSRM_API int shmget(key_t key, size_t size, int flags)
 	shm = shm_get(key, NULL);
 	if (!shm) {
 		CloseHandle(shm_handle);
+		errno = ENOMEM;
 		return -1;
 	}
 	shm->segment = shm_handle;
@@ -709,13 +739,29 @@ TSRM_API int shmget(key_t key, size_t size, int flags)
 		shm->descriptor->shm_perm.mode	= shm->descriptor->shm_perm.seq	= 0;
 	}
 
-	if (NULL != shm->descriptor && (shm->descriptor->shm_perm.key != key || size > shm->descriptor->shm_segsz)) {
-		if (NULL != shm->segment) {
-			CloseHandle(shm->segment);
-			shm->segment = INVALID_HANDLE_VALUE;
-		}
+	if (NULL == shm->descriptor) {
+		CloseHandle(shm->segment);
+		shm->segment = INVALID_HANDLE_VALUE;
+		tsrm_set_errno_from_win32_error(GetLastError());
+		return -1;
+	}
+
+	if (shm->descriptor->shm_perm.key != key) {
+		CloseHandle(shm->segment);
+		shm->segment = INVALID_HANDLE_VALUE;
 		UnmapViewOfFile(shm->descriptor);
 		shm->descriptor = NULL;
+		errno = EINVAL;
+		return -1;
+	}
+
+	/* Size check: requested size must not exceed existing segment size */
+	if (size > 0 && size > shm->descriptor->shm_segsz) {
+		CloseHandle(shm->segment);
+		shm->segment = INVALID_HANDLE_VALUE;
+		UnmapViewOfFile(shm->descriptor);
+		shm->descriptor = NULL;
+		errno = EINVAL;
 		return -1;
 	}
 
@@ -782,6 +828,11 @@ TSRM_API int shmctl(int key, int cmd, struct shmid_ds *buf)
 		case IPC_RMID:
 			if (shm->descriptor->shm_nattch < 1) {
 				shm->descriptor->shm_perm.key = -1;
+				/* Close handle to allow Windows to destroy the named mapping object */
+				if (shm->segment && shm->segment != INVALID_HANDLE_VALUE) {
+					CloseHandle(shm->segment);
+					shm->segment = INVALID_HANDLE_VALUE;
+				}
 			}
 			return 0;
 

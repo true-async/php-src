@@ -187,7 +187,11 @@ PHP_FUNCTION(shmop_open)
 
 	shmop->shmid = shmget(shmop->key, shmop->size, shmop->shmflg);
 	if (shmop->shmid == -1) {
+#ifdef PHP_WIN32
+		php_error_docref(NULL, E_WARNING, "Unable to attach or create shared memory segment: %s (errno=%d)", strerror(errno), errno);
+#else
 		php_error_docref(NULL, E_WARNING, "Unable to attach or create shared memory segment \"%s\"", strerror(errno));
+#endif
 		goto err;
 	}
 
