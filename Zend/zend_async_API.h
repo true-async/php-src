@@ -1190,22 +1190,22 @@ struct _zend_future_s {
 #define ZEND_FUTURE_SET_THREAD_SAFE(future) ((future)->event.flags |= ZEND_FUTURE_F_THREAD_SAFE)
 #define ZEND_FUTURE_SET_IGNORED(future) ((future)->event.flags |= ZEND_FUTURE_F_IGNORED)
 
-#define ZEND_FUTURE_COMPLETE(future, result) \
+#define ZEND_FUTURE_COMPLETE(future, _result) \
 	do { \
 		if (ZEND_ASYNC_EVENT_IS_CLOSED(&(future)->event)) { \
 			break; \
 		} \
-		ZVAL_COPY(&(future)->result, (result)); \
+		ZVAL_COPY(&(future)->result, (_result)); \
 		(future)->event.stop(&(future)->event); \
 	} while (0)
 
-#define ZEND_FUTURE_REJECT(future, error) \
+#define ZEND_FUTURE_REJECT(future, _error) \
 	do { \
 		if (ZEND_ASYNC_EVENT_IS_CLOSED(&(future)->event)) { \
 			break; \
 		} \
-		(future)->exception = error; \
-		GC_ADDREF(error); \
+		(future)->exception = (_error); \
+		GC_ADDREF(_error); \
 		(future)->event.stop(&(future)->event); \
 	} while (0)
 
