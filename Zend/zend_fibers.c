@@ -1039,7 +1039,8 @@ static void coroutine_entry_point(void)
 
 	bool is_bailout = false;
 	zend_object **exception_ptr = &EG(exception);
-	zend_object **prev_exception_ptr = &EG(prev_exception);
+	zend_object *prev_exception = NULL;
+	zend_object **prev_exception_ptr = &prev_exception;
 	zend_object *exception = NULL;
 
 	zend_try
