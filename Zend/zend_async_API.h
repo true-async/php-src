@@ -189,6 +189,7 @@ typedef void (*zend_async_event_callbacks_notify_t)(
 		zend_async_event_t *event, void *result, zend_object *exception);
 typedef bool (*zend_async_event_start_t)(zend_async_event_t *event);
 typedef bool (*zend_async_event_stop_t)(zend_async_event_t *event);
+typedef bool (*zend_future_resolve_t)(zend_async_event_t *event);
 
 /**
  * The replay method can be called in several modes:
@@ -1180,6 +1181,8 @@ struct _zend_future_s {
 	/* Completed file and line number */
 	zend_string *filename;
 	zend_string *completed_filename;
+	/* Resolve method - called to complete the future with result or exception */
+	zend_future_resolve_t resolve;
 };
 
 #define ZEND_FUTURE_F_THREAD_SAFE (1u << 10)
@@ -1196,7 +1199,7 @@ struct _zend_future_s {
 			break; \
 		} \
 		ZVAL_COPY(&(future)->result, (_result)); \
-		(future)->event.stop(&(future)->event); \
+		(future)->resolve(&(future)->event); \
 	} while (0)
 
 #define ZEND_FUTURE_REJECT(future, _error) \
@@ -1206,7 +1209,7 @@ struct _zend_future_s {
 		} \
 		(future)->exception = (_error); \
 		GC_ADDREF(_error); \
-		(future)->event.stop(&(future)->event); \
+		(future)->resolve(&(future)->event); \
 	} while (0)
 
 ///////////////////////////////////////////////////////////////
