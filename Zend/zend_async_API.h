@@ -367,7 +367,7 @@ typedef void (*zend_async_iterator_method_t)(zend_async_iterator_t *iterator);
 	/* A method that starts the iterator in the current coroutine. */ \
 	zend_async_iterator_method_t run; \
 	/* A method that starts the iterator in a separate coroutine with the specified priority. */ \
-	void (*run_in_coroutine)(zend_async_iterator_t * iterator, int32_t priority); \
+	void (*run_in_coroutine)(zend_async_iterator_t * iterator, int32_t priority, bool throw_exception); \
 	/* The maximum number of concurrent tasks that can be executed at the same time */ \
 	unsigned int concurrency; \
 	/* Priority for coroutines created by this iterator */ \
