@@ -1463,6 +1463,64 @@ ZEND_API void zend_async_callbacks_free(zend_async_event_t *event)
 }
 
 ///////////////////////////////////////////////////////////////
+/// Callbacks vector utilities
+///////////////////////////////////////////////////////////////
+
+/* Push callback to a callbacks vector */
+ZEND_API bool zend_async_callbacks_vector_push(
+	zend_async_callbacks_vector_t *vector, zend_async_event_callback_t *callback)
+{
+	if (vector->data == NULL) {
+		vector->data = (zend_async_event_callback_t **) safe_emalloc(
+			2, sizeof(zend_async_event_callback_t *), 0);
+		vector->capacity = 2;
+	}
+
+	if (vector->length == vector->capacity) {
+		vector->capacity = vector->capacity * 2;
+		vector->data = (zend_async_event_callback_t **) safe_erealloc(
+			vector->data, vector->capacity, sizeof(zend_async_event_callback_t *), 0);
+	}
+
+	callback->ref_count++;
+	vector->data[vector->length++] = callback;
+	return true;
+}
+
+/* Notify all callbacks in a vector */
+ZEND_API void zend_async_callbacks_vector_notify(
+	zend_async_callbacks_vector_t *vector, zend_async_event_t *event, void *result)
+{
+	for (uint32_t i = 0; i < vector->length; i++) {
+		zend_async_event_callback_t *cb = vector->data[i];
+		if (cb != NULL && cb->callback != NULL) {
+			cb->callback(event, cb, result, NULL);
+		}
+	}
+}
+
+/* Free a callbacks vector (event is passed to dispose) */
+ZEND_API void zend_async_callbacks_vector_free(
+	zend_async_callbacks_vector_t *vector, zend_async_event_t *event)
+{
+	if (vector->data == NULL) {
+		return;
+	}
+
+	for (uint32_t i = 0; i < vector->length; i++) {
+		zend_async_event_callback_t *cb = vector->data[i];
+		if (cb != NULL && cb->dispose != NULL) {
+			cb->dispose(cb, event);
+		}
+	}
+
+	efree(vector->data);
+	vector->data = NULL;
+	vector->length = 0;
+	vector->capacity = 0;
+}
+
+///////////////////////////////////////////////////////////////
 /// Socket Listening API Registration
 ///////////////////////////////////////////////////////////////
 /* Socket listening stubs */

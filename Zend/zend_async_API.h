@@ -189,7 +189,7 @@ typedef void (*zend_async_event_callbacks_notify_t)(
 		zend_async_event_t *event, void *result, zend_object *exception);
 typedef bool (*zend_async_event_start_t)(zend_async_event_t *event);
 typedef bool (*zend_async_event_stop_t)(zend_async_event_t *event);
-typedef bool (*zend_future_resolve_t)(zend_async_event_t *event);
+typedef bool (*zend_future_resolve_t)(zend_async_event_t *event, void *iterator);
 
 /**
  * The replay method can be called in several modes:
@@ -1183,6 +1183,8 @@ struct _zend_future_s {
 	zend_string *completed_filename;
 	/* Resolve method - called to complete the future with result or exception */
 	zend_future_resolve_t resolve;
+	/* Callbacks for chained futures (map/catch/finally) - called with iterator */
+	zend_async_callbacks_vector_t resolve_callbacks;
 };
 
 #define ZEND_FUTURE_F_THREAD_SAFE (1u << 10)
@@ -1193,24 +1195,44 @@ struct _zend_future_s {
 #define ZEND_FUTURE_SET_THREAD_SAFE(future) ((future)->event.flags |= ZEND_FUTURE_F_THREAD_SAFE)
 #define ZEND_FUTURE_SET_IGNORED(future) ((future)->event.flags |= ZEND_FUTURE_F_IGNORED)
 
-#define ZEND_FUTURE_COMPLETE(future, _result) \
+/* Macros with iterator parameter for chained future resolution */
+#define ZEND_FUTURE_COMPLETE_WITH_ITERATOR(future, _result, _iterator) \
 	do { \
 		if (ZEND_ASYNC_EVENT_IS_CLOSED(&(future)->event)) { \
 			break; \
 		} \
 		ZVAL_COPY(&(future)->result, (_result)); \
-		(future)->resolve(&(future)->event); \
+		(future)->resolve(&(future)->event, (_iterator)); \
 	} while (0)
 
-#define ZEND_FUTURE_REJECT(future, _error) \
+#define ZEND_FUTURE_REJECT_WITH_ITERATOR(future, _error, _iterator) \
 	do { \
 		if (ZEND_ASYNC_EVENT_IS_CLOSED(&(future)->event)) { \
 			break; \
 		} \
 		(future)->exception = (_error); \
 		GC_ADDREF(_error); \
-		(future)->resolve(&(future)->event); \
+		(future)->resolve(&(future)->event, (_iterator)); \
 	} while (0)
+
+/* Original macros (backward compatible, iterator = NULL) */
+#define ZEND_FUTURE_COMPLETE(future, _result) \
+	ZEND_FUTURE_COMPLETE_WITH_ITERATOR(future, _result, NULL)
+
+#define ZEND_FUTURE_REJECT(future, _error) \
+	ZEND_FUTURE_REJECT_WITH_ITERATOR(future, _error, NULL)
+
+/* Push callback to a callbacks vector */
+ZEND_API bool zend_async_callbacks_vector_push(
+	zend_async_callbacks_vector_t *vector, zend_async_event_callback_t *callback);
+
+/* Notify all callbacks in a vector */
+ZEND_API void zend_async_callbacks_vector_notify(
+	zend_async_callbacks_vector_t *vector, zend_async_event_t *event, void *result);
+
+/* Free a callbacks vector (event is passed to dispose) */
+ZEND_API void zend_async_callbacks_vector_free(
+	zend_async_callbacks_vector_t *vector, zend_async_event_t *event);
 
 ///////////////////////////////////////////////////////////////
 /// Channel
