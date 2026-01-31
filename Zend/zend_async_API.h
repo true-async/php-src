@@ -1189,11 +1189,18 @@ struct _zend_future_s {
 
 #define ZEND_FUTURE_F_THREAD_SAFE (1u << 10)
 #define ZEND_FUTURE_F_IGNORED (1u << 11)
+#define ZEND_FUTURE_F_USED (1u << 12)
+#define ZEND_FUTURE_F_EXCEPTION_CAUGHT (1u << 13)
 
 #define ZEND_FUTURE_IS_COMPLETED(future) (((future)->event.flags & ZEND_ASYNC_EVENT_F_CLOSED) != 0)
+#define ZEND_FUTURE_IS_IGNORED(future) (((future)->event.flags & ZEND_FUTURE_F_IGNORED) != 0)
+#define ZEND_FUTURE_IS_USED(future) (((future)->event.flags & ZEND_FUTURE_F_USED) != 0)
+#define ZEND_FUTURE_IS_EXCEPTION_CAUGHT(future) (((future)->event.flags & ZEND_FUTURE_F_EXCEPTION_CAUGHT) != 0)
 
 #define ZEND_FUTURE_SET_THREAD_SAFE(future) ((future)->event.flags |= ZEND_FUTURE_F_THREAD_SAFE)
 #define ZEND_FUTURE_SET_IGNORED(future) ((future)->event.flags |= ZEND_FUTURE_F_IGNORED)
+#define ZEND_FUTURE_SET_USED(future) ((future)->event.flags |= ZEND_FUTURE_F_USED)
+#define ZEND_FUTURE_SET_EXCEPTION_CAUGHT(future) ((future)->event.flags |= ZEND_FUTURE_F_EXCEPTION_CAUGHT)
 
 /* Macros with iterator parameter for chained future resolution */
 #define ZEND_FUTURE_COMPLETE_WITH_ITERATOR(future, _result, _iterator) \
