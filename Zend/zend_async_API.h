@@ -542,6 +542,20 @@ typedef struct {
 // Flag indicating that the event has a zend_object reference by extra_offset.
 #define ZEND_ASYNC_EVENT_F_OBJ_REF (1u << 8) /* has zend_object ref */
 #define ZEND_ASYNC_EVENT_F_CLOSE_FD (1u << 9) /* close file descriptor after event cleanup */
+/*
+ * Hidden event flag: the event does not affect active_event_count for deadlock detection.
+ *
+ * The active_event_count is used to detect deadlocks - when it reaches zero and there are
+ * still coroutines waiting, it indicates a potential deadlock situation.
+ *
+ * However, some events should not participate in deadlock detection:
+ * - Background timers (e.g., garbage collection, health checks)
+ * - Internal system events that are always present in the loop
+ * - Events that should not prevent the application from exiting
+ *
+ * Use ZEND_ASYNC_EVENT_SET_HIDDEN(ev) to mark an event as hidden.
+ */
+#define ZEND_ASYNC_EVENT_F_HIDDEN (1u << 10)
 
 #define ZEND_ASYNC_EVENT_REFERENCE_PREFIX ((uint32_t) 0x80) /* prefix for reference structures */
 
@@ -591,6 +605,10 @@ typedef struct {
 #define ZEND_ASYNC_EVENT_SET_CLOSE_FD(ev) ((ev)->flags |= ZEND_ASYNC_EVENT_F_CLOSE_FD)
 #define ZEND_ASYNC_EVENT_CLR_CLOSE_FD(ev) ((ev)->flags &= ~ZEND_ASYNC_EVENT_F_CLOSE_FD)
 #define ZEND_ASYNC_EVENT_SHOULD_CLOSE_FD(ev) (((ev)->flags & ZEND_ASYNC_EVENT_F_CLOSE_FD) != 0)
+
+#define ZEND_ASYNC_EVENT_SET_HIDDEN(ev) ((ev)->flags |= ZEND_ASYNC_EVENT_F_HIDDEN)
+#define ZEND_ASYNC_EVENT_CLR_HIDDEN(ev) ((ev)->flags &= ~ZEND_ASYNC_EVENT_F_HIDDEN)
+#define ZEND_ASYNC_EVENT_IS_HIDDEN(ev) (((ev)->flags & ZEND_ASYNC_EVENT_F_HIDDEN) != 0)
 
 // Convert awaitable Zend object to zend_async_event_t pointer
 #define ZEND_ASYNC_EVENT_IS_REFERENCE(ptr) \
@@ -1057,14 +1075,14 @@ struct _zend_coroutine_s {
 #define ZEND_COROUTINE_SUSPENDED(coroutine) \
 	((coroutine)->waker != NULL && ZEND_ASYNC_WAKER_WAITING((coroutine)->waker))
 
-/* Coroutine flags */
-#define ZEND_COROUTINE_F_STARTED (1u << 10) /* coroutine is started */
-#define ZEND_COROUTINE_F_CANCELLED (1u << 11) /* coroutine is cancelled */
-#define ZEND_COROUTINE_F_ZOMBIE (1u << 12) /* coroutine is a zombie */
-#define ZEND_COROUTINE_F_PROTECTED (1u << 13) /* coroutine is protected */
-#define ZEND_COROUTINE_F_MAIN (1u << 14) /* coroutine is a main coroutine */
-#define ZEND_COROUTINE_F_FIBER (1u << 15) /* coroutine is a fiber. extended_data -> fiber structure */
-#define ZEND_COROUTINE_F_YIELD (1u << 16) /* coroutine is YIELD */
+/* Coroutine flags (bits 13-19, bits 10-12 reserved for event flags) */
+#define ZEND_COROUTINE_F_STARTED (1u << 13) /* coroutine is started */
+#define ZEND_COROUTINE_F_CANCELLED (1u << 14) /* coroutine is cancelled */
+#define ZEND_COROUTINE_F_ZOMBIE (1u << 15) /* coroutine is a zombie */
+#define ZEND_COROUTINE_F_PROTECTED (1u << 16) /* coroutine is protected */
+#define ZEND_COROUTINE_F_MAIN (1u << 17) /* coroutine is a main coroutine */
+#define ZEND_COROUTINE_F_FIBER (1u << 18) /* coroutine is a fiber. extended_data -> fiber structure */
+#define ZEND_COROUTINE_F_YIELD (1u << 19) /* coroutine is YIELD */
 
 #define ZEND_COROUTINE_IS_ZOMBIE(coroutine) \
 	(((coroutine)->event.flags & ZEND_COROUTINE_F_ZOMBIE) != 0)
@@ -1187,8 +1205,9 @@ struct _zend_future_s {
 	zend_async_callbacks_vector_t resolve_callbacks;
 };
 
-#define ZEND_FUTURE_F_THREAD_SAFE (1u << 10)
-#define ZEND_FUTURE_F_IGNORED (1u << 11)
+/* Future flags (bits 13+, bits 10-12 reserved for event flags) */
+#define ZEND_FUTURE_F_THREAD_SAFE (1u << 13)
+#define ZEND_FUTURE_F_IGNORED (1u << 14)
 
 #define ZEND_FUTURE_IS_COMPLETED(future) (((future)->event.flags & ZEND_ASYNC_EVENT_F_CLOSED) != 0)
 #define ZEND_FUTURE_IS_IGNORED(future) (((future)->event.flags & ZEND_FUTURE_F_IGNORED) != 0)
@@ -1254,7 +1273,8 @@ struct _zend_async_channel_s {
 	zend_channel_receive_t receive; /* Receive method */
 };
 
-#define ZEND_ASYNC_CHANNEL_F_THREAD_SAFE (1u << 10)
+/* Channel flags (bits 13+, bits 10-12 reserved for event flags) */
+#define ZEND_ASYNC_CHANNEL_F_THREAD_SAFE (1u << 13)
 
 ///////////////////////////////////////////////////////////////
 /// Global Macros
@@ -1337,19 +1357,27 @@ END_EXTERN_C()
 #define ZEND_ASYNC_MAIN_SCOPE ZEND_ASYNC_G(main_scope)
 #define ZEND_ASYNC_SCHEDULER ZEND_ASYNC_G(scheduler)
 
-#define ZEND_ASYNC_INCREASE_EVENT_COUNT \
-	if (ZEND_ASYNC_G(active_event_count) < UINT_MAX) { \
-		ZEND_ASYNC_G(active_event_count)++; \
-	} else { \
-		ZEND_ASSERT("The event count is already max."); \
-	}
+#define ZEND_ASYNC_INCREASE_EVENT_COUNT(ev) \
+	do { \
+		if (!ZEND_ASYNC_EVENT_IS_HIDDEN(ev)) { \
+			if (ZEND_ASYNC_G(active_event_count) < UINT_MAX) { \
+				ZEND_ASYNC_G(active_event_count)++; \
+			} else { \
+				ZEND_ASSERT("The event count is already max."); \
+			} \
+		} \
+	} while (0)
 
-#define ZEND_ASYNC_DECREASE_EVENT_COUNT \
-	if (ZEND_ASYNC_G(active_event_count) > 0) { \
-		ZEND_ASYNC_G(active_event_count)--; \
-	} else { \
-		ZEND_ASSERT("The event count is already zero."); \
-	}
+#define ZEND_ASYNC_DECREASE_EVENT_COUNT(ev) \
+	do { \
+		if (!ZEND_ASYNC_EVENT_IS_HIDDEN(ev)) { \
+			if (ZEND_ASYNC_G(active_event_count) > 0) { \
+				ZEND_ASYNC_G(active_event_count)--; \
+			} else { \
+				ZEND_ASSERT("The event count is already zero."); \
+			} \
+		} \
+	} while (0)
 
 #define ZEND_ASYNC_INCREASE_COROUTINE_COUNT \
 	if (ZEND_ASYNC_G(active_coroutine_count) < UINT_MAX) { \
