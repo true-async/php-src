@@ -24,7 +24,8 @@ pg_query($db, "INSERT INTO {$table_name} VALUES (1, 'Alice', 95), (2, 'Bob', 87)
 echo "Testing concurrent pg_query_params()...\n";
 
 // Test parameterized query in coroutine
-$coroutine = spawn(function() use ($db, $table_name) {
+$coroutine = spawn(function() use ($conn_str, $table_name) {
+    $db = pg_connect($conn_str);
     echo "Coroutine: executing parameterized query\n";
 
     $result = pg_query_params($db,
@@ -34,6 +35,7 @@ $coroutine = spawn(function() use ($db, $table_name) {
 
     if (!$result) {
         echo "ERROR: Query failed\n";
+        pg_close($db);
         return;
     }
 
@@ -45,6 +47,7 @@ $coroutine = spawn(function() use ($db, $table_name) {
     }
 
     pg_free_result($result);
+    pg_close($db);
 });
 
 await($coroutine);
@@ -54,18 +57,22 @@ echo "Main: coroutine completed\n";
 // Test with multiple concurrent parameterized queries
 echo "Testing multiple concurrent parameterized queries...\n";
 
-$coro1 = spawn(function() use ($db, $table_name) {
+$coro1 = spawn(function() use ($conn_str, $table_name) {
+    $db = pg_connect($conn_str);
     $result = pg_query_params($db, "SELECT * FROM {$table_name} WHERE id = $1", [1]);
     $row = pg_fetch_assoc($result);
     echo "Coro1: {$row['name']}\n";
     pg_free_result($result);
+    pg_close($db);
 });
 
-$coro2 = spawn(function() use ($db, $table_name) {
+$coro2 = spawn(function() use ($conn_str, $table_name) {
+    $db = pg_connect($conn_str);
     $result = pg_query_params($db, "SELECT * FROM {$table_name} WHERE id = $1", [3]);
     $row = pg_fetch_assoc($result);
     echo "Coro2: {$row['name']}\n";
     pg_free_result($result);
+    pg_close($db);
 });
 
 await($coro1);

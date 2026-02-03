@@ -32,7 +32,7 @@ $coroutines = [];
 $coroutines[] = spawn(function() use ($conn_str, $table_name) {
     $db = pg_connect($conn_str);
     echo "Query 1: starting\n";
-    $result = pg_query($db, "SELECT pg_sleep(0.5), * FROM {$table_name} WHERE id = 1");
+    $result = pg_query($db, "SELECT * FROM {$table_name} WHERE id = 1");
     $row = pg_fetch_assoc($result);
     echo "Query 1: got value={$row['value']}\n";
     pg_free_result($result);
@@ -43,7 +43,7 @@ $coroutines[] = spawn(function() use ($conn_str, $table_name) {
 $coroutines[] = spawn(function() use ($conn_str, $table_name) {
     $db = pg_connect($conn_str);
     echo "Query 2: starting\n";
-    $result = pg_query($db, "SELECT pg_sleep(0.5), * FROM {$table_name} WHERE id = 2");
+    $result = pg_query($db, "SELECT * FROM {$table_name} WHERE id = 2");
     $row = pg_fetch_assoc($result);
     echo "Query 2: got value={$row['value']}\n";
     pg_free_result($result);
@@ -54,7 +54,7 @@ $coroutines[] = spawn(function() use ($conn_str, $table_name) {
 $coroutines[] = spawn(function() use ($conn_str, $table_name) {
     $db = pg_connect($conn_str);
     echo "Query 3: starting\n";
-    $result = pg_query($db, "SELECT pg_sleep(0.5), * FROM {$table_name} WHERE id = 3");
+    $result = pg_query($db, "SELECT * FROM {$table_name} WHERE id = 3");
     $row = pg_fetch_assoc($result);
     echo "Query 3: got value={$row['value']}\n";
     pg_free_result($result);
@@ -63,7 +63,7 @@ $coroutines[] = spawn(function() use ($conn_str, $table_name) {
 });
 
 // Wait for all to complete
-$results = await_all($coroutines);
+[$results, $errors] = await_all($coroutines);
 
 $elapsed_time = microtime(true) - $start_time;
 

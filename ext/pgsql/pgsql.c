@@ -944,13 +944,18 @@ static void php_pgsql_do_connect(INTERNAL_FUNCTION_PARAMETERS, int persistent)
 		link->persistent = 1;
 	} else { /* Non persistent connection */
 		zval *index_ptr;
+		const bool in_async_context = (ZEND_ASYNC_CURRENT_COROUTINE != NULL);
 
 		/* first we check the hash for the hashed_details key. If it exists,
 		 * it should point us to the right offset where the actual pgsql link sits.
 		 * if it doesn't, open a new pgsql link, add it to the resource list,
 		 * and add a pointer to it with hashed_details as the key.
+		 *
+		 * In async context, always create a new connection to avoid race conditions
+		 * when multiple coroutines try to use the same connection simultaneously.
 		 */
-		if (!(connect_type & PGSQL_CONNECT_FORCE_NEW)
+		if (!in_async_context
+			&& !(connect_type & PGSQL_CONNECT_FORCE_NEW)
 			&& (index_ptr = zend_hash_find(&PGG(connections), str.s)) != NULL) {
 			php_pgsql_set_default_link(Z_OBJ_P(index_ptr));
 			ZVAL_COPY(return_value, index_ptr);
@@ -990,13 +995,11 @@ static void php_pgsql_do_connect(INTERNAL_FUNCTION_PARAMETERS, int persistent)
 		link->notices = NULL;
 		link->persistent = 0;
 
-		/* add it to the hash */
-		zend_hash_update(&PGG(connections), str.s, return_value);
-
-		/* Keep track of link => hash mapping, so we can remove the hash entry from connections
-		 * when the connection is closed. This uses the address of the connection rather than the
-		 * zend_resource, because the resource destructor is passed a stack copy of the resource
-		 * structure. */
+		/* In async context, don't cache the connection to ensure each coroutine
+		 * gets its own isolated connection. */
+		if (!in_async_context) {
+			zend_hash_update(&PGG(connections), str.s, return_value);
+		}
 
 		PGG(num_links)++;
 	}
