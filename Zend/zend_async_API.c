@@ -94,6 +94,49 @@ static zend_object *new_channel_obj_stub(zend_async_channel_t *channel)
 	return NULL;
 }
 
+static zend_async_pool_t *new_pool_stub(
+		zend_async_pool_factory_fn factory,
+		zend_async_pool_destructor_fn destructor,
+		zend_async_pool_healthcheck_fn healthcheck,
+		zend_async_pool_before_acquire_fn before_acquire,
+		zend_async_pool_before_release_fn before_release,
+		uint32_t min_size,
+		uint32_t max_size,
+		uint32_t healthcheck_interval_ms,
+		size_t extra_size)
+{
+	ASYNC_THROW_ERROR("Async API is not enabled");
+	return NULL;
+}
+
+static zend_object *new_pool_obj_stub(zend_async_pool_t *pool)
+{
+	ASYNC_THROW_ERROR("Async API is not enabled");
+	return NULL;
+}
+
+static bool pool_acquire_stub(zend_async_pool_t *pool, zval *result, zend_long timeout_ms)
+{
+	ASYNC_THROW_ERROR("Async API is not enabled");
+	return false;
+}
+
+static bool pool_try_acquire_stub(zend_async_pool_t *pool, zval *result)
+{
+	ASYNC_THROW_ERROR("Async API is not enabled");
+	return false;
+}
+
+static void pool_release_stub(zend_async_pool_t *pool, zval *resource)
+{
+	ASYNC_THROW_ERROR("Async API is not enabled");
+}
+
+static void pool_close_stub(zend_async_pool_t *pool)
+{
+	ASYNC_THROW_ERROR("Async API is not enabled");
+}
+
 static bool add_microtask_stub(zend_async_microtask_t *microtask)
 {
 	return true;
@@ -155,6 +198,14 @@ zend_async_scheduler_launch_t zend_async_scheduler_launch_fn = bool_stub;
 
 /* GROUP API */
 zend_async_new_group_t zend_async_new_group_fn = new_group_stub;
+
+/* Pool API */
+zend_async_new_pool_t zend_async_new_pool_fn = new_pool_stub;
+zend_async_new_pool_obj_t zend_async_new_pool_obj_fn = new_pool_obj_stub;
+zend_async_pool_acquire_t zend_async_pool_acquire_fn = pool_acquire_stub;
+zend_async_pool_try_acquire_t zend_async_pool_try_acquire_fn = pool_try_acquire_stub;
+zend_async_pool_release_t zend_async_pool_release_fn = pool_release_stub;
+zend_async_pool_close_t zend_async_pool_close_fn = pool_close_stub;
 
 static zend_atomic_bool reactor_lock = { 0 };
 static char *reactor_module_name = NULL;
@@ -417,6 +468,34 @@ ZEND_API void zend_async_thread_pool_register(
 
 	thread_pool_module_name = zend_string_copy(module);
 	zend_async_queue_task_fn = queue_task_fn;
+}
+
+static char *pool_module_name = NULL;
+
+ZEND_API void zend_async_pool_api_register(
+		char *module, bool allow_override,
+		zend_async_new_pool_t new_pool_fn,
+		zend_async_new_pool_obj_t new_pool_obj_fn,
+		zend_async_pool_acquire_t acquire_fn,
+		zend_async_pool_try_acquire_t try_acquire_fn,
+		zend_async_pool_release_t release_fn,
+		zend_async_pool_close_t close_fn)
+{
+	if (pool_module_name != NULL && false == allow_override) {
+		zend_error(E_CORE_ERROR,
+				"The module %s is trying to override Pool API, which was registered by the "
+				"module %s.",
+				module, pool_module_name);
+		return;
+	}
+
+	pool_module_name = module;
+	zend_async_new_pool_fn = new_pool_fn;
+	zend_async_new_pool_obj_fn = new_pool_obj_fn;
+	zend_async_pool_acquire_fn = acquire_fn;
+	zend_async_pool_try_acquire_fn = try_acquire_fn;
+	zend_async_pool_release_fn = release_fn;
+	zend_async_pool_close_fn = close_fn;
 }
 
 ZEND_API zend_string *zend_coroutine_gen_info(
