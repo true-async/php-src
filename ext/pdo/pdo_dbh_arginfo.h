@@ -1,5 +1,5 @@
 /* This is a generated file, edit pdo_dbh.stub.php instead.
- * Stub hash: 006be61b2c519e7d9ca997a7f12135eb3e0f3500 */
+ * Stub hash: d0c708fcc043a6737223e79e724d81ab37d1ea0f */
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_class_PDO___construct, 0, 0, 1)
 	ZEND_ARG_TYPE_INFO(0, dsn, IS_STRING, 0)
@@ -65,6 +65,9 @@ ZEND_BEGIN_ARG_WITH_TENTATIVE_RETURN_TYPE_INFO_EX(arginfo_class_PDO_setAttribute
 	ZEND_ARG_TYPE_INFO(0, value, IS_MIXED, 0)
 ZEND_END_ARG_INFO()
 
+ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_class_PDO_getPool, 0, 0, Async\\Pool, 1)
+ZEND_END_ARG_INFO()
+
 ZEND_METHOD(PDO, __construct);
 ZEND_METHOD(PDO, connect);
 ZEND_METHOD(PDO, beginTransaction);
@@ -81,6 +84,7 @@ ZEND_METHOD(PDO, query);
 ZEND_METHOD(PDO, quote);
 ZEND_METHOD(PDO, rollBack);
 ZEND_METHOD(PDO, setAttribute);
+ZEND_METHOD(PDO, getPool);
 
 static const zend_function_entry class_PDO_methods[] = {
 	ZEND_ME(PDO, __construct, arginfo_class_PDO___construct, ZEND_ACC_PUBLIC)
@@ -99,6 +103,7 @@ static const zend_function_entry class_PDO_methods[] = {
 	ZEND_ME(PDO, quote, arginfo_class_PDO_quote, ZEND_ACC_PUBLIC)
 	ZEND_ME(PDO, rollBack, arginfo_class_PDO_rollBack, ZEND_ACC_PUBLIC)
 	ZEND_ME(PDO, setAttribute, arginfo_class_PDO_setAttribute, ZEND_ACC_PUBLIC)
+	ZEND_ME(PDO, getPool, arginfo_class_PDO_getPool, ZEND_ACC_PUBLIC)
 	ZEND_FE_END
 };
 
@@ -450,6 +455,30 @@ static zend_class_entry *register_class_PDO(void)
 	zend_string *const_ATTR_DEFAULT_STR_PARAM_name = zend_string_init_interned("ATTR_DEFAULT_STR_PARAM", sizeof("ATTR_DEFAULT_STR_PARAM") - 1, true);
 	zend_declare_typed_class_constant(class_entry, const_ATTR_DEFAULT_STR_PARAM_name, &const_ATTR_DEFAULT_STR_PARAM_value, ZEND_ACC_PUBLIC, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_LONG));
 	zend_string_release_ex(const_ATTR_DEFAULT_STR_PARAM_name, true);
+
+	zval const_ATTR_POOL_ENABLED_value;
+	ZVAL_LONG(&const_ATTR_POOL_ENABLED_value, LONG_CONST(PDO_ATTR_POOL_ENABLED));
+	zend_string *const_ATTR_POOL_ENABLED_name = zend_string_init_interned("ATTR_POOL_ENABLED", sizeof("ATTR_POOL_ENABLED") - 1, true);
+	zend_declare_typed_class_constant(class_entry, const_ATTR_POOL_ENABLED_name, &const_ATTR_POOL_ENABLED_value, ZEND_ACC_PUBLIC, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_LONG));
+	zend_string_release_ex(const_ATTR_POOL_ENABLED_name, true);
+
+	zval const_ATTR_POOL_MIN_value;
+	ZVAL_LONG(&const_ATTR_POOL_MIN_value, LONG_CONST(PDO_ATTR_POOL_MIN));
+	zend_string *const_ATTR_POOL_MIN_name = zend_string_init_interned("ATTR_POOL_MIN", sizeof("ATTR_POOL_MIN") - 1, true);
+	zend_declare_typed_class_constant(class_entry, const_ATTR_POOL_MIN_name, &const_ATTR_POOL_MIN_value, ZEND_ACC_PUBLIC, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_LONG));
+	zend_string_release_ex(const_ATTR_POOL_MIN_name, true);
+
+	zval const_ATTR_POOL_MAX_value;
+	ZVAL_LONG(&const_ATTR_POOL_MAX_value, LONG_CONST(PDO_ATTR_POOL_MAX));
+	zend_string *const_ATTR_POOL_MAX_name = zend_string_init_interned("ATTR_POOL_MAX", sizeof("ATTR_POOL_MAX") - 1, true);
+	zend_declare_typed_class_constant(class_entry, const_ATTR_POOL_MAX_name, &const_ATTR_POOL_MAX_value, ZEND_ACC_PUBLIC, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_LONG));
+	zend_string_release_ex(const_ATTR_POOL_MAX_name, true);
+
+	zval const_ATTR_POOL_HEALTHCHECK_INTERVAL_value;
+	ZVAL_LONG(&const_ATTR_POOL_HEALTHCHECK_INTERVAL_value, LONG_CONST(PDO_ATTR_POOL_HEALTHCHECK_INTERVAL));
+	zend_string *const_ATTR_POOL_HEALTHCHECK_INTERVAL_name = zend_string_init_interned("ATTR_POOL_HEALTHCHECK_INTERVAL", sizeof("ATTR_POOL_HEALTHCHECK_INTERVAL") - 1, true);
+	zend_declare_typed_class_constant(class_entry, const_ATTR_POOL_HEALTHCHECK_INTERVAL_name, &const_ATTR_POOL_HEALTHCHECK_INTERVAL_value, ZEND_ACC_PUBLIC, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_LONG));
+	zend_string_release_ex(const_ATTR_POOL_HEALTHCHECK_INTERVAL_name, true);
 
 	zval const_ERRMODE_SILENT_value;
 	ZVAL_LONG(&const_ERRMODE_SILENT_value, LONG_CONST(PDO_ERRMODE_SILENT));

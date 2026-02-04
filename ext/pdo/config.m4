@@ -9,7 +9,7 @@ if test "$PHP_PDO" != "no"; then
   PHP_PDO=yes
 
   PHP_NEW_EXTENSION([pdo],
-    [pdo.c pdo_dbh.c pdo_stmt.c pdo_sql_parser.c pdo_sqlstate.c],
+    [pdo.c pdo_dbh.c pdo_stmt.c pdo_sql_parser.c pdo_sqlstate.c pdo_pool.c],
     [$ext_shared])
   PHP_ADD_EXTENSION_DEP(pdo, spl)
   PHP_INSTALL_HEADERS([ext/pdo], m4_normalize([
@@ -17,6 +17,7 @@ if test "$PHP_PDO" != "no"; then
     php_pdo_driver.h
     php_pdo_error.h
     php_pdo.h
+    pdo_pool.h
   ]))
   PHP_ADD_MAKEFILE_FRAGMENT
 fi

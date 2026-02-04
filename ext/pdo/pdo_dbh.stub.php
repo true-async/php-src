@@ -122,6 +122,16 @@ class PDO
     /** @cvalue LONG_CONST(PDO_ATTR_DEFAULT_STR_PARAM) */
     public const int ATTR_DEFAULT_STR_PARAM = UNKNOWN;
 
+    /* Connection pool attributes (requires async extension) */
+    /** @cvalue LONG_CONST(PDO_ATTR_POOL_ENABLED) */
+    public const int ATTR_POOL_ENABLED = UNKNOWN;
+    /** @cvalue LONG_CONST(PDO_ATTR_POOL_MIN) */
+    public const int ATTR_POOL_MIN = UNKNOWN;
+    /** @cvalue LONG_CONST(PDO_ATTR_POOL_MAX) */
+    public const int ATTR_POOL_MAX = UNKNOWN;
+    /** @cvalue LONG_CONST(PDO_ATTR_POOL_HEALTHCHECK_INTERVAL) */
+    public const int ATTR_POOL_HEALTHCHECK_INTERVAL = UNKNOWN;
+
     /** @cvalue LONG_CONST(PDO_ERRMODE_SILENT) */
     public const int ERRMODE_SILENT = UNKNOWN;
     /** @cvalue LONG_CONST(PDO_ERRMODE_WARNING) */
@@ -214,4 +224,10 @@ class PDO
 
     /** @tentative-return-type */
     public function setAttribute(int $attribute, mixed $value): bool {}
+
+    /**
+     * Get the connection pool (requires async extension).
+     * Returns null if pooling is not enabled.
+     */
+    public function getPool(): ?\Async\Pool {}
 }

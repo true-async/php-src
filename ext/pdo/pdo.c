@@ -27,6 +27,7 @@
 #include "php_pdo.h"
 #include "php_pdo_driver.h"
 #include "php_pdo_int.h"
+#include "pdo_pool.h"
 #include "zend_exceptions.h"
 #include "ext/spl/spl_exceptions.h"
 #include "pdo_arginfo.h"
@@ -270,6 +271,7 @@ PHP_MINIT_FUNCTION(pdo)
 
 	pdo_dbh_init(module_number);
 	pdo_stmt_init();
+	pdo_pool_init();
 
 	return SUCCESS;
 }
@@ -278,6 +280,7 @@ PHP_MINIT_FUNCTION(pdo)
 /* {{{ PHP_MSHUTDOWN_FUNCTION */
 PHP_MSHUTDOWN_FUNCTION(pdo)
 {
+	pdo_pool_shutdown();
 	zend_hash_destroy(&pdo_driver_hash);
 	zend_hash_destroy(&pdo_driver_specific_ce_hash);
 	pdo_sqlstate_fini_error_table();

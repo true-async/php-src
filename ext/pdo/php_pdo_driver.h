@@ -27,6 +27,9 @@ typedef struct _pdo_row_t		 pdo_row_t;
 typedef	struct _pdo_scanner_t	 pdo_scanner_t;
 struct pdo_bound_param_data;
 
+/* forward declaration for async pool (from zend_async_API.h) */
+typedef struct _zend_async_pool_s zend_async_pool_t;
+
 #ifndef TRUE
 # define TRUE 1
 #endif
@@ -123,6 +126,12 @@ enum pdo_attribute_type {
 	PDO_ATTR_DEFAULT_FETCH_MODE, /* Set the default fetch mode */
 	PDO_ATTR_EMULATE_PREPARES,  /* use query emulation rather than native */
 	PDO_ATTR_DEFAULT_STR_PARAM, /* set the default string parameter type (see the PDO::PARAM_STR_* magic flags) */
+
+	/* Connection pool attributes (requires async extension) */
+	PDO_ATTR_POOL_ENABLED,			/* enable connection pooling (bool) */
+	PDO_ATTR_POOL_MIN,				/* minimum idle connections (int) */
+	PDO_ATTR_POOL_MAX,				/* maximum total connections (int) */
+	PDO_ATTR_POOL_HEALTHCHECK_INTERVAL,	/* healthcheck interval in ms (int, 0 = disabled) */
 
 	/* this defines the start of the range for driver specific options.
 	 * Drivers should define their own attribute constants beginning with this
@@ -506,6 +515,11 @@ struct _pdo_dbh_t {
 	 * when PDO::query() fails */
 	pdo_stmt_t *query_stmt;
 	zend_object *query_stmt_obj;
+
+	/* Connection pool (requires async extension) */
+	zend_async_pool_t *pool;		/* internal pool, NULL if pooling disabled */
+	HashTable *pool_connections;	/* coroutine_id => driver_data mapping */
+	zend_object *pool_wrapper;		/* cached PHP Async\Pool object for getPool() */
 };
 
 /* represents a connection to a database */
