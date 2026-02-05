@@ -512,7 +512,6 @@ PDO_API void php_pdo_internal_construct_driver(INTERNAL_FUNCTION_PARAMETERS, zen
 
 	if (!is_persistent && options
 		&& pdo_attr_lval(options, PDO_ATTR_POOL_ENABLED, 0)
-		&& pdo_pool_async_available()
 		&& driver->db_handle_init_methods) {
 		driver->db_handle_init_methods(dbh);
 		dbh->driver = driver;

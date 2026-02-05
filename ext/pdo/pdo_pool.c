@@ -20,12 +20,6 @@
 #include "php_pdo_int.h"
 #include "Zend/zend_async_API.h"
 
-/* Check if async API is available */
-bool pdo_pool_async_available(void)
-{
-	return zend_async_new_pool_fn != NULL;
-}
-
 /* Initialize pool subsystem */
 void pdo_pool_init(void)
 {
@@ -136,10 +130,6 @@ static bool pdo_pool_before_release(zend_async_pool_t *pool, zval *resource)
 /* Create pool for a PDO handle based on options */
 bool pdo_pool_create(pdo_dbh_t *dbh, zval *options)
 {
-	if (!pdo_pool_async_available()) {
-		return false;
-	}
-
 	if (!pdo_attr_lval(options, PDO_ATTR_POOL_ENABLED, 0)) {
 		return false;
 	}
@@ -170,11 +160,6 @@ bool pdo_pool_create(pdo_dbh_t *dbh, zval *options)
 
 	dbh->pool->user_data = dbh;
 
-	/* Wrapper object owns pool lifecycle (its free_obj calls destroy + efree) */
-	if (zend_async_new_pool_obj_fn != NULL) {
-		dbh->pool_wrapper = ZEND_ASYNC_NEW_POOL_OBJ(dbh->pool);
-	}
-
 	dbh->pool_connections = emalloc(sizeof(HashTable));
 	zend_hash_init(dbh->pool_connections, 8, NULL, NULL, 0);
 
@@ -198,12 +183,14 @@ void pdo_pool_destroy(pdo_dbh_t *dbh)
 		dbh->pool_connections = NULL;
 	}
 
-	/* Step 2: Destroy pool via wrapper (wrapper's free_obj calls destroy + efree) */
-	if (dbh->pool_wrapper) {
+	/* Step 2: Destroy pool via wrapper (wrapper's free_obj calls destroy + efree).
+	 * Create wrapper lazily if it was never requested via getPool(). */
+	if (dbh->pool) {
+		if (!dbh->pool_wrapper) {
+			dbh->pool_wrapper = ZEND_ASYNC_NEW_POOL_OBJ(dbh->pool);
+		}
 		OBJ_RELEASE(dbh->pool_wrapper);
 		dbh->pool_wrapper = NULL;
-	} else if (dbh->pool) {
-		ZEND_ASYNC_POOL_CLOSE(dbh->pool);
 	}
 
 	dbh->pool = NULL;
@@ -323,5 +310,13 @@ void pdo_pool_maybe_release(pdo_dbh_t *dbh)
 /* Get PHP Pool wrapper object for getPool() method */
 zend_object *pdo_pool_get_wrapper(pdo_dbh_t *dbh)
 {
+	if (!dbh->pool) {
+		return NULL;
+	}
+
+	if (!dbh->pool_wrapper) {
+		dbh->pool_wrapper = ZEND_ASYNC_NEW_POOL_OBJ(dbh->pool);
+	}
+
 	return dbh->pool_wrapper;
 }

@@ -19,9 +19,6 @@
 
 #include "php_pdo_driver.h"
 
-/* Check if async extension is available */
-bool pdo_pool_async_available(void);
-
 /* Initialize pool subsystem (call in MINIT) */
 void pdo_pool_init(void);
 
