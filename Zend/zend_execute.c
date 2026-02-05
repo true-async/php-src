@@ -2185,8 +2185,7 @@ static zend_property_info *zend_get_prop_not_accepting_double(zend_reference *re
 	return NULL;
 }
 
-static ZEND_COLD zend_long zend_throw_incdec_ref_error(
-		zend_reference *ref, zend_property_info *error_prop OPLINE_DC)
+static ZEND_COLD zend_long zend_throw_incdec_ref_error(zend_property_info *error_prop OPLINE_DC)
 {
 	zend_string *type_str = zend_type_to_string(error_prop->type);
 	if (ZEND_IS_INCREMENT(opline->opcode)) {
@@ -2247,7 +2246,7 @@ static void zend_incdec_typed_ref(zend_reference *ref, zval *copy OPLINE_DC EXEC
 	if (UNEXPECTED(Z_TYPE_P(var_ptr) == IS_DOUBLE) && Z_TYPE_P(copy) == IS_LONG) {
 		zend_property_info *error_prop = zend_get_prop_not_accepting_double(ref);
 		if (UNEXPECTED(error_prop)) {
-			zend_long val = zend_throw_incdec_ref_error(ref, error_prop OPLINE_CC);
+			zend_long val = zend_throw_incdec_ref_error(error_prop OPLINE_CC);
 			ZVAL_LONG(var_ptr, val);
 		}
 	} else if (UNEXPECTED(!zend_verify_ref_assignable_zval(ref, var_ptr, EX_USES_STRICT_TYPES()))) {
@@ -5938,4 +5937,30 @@ ZEND_API zval *zend_get_zval_ptr(const zend_op *opline, int op_type, const znode
 			break;
 	}
 	return ret;
+}
+
+ZEND_API void zend_return_unwrap_ref(zend_execute_data *execute_data, zval *return_value)
+{
+	if (!return_value || !Z_ISREF_P(return_value)) {
+		return;
+	}
+
+	zend_execute_data *prev_ex = EX(prev_execute_data);
+	if (!prev_ex || !prev_ex->func || !ZEND_USER_CODE(prev_ex->func->type)) {
+		return;
+	}
+
+	const zend_op *do_opline = prev_ex->opline;
+	if (do_opline->result_type != IS_TMP_VAR) {
+		return;
+	}
+
+	if (do_opline->opcode != ZEND_DO_FCALL
+	 && do_opline->opcode != ZEND_DO_FCALL_BY_NAME
+	 && do_opline->opcode != ZEND_DO_ICALL
+	 && do_opline->opcode != ZEND_DO_UCALL) {
+		return;
+	}
+
+	zend_unwrap_reference(return_value);
 }

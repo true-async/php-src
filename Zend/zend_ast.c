@@ -995,10 +995,13 @@ static zend_result ZEND_FASTCALL zend_ast_evaluate_inner(
 			zend_ast *class_name_ast = ast->child[0];
 			zend_string *class_name = zend_ast_get_str(class_name_ast);
 
-			zend_ast *case_name_ast = ast->child[1];
+			zend_ast *case_id_ast = ast->child[1];
+			int case_id = (int)Z_LVAL_P(zend_ast_get_zval(case_id_ast));
+
+			zend_ast *case_name_ast = ast->child[2];
 			zend_string *case_name = zend_ast_get_str(case_name_ast);
 
-			zend_ast *case_value_ast = ast->child[2];
+			zend_ast *case_value_ast = ast->child[3];
 
 			zval case_value_zv;
 			ZVAL_UNDEF(&case_value_zv);
@@ -1009,7 +1012,7 @@ static zend_result ZEND_FASTCALL zend_ast_evaluate_inner(
 			}
 
 			zend_class_entry *ce = zend_lookup_class(class_name);
-			zend_enum_new(result, ce, case_name, case_value_ast != NULL ? &case_value_zv : NULL);
+			zend_enum_new(result, ce, case_id, case_name, case_value_ast != NULL ? &case_value_zv : NULL);
 			zval_ptr_dtor_nogc(&case_value_zv);
 			break;
 		}
@@ -1150,7 +1153,6 @@ static zend_result ZEND_FASTCALL zend_ast_evaluate_inner(
 			if (args->children != 1 || args->child[0]->attr != ZEND_PLACEHOLDER_VARIADIC) {
 				/* TODO: PFAs */
 				zend_error_noreturn(E_COMPILE_ERROR, "Constant expression contains invalid operations");
-				return FAILURE;
 			}
 
 			switch (ast->kind) {
@@ -1247,6 +1249,12 @@ static zend_result ZEND_FASTCALL zend_ast_evaluate_inner(
 		}
 		case ZEND_AST_OP_ARRAY:
 		{
+			// Preloading will attempt to resolve constants but objects can't be stored in shm
+			// Aborting here to store the const AST instead
+			if (CG(in_compilation)) {
+				return FAILURE;
+			}
+
 			zend_function *func = (zend_function *)zend_ast_get_op_array(ast)->op_array;
 
 			zend_create_closure(result, func, scope, scope, NULL);
@@ -1712,7 +1720,7 @@ static ZEND_COLD bool zend_ast_var_needs_braces(char ch)
 	return ch == '[' || zend_ast_valid_var_char(ch);
 }
 
-static ZEND_COLD void zend_ast_export_var(smart_str *str, zend_ast *ast, int priority, int indent)
+static ZEND_COLD void zend_ast_export_var(smart_str *str, zend_ast *ast, int indent)
 {
 	if (ast->kind == ZEND_AST_ZVAL) {
 		zval *zv = zend_ast_get_zval(ast);
@@ -2411,7 +2419,7 @@ simple_list:
 		/* 1 child node */
 		case ZEND_AST_VAR:
 			smart_str_appendc(str, '$');
-			zend_ast_export_var(str, ast->child[0], 0, indent);
+			zend_ast_export_var(str, ast->child[0], indent);
 			break;
 		case ZEND_AST_CONST:
 			zend_ast_export_ns_name(str, ast->child[0], 0, indent);
@@ -2526,12 +2534,12 @@ simple_list:
 		case ZEND_AST_NULLSAFE_PROP:
 			zend_ast_export_ex(str, ast->child[0], 0, indent);
 			smart_str_appends(str, ast->kind == ZEND_AST_NULLSAFE_PROP ? "?->" : "->");
-			zend_ast_export_var(str, ast->child[1], 0, indent);
+			zend_ast_export_var(str, ast->child[1], indent);
 			break;
 		case ZEND_AST_STATIC_PROP:
 			zend_ast_export_ns_name(str, ast->child[0], 0, indent);
 			smart_str_appends(str, "::$");
-			zend_ast_export_var(str, ast->child[1], 0, indent);
+			zend_ast_export_var(str, ast->child[1], indent);
 			break;
 		case ZEND_AST_CALL: {
 			zend_ast *left = ast->child[0];
@@ -2851,7 +2859,7 @@ simple_list:
 		case ZEND_AST_NULLSAFE_METHOD_CALL:
 			zend_ast_export_ex(str, ast->child[0], 0, indent);
 			smart_str_appends(str, ast->kind == ZEND_AST_NULLSAFE_METHOD_CALL ? "?->" : "->");
-			zend_ast_export_var(str, ast->child[1], 0, indent);
+			zend_ast_export_var(str, ast->child[1], indent);
 			smart_str_appendc(str, '(');
 			zend_ast_export_ex(str, ast->child[2], 0, indent);
 			smart_str_appendc(str, ')');
@@ -2859,7 +2867,7 @@ simple_list:
 		case ZEND_AST_STATIC_CALL:
 			zend_ast_export_ns_name(str, ast->child[0], 0, indent);
 			smart_str_appends(str, "::");
-			zend_ast_export_var(str, ast->child[1], 0, indent);
+			zend_ast_export_var(str, ast->child[1], indent);
 			smart_str_appendc(str, '(');
 			zend_ast_export_ex(str, ast->child[2], 0, indent);
 			smart_str_appendc(str, ')');
@@ -2895,7 +2903,7 @@ simple_list:
 			zend_ast_export_catch_name_list(str, zend_ast_get_list(ast->child[0]), indent);
 			if (ast->child[1]) {
 				smart_str_appends(str, " $");
-				zend_ast_export_var(str, ast->child[1], 0, indent);
+				zend_ast_export_var(str, ast->child[1], indent);
 			}
 			smart_str_appends(str, ") {\n");
 			zend_ast_export_stmt(str, ast->child[2], indent + 1);

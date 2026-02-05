@@ -1661,7 +1661,6 @@ static void zend_set_timeout_ex(zend_long seconds, bool reset_signals) /* {{{ */
 		if (!DeleteTimerQueueTimer(NULL, tq_timer, INVALID_HANDLE_VALUE)) {
 			tq_timer = NULL;
 			zend_error_noreturn(E_ERROR, "Could not delete queued timer");
-			return;
 		}
 		tq_timer = NULL;
 	}
@@ -1671,7 +1670,6 @@ static void zend_set_timeout_ex(zend_long seconds, bool reset_signals) /* {{{ */
 	if (!CreateTimerQueueTimer(&tq_timer, NULL, (WAITORTIMERCALLBACK)tq_timer_cb, (VOID*)eg, seconds*1000, 0, WT_EXECUTEONLYONCE)) {
 		tq_timer = NULL;
 		zend_error_noreturn(E_ERROR, "Could not queue new timer");
-		return;
 	}
 #elif defined(ZEND_MAX_EXECUTION_TIMERS)
 	if (seconds > 0) {
@@ -1758,7 +1756,6 @@ void zend_unset_timeout(void) /* {{{ */
 			zend_atomic_bool_store_ex(&EG(timed_out), false);
 			tq_timer = NULL;
 			zend_error_noreturn(E_ERROR, "Could not delete queued timer");
-			return;
 		}
 		tq_timer = NULL;
 	}

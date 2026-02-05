@@ -812,7 +812,7 @@ static PHP_INI_MH(OnUpdateSessionGcProbability)
         return FAILURE;
     }
 
-    zend_long *p = (zend_long *) ZEND_INI_GET_ADDR();
+    zend_long *p = ZEND_INI_GET_ADDR();
     *p = tmp;
 
     return SUCCESS;
@@ -830,7 +830,7 @@ static PHP_INI_MH(OnUpdateSessionDivisor)
         return FAILURE;
     }
 
-    zend_long *p = (zend_long *) ZEND_INI_GET_ADDR();
+    zend_long *p = ZEND_INI_GET_ADDR();
     *p = tmp;
 
     return SUCCESS;
@@ -859,7 +859,7 @@ static PHP_INI_MH(OnUpdateUseOnlyCookies)
 {
 	SESSION_CHECK_ACTIVE_STATE;
 	SESSION_CHECK_OUTPUT_STATE;
-	bool *p = (bool *) ZEND_INI_GET_ADDR();
+	bool *p = ZEND_INI_GET_ADDR();
 	*p = zend_ini_parse_bool(new_value);
 	if (!*p) {
 		php_error_docref("session.configuration", E_DEPRECATED, "Disabling session.use_only_cookies INI setting is deprecated");
@@ -871,7 +871,7 @@ static PHP_INI_MH(OnUpdateUseTransSid)
 {
 	SESSION_CHECK_ACTIVE_STATE;
 	SESSION_CHECK_OUTPUT_STATE;
-	bool *p = (bool *) ZEND_INI_GET_ADDR();
+	bool *p = ZEND_INI_GET_ADDR();
 	*p = zend_ini_parse_bool(new_value);
 	if (*p) {
 		php_error_docref("session.configuration", E_DEPRECATED, "Enabling session.use_trans_sid INI setting is deprecated");
@@ -1527,7 +1527,7 @@ static bool php_can_change_session_setting(const char *setting_name, bool check_
 
 		return false;
 	}
-	
+
 	if (SG(headers_sent) && (!check_cookies || PS(use_cookies))) {
 		char error_msg[256];
 		snprintf(error_msg, sizeof(error_msg), "Session %s cannot be changed after headers have already been sent", setting_name);
@@ -1535,7 +1535,7 @@ static bool php_can_change_session_setting(const char *setting_name, bool check_
 
 		return false;
 	}
-	
+
 	return true;
 }
 
@@ -3055,11 +3055,6 @@ static PHP_MINFO_FUNCTION(session)
 	DISPLAY_INI_ENTRIES();
 }
 
-static const zend_module_dep session_deps[] = {
-	ZEND_MOD_OPTIONAL("spl")
-	ZEND_MOD_END
-};
-
 /* ************************
    * Upload hook handling *
    ************************ */
@@ -3345,9 +3340,7 @@ static zend_result php_session_rfc1867_callback(unsigned int event, void *event_
 }
 
 zend_module_entry session_module_entry = {
-	STANDARD_MODULE_HEADER_EX,
-	NULL,
-	session_deps,
+	STANDARD_MODULE_HEADER,
 	"session",
 	ext_functions,
 	PHP_MINIT(session), PHP_MSHUTDOWN(session),

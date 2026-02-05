@@ -370,9 +370,7 @@ static int date_object_compare_timezone(zval *tz1, zval *tz2);
 
 /* {{{ Module struct */
 zend_module_entry date_module_entry = {
-	STANDARD_MODULE_HEADER_EX,
-	NULL,
-	NULL,
+	STANDARD_MODULE_HEADER,
 	"date",                     /* extension name */
 	ext_functions,              /* function list */
 	PHP_MINIT(date),            /* process startup */
@@ -5749,7 +5747,7 @@ static bool php_date_period_initialize_from_hash(php_period_obj *period_obj, con
 			php_date_obj *date_obj;
 			date_obj = Z_PHPDATE_P(ht_entry);
 
-			if (!date_obj->time) {
+			if (!date_obj->time || !period_obj->start_ce) {
 				return false;
 			}
 
@@ -5770,7 +5768,7 @@ static bool php_date_period_initialize_from_hash(php_period_obj *period_obj, con
 			php_date_obj *date_obj;
 			date_obj = Z_PHPDATE_P(ht_entry);
 
-			if (!date_obj->time) {
+			if (!date_obj->time || !period_obj->start_ce) {
 				return false;
 			}
 
