@@ -52,39 +52,26 @@ static bool pdo_pool_factory(zend_async_pool_t *pool, zval *result)
 	/* Allocate new dbh structure for the pooled connection */
 	pdo_dbh_t *conn = ecalloc(1, sizeof(pdo_dbh_t));
 
-	/* Copy configuration from template */
+	/* Only fields the driver factory actually reads */
 	conn->driver = dbh->driver;
-	conn->is_persistent = false;
 	conn->auto_commit = dbh->auto_commit;
-	conn->error_mode = dbh->error_mode;
-	conn->oracle_nulls = dbh->oracle_nulls;
-	conn->native_case = dbh->native_case;
-	conn->desired_case = dbh->desired_case;
-	conn->stringify = dbh->stringify;
-	conn->default_fetch_type = dbh->default_fetch_type;
-	conn->max_escaped_char_length = dbh->max_escaped_char_length;
-	conn->alloc_own_columns = dbh->alloc_own_columns;
 
-	/* Copy credentials */
-	if (dbh->data_source) {
-		conn->data_source = estrdup(dbh->data_source);
-		conn->data_source_len = dbh->data_source_len;
-	}
-	if (dbh->username) {
-		conn->username = estrdup(dbh->username);
-	}
-	if (dbh->password) {
-		conn->password = estrdup(dbh->password);
-	}
+	/* Borrow template strings for the duration of the factory call */
+	conn->data_source = dbh->data_source;
+	conn->data_source_len = dbh->data_source_len;
+	conn->username = dbh->username;
+	conn->password = dbh->password;
 
 	/* Call driver factory to create actual connection */
 	if (!dbh->driver->db_handle_factory(conn, NULL)) {
-		if (conn->data_source) efree((char *)conn->data_source);
-		if (conn->username) efree(conn->username);
-		if (conn->password) efree(conn->password);
 		efree(conn);
 		return false;
 	}
+
+	/* Driver has parsed what it needs — drop references to template strings */
+	conn->data_source = NULL;
+	conn->username = NULL;
+	conn->password = NULL;
 
 	ZVAL_PTR(result, conn);
 	return true;
@@ -102,10 +89,6 @@ static void pdo_pool_destructor(zend_async_pool_t *pool, zval *resource)
 	if (conn->methods && conn->methods->closer) {
 		conn->methods->closer(conn);
 	}
-
-	if (conn->data_source) efree((char *)conn->data_source);
-	if (conn->username) efree(conn->username);
-	if (conn->password) efree(conn->password);
 
 	efree(conn);
 }
@@ -170,7 +153,7 @@ bool pdo_pool_create(pdo_dbh_t *dbh, zval *options)
 	if (max_size < min_size) max_size = min_size;
 	if (healthcheck_interval < 0) healthcheck_interval = 0;
 
-	dbh->pool = zend_async_new_pool_fn(
+	dbh->pool = ZEND_ASYNC_NEW_POOL(
 		pdo_pool_factory,
 		pdo_pool_destructor,
 		pdo_pool_healthcheck,
@@ -178,8 +161,7 @@ bool pdo_pool_create(pdo_dbh_t *dbh, zval *options)
 		pdo_pool_before_release,
 		(uint32_t)min_size,
 		(uint32_t)max_size,
-		(uint32_t)healthcheck_interval,
-		0  /* extra_size */
+		(uint32_t)healthcheck_interval
 	);
 
 	if (dbh->pool == NULL) {
@@ -190,7 +172,7 @@ bool pdo_pool_create(pdo_dbh_t *dbh, zval *options)
 
 	/* Wrapper object owns pool lifecycle (its free_obj calls destroy + efree) */
 	if (zend_async_new_pool_obj_fn != NULL) {
-		dbh->pool_wrapper = zend_async_new_pool_obj_fn(dbh->pool);
+		dbh->pool_wrapper = ZEND_ASYNC_NEW_POOL_OBJ(dbh->pool);
 	}
 
 	dbh->pool_connections = emalloc(sizeof(HashTable));
