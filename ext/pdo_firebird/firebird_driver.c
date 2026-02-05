@@ -526,8 +526,15 @@ void php_firebird_set_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt, const char *state,
 {
 	pdo_error_type *const error_code = stmt ? &stmt->error_code : &dbh->error_code;
 	pdo_firebird_db_handle *H = (pdo_firebird_db_handle *)dbh->driver_data;
-	pdo_firebird_error_info *einfo = &H->einfo;
+	pdo_firebird_error_info *einfo;
 	int sqlcode = -999;
+
+	/* Use statement's connection handle — dbh may be a pool template with NULL driver_data */
+	if (stmt) {
+		H = ((pdo_firebird_stmt *)stmt->driver_data)->H;
+	}
+
+	einfo = &H->einfo;
 
 	if (einfo->errmsg) {
 		pefree(einfo->errmsg, dbh->is_persistent);

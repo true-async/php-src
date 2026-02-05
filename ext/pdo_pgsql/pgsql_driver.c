@@ -75,8 +75,16 @@ int _pdo_pgsql_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt, int errcode, const char *
 {
 	pdo_pgsql_db_handle *H = (pdo_pgsql_db_handle *)dbh->driver_data;
 	pdo_error_type *pdo_err = stmt ? &stmt->error_code : &dbh->error_code;
-	pdo_pgsql_error_info *einfo = &H->einfo;
-	char *errmsg = PQerrorMessage(H->server);
+	pdo_pgsql_error_info *einfo;
+	char *errmsg;
+
+	/* Use statement's connection handle — dbh may be a pool template with NULL driver_data */
+	if (stmt) {
+		H = ((pdo_pgsql_stmt *)stmt->driver_data)->H;
+	}
+
+	einfo = &H->einfo;
+	errmsg = PQerrorMessage(H->server);
 
 	einfo->errcode = errcode;
 	einfo->file = file;

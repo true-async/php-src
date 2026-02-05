@@ -32,8 +32,14 @@ int _pdo_sqlite_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt, const char *file, int li
 {
 	pdo_sqlite_db_handle *H = (pdo_sqlite_db_handle *)dbh->driver_data;
 	pdo_error_type *pdo_err = stmt ? &stmt->error_code : &dbh->error_code;
-	pdo_sqlite_error_info *einfo = &H->einfo;
+	pdo_sqlite_error_info *einfo;
 
+	/* Use statement's connection handle — dbh may be a pool template with NULL driver_data */
+	if (stmt) {
+		H = ((pdo_sqlite_stmt *)stmt->driver_data)->H;
+	}
+
+	einfo = &H->einfo;
 	einfo->errcode = sqlite3_errcode(H->db);
 	einfo->file = file;
 	einfo->line = line;

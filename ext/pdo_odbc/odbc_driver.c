@@ -70,7 +70,8 @@ void pdo_odbc_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt, PDO_ODBC_HSTMT statement, 
 
 	if (stmt) {
 		S = (pdo_odbc_stmt*)stmt->driver_data;
-
+		/* Use statement's connection handle — dbh may be a pool template with NULL driver_data */
+		H = S->H;
 		einfo = &S->einfo;
 		pdo_err = &stmt->error_code;
 	}
