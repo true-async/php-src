@@ -143,6 +143,8 @@ typedef struct {
 	unsigned is_seekable:1;		/* don't try and seek, if not set */
 	unsigned _reserved:26;
 
+	zend_async_io_t *async_io;
+
 	int lock_flag;			/* stores the lock state */
 	zend_string *temp_name;	/* if non-null, this is the path to a temporary file that
 							 * is to be deleted when the stream is closed */
@@ -162,6 +164,38 @@ typedef struct {
 	zend_stat_t sb;
 } php_stdio_stream_data;
 #define PHP_STDIOP_GET_FD(anfd, data)	anfd = (data)->file ? fileno((data)->file) : (data)->fd
+
+static uint32_t php_stdiop_mode_to_io_state(const char *mode)
+{
+	uint32_t state = 0;
+
+	if (strchr(mode, 'r') || strchr(mode, '+')) {
+		state |= ZEND_ASYNC_IO_READABLE;
+	}
+	if (strchr(mode, 'w') || strchr(mode, 'a') || strchr(mode, 'x') || strchr(mode, 'c') || strchr(mode, '+')) {
+		state |= ZEND_ASYNC_IO_WRITABLE;
+	}
+
+	return state;
+}
+
+static void php_stdiop_init_async_io(php_stdio_stream_data *self, const char *mode)
+{
+	if (UNEXPECTED(zend_async_io_create_fn == NULL)) {
+		return;
+	}
+
+	const zend_async_io_type type = self->is_pipe ? ZEND_ASYNC_IO_TYPE_PIPE : ZEND_ASYNC_IO_TYPE_FILE;
+	const uint32_t state = php_stdiop_mode_to_io_state(mode);
+
+#ifdef PHP_WIN32
+	zend_file_descriptor_t fd = (HANDLE)(intptr_t) self->fd;
+#else
+	zend_file_descriptor_t fd = self->fd;
+#endif
+
+	self->async_io = ZEND_ASYNC_IO_CREATE(fd, type, state);
+}
 
 static int do_fstat(php_stdio_stream_data *d, int force)
 {
@@ -324,6 +358,8 @@ PHPAPI php_stream *_php_stream_fopen_from_fd(int fd, const char *mode, const cha
 			}
 #endif
 		}
+
+		php_stdiop_init_async_io(self, mode);
 	}
 
 	return stream;
@@ -343,6 +379,8 @@ PHPAPI php_stream *_php_stream_fopen_from_file(FILE *file, const char *mode STRE
 		} else {
 			stream->position = zend_ftell(file);
 		}
+
+		php_stdiop_init_async_io(self, mode);
 	}
 
 	return stream;
@@ -368,6 +406,9 @@ PHPAPI php_stream *_php_stream_fopen_from_pipe(FILE *file, const char *mode STRE
 
 	stream = php_stream_alloc_rel(&php_stream_stdio_ops, self, 0, mode);
 	stream->flags |= PHP_STREAM_FLAG_NO_SEEK;
+
+	php_stdiop_init_async_io(self, mode);
+
 	return stream;
 }
 
@@ -377,6 +418,38 @@ static ssize_t php_stdiop_write(php_stream *stream, const char *buf, size_t coun
 	ssize_t bytes_written;
 
 	assert(data != NULL);
+
+	if (data->async_io != NULL) {
+		zend_async_io_req_t *req = ZEND_ASYNC_IO_WRITE(data->async_io, buf, count);
+		if (UNEXPECTED(req == NULL)) {
+			return -1;
+		}
+
+		if (!req->completed) {
+			zend_coroutine_t *const coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+			zend_async_waker_new(coroutine);
+			zend_async_resume_when(coroutine, &data->async_io->event, false,
+					zend_async_waker_callback_resolve, NULL);
+			ZEND_ASYNC_SUSPEND();
+			zend_async_waker_clean(coroutine);
+
+			if (UNEXPECTED(EG(exception))) {
+				req->dispose(req);
+				return -1;
+			}
+		}
+
+		if (UNEXPECTED(req->exception != NULL)) {
+			zend_throw_exception_object(req->exception);
+			req->exception = NULL;
+			req->dispose(req);
+			return -1;
+		}
+
+		const ssize_t transferred = req->transferred;
+		req->dispose(req);
+		return transferred;
+	}
 
 	if (data->fd >= 0) {
 #ifdef PHP_WIN32
@@ -424,6 +497,43 @@ static ssize_t php_stdiop_read(php_stream *stream, char *buf, size_t count)
 	ssize_t ret;
 
 	assert(data != NULL);
+
+	if (data->async_io != NULL) {
+		zend_async_io_req_t *req = ZEND_ASYNC_IO_READ(data->async_io, count);
+		if (UNEXPECTED(req == NULL)) {
+			return -1;
+		}
+
+		if (!req->completed) {
+			zend_coroutine_t *const coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+			zend_async_waker_new(coroutine);
+			zend_async_resume_when(coroutine, &data->async_io->event, false,
+					zend_async_waker_callback_resolve, NULL);
+			ZEND_ASYNC_SUSPEND();
+			zend_async_waker_clean(coroutine);
+
+			if (UNEXPECTED(EG(exception))) {
+				req->dispose(req);
+				return -1;
+			}
+		}
+
+		if (UNEXPECTED(req->exception != NULL)) {
+			zend_throw_exception_object(req->exception);
+			req->exception = NULL;
+			req->dispose(req);
+			return -1;
+		}
+
+		const ssize_t transferred = req->transferred;
+		if (transferred > 0) {
+			memcpy(buf, req->buf, transferred);
+		} else if (transferred == 0) {
+			stream->eof = 1;
+		}
+		req->dispose(req);
+		return transferred;
+	}
 
 	if (data->fd >= 0) {
 #ifdef PHP_WIN32
@@ -511,6 +621,15 @@ static int php_stdiop_close(php_stream *stream, int close_handle)
 	php_stdio_stream_data *data = (php_stdio_stream_data*)stream->abstract;
 
 	assert(data != NULL);
+
+	if (data->async_io != NULL) {
+		const int fd_closed = ZEND_ASYNC_IO_CLOSE(data->async_io);
+		data->async_io = NULL;
+		if (fd_closed) {
+			data->fd = -1;
+			data->file = NULL;
+		}
+	}
 
 #ifdef HAVE_MMAP
 	if (data->last_mapped_addr) {
