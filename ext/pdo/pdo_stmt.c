@@ -29,6 +29,7 @@
 #include "php_pdo.h"
 #include "php_pdo_driver.h"
 #include "php_pdo_int.h"
+#include "pdo_pool.h"
 #include "zend_exceptions.h"
 #include "zend_interfaces.h"
 #include "php_memory_streams.h"
@@ -1452,8 +1453,9 @@ PHP_METHOD(PDOStatement, errorInfo)
 	add_next_index_string(return_value, stmt->error_code);
 
 	if (strncmp(stmt->error_code, PDO_ERR_NONE, sizeof(PDO_ERR_NONE))) {
-		if (stmt->dbh->methods->fetch_err) {
-			stmt->dbh->methods->fetch_err(stmt->dbh, stmt, return_value);
+		pdo_dbh_t *err_dbh = stmt->pooled_conn ? stmt->pooled_conn : stmt->dbh;
+		if (err_dbh->methods && err_dbh->methods->fetch_err) {
+			err_dbh->methods->fetch_err(err_dbh, stmt, return_value);
 		}
 	}
 
@@ -2036,6 +2038,13 @@ PDO_API void php_pdo_free_statement(pdo_stmt_t *stmt)
 	if (stmt->methods && stmt->methods->dtor) {
 		stmt->methods->dtor(stmt);
 	}
+
+	/* Release pooled connection back to pool */
+	if (stmt->pooled_conn != NULL) {
+		pdo_pool_maybe_release(stmt->dbh);
+		stmt->pooled_conn = NULL;
+	}
+
 	if (stmt->active_query_string) {
 		zend_string_release(stmt->active_query_string);
 	}

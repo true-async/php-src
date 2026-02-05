@@ -993,7 +993,15 @@ cleanup:
 }
 /* }}} */
 
+static void pdo_mysql_init_methods(pdo_dbh_t *dbh)
+{
+	dbh->methods = &mysql_methods;
+	dbh->alloc_own_columns = 1;
+	dbh->max_escaped_char_length = 2;
+}
+
 const pdo_driver_t pdo_mysql_driver = {
 	PDO_DRIVER_HEADER(mysql),
-	pdo_mysql_handle_factory
+	pdo_mysql_handle_factory,
+	pdo_mysql_init_methods
 };

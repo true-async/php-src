@@ -1361,6 +1361,9 @@ struct _zend_async_pool_s {
 		zend_object *object;                          /* PHP CircuitBreakerStrategy */
 		zend_async_circuit_breaker_strategy_t *internal;  /* Internal C strategy */
 	} strategy;
+
+	/* Opaque pointer for internal C pool consumers (e.g. PDO) */
+	void *user_data;
 };
 
 /* Pool handler flags */

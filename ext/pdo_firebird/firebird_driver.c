@@ -1430,8 +1430,16 @@ static int pdo_firebird_handle_factory(pdo_dbh_t *dbh, zval *driver_options) /* 
 /* }}} */
 
 
+static void pdo_firebird_init_methods(pdo_dbh_t *dbh)
+{
+	dbh->methods = &firebird_methods;
+	dbh->native_case = PDO_CASE_UPPER;
+	dbh->alloc_own_columns = 1;
+}
+
 const pdo_driver_t pdo_firebird_driver = { /* {{{ */
 	PDO_DRIVER_HEADER(firebird),
-	pdo_firebird_handle_factory
+	pdo_firebird_handle_factory,
+	pdo_firebird_init_methods
 };
 /* }}} */

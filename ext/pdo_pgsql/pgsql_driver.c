@@ -1492,7 +1492,15 @@ cleanup:
 }
 /* }}} */
 
+static void pdo_pgsql_init_methods(pdo_dbh_t *dbh)
+{
+	dbh->methods = &pgsql_methods;
+	dbh->alloc_own_columns = 1;
+	dbh->max_escaped_char_length = 2;
+}
+
 const pdo_driver_t pdo_pgsql_driver = {
 	PDO_DRIVER_HEADER(pgsql),
-	pdo_pgsql_handle_factory
+	pdo_pgsql_handle_factory,
+	pdo_pgsql_init_methods
 };

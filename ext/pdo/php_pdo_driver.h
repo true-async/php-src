@@ -37,7 +37,7 @@ typedef struct _zend_async_pool_s zend_async_pool_t;
 # define FALSE 0
 #endif
 
-#define PDO_DRIVER_API	20240423
+#define PDO_DRIVER_API	20260205
 
 /* Doctrine hardcodes these constants, avoid changing their values. */
 enum pdo_param_type {
@@ -225,6 +225,11 @@ typedef struct {
 	 * are used.
 	 */
 	int (*db_handle_factory)(pdo_dbh_t *dbh, zval *driver_options);
+
+	/* Initialize dbh->methods without creating a connection.
+	 * Used for pool templates where driver_data stays NULL.
+	 * If NULL, pool will fall back to db_handle_factory for the template. */
+	void (*db_handle_init_methods)(pdo_dbh_t *dbh);
 
 } pdo_driver_t;
 
@@ -518,7 +523,7 @@ struct _pdo_dbh_t {
 
 	/* Connection pool (requires async extension) */
 	zend_async_pool_t *pool;		/* internal pool, NULL if pooling disabled */
-	HashTable *pool_connections;	/* coroutine_id => driver_data mapping */
+	HashTable *pool_connections;	/* coroutine_id => pdo_dbh_t* (pinned for transactions) */
 	zend_object *pool_wrapper;		/* cached PHP Async\Pool object for getPool() */
 };
 
@@ -629,6 +634,8 @@ struct _pdo_stmt_t {
 	zend_object *lazy_object_ref;
 
 	pdo_dbh_t *dbh;
+	/* borrowed connection from pool, released on statement destroy */
+	pdo_dbh_t *pooled_conn;
 	/* we want to keep the dbh alive while we live, so we own a reference */
 	zend_object *database_object_handle;
 

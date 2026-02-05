@@ -954,7 +954,15 @@ cleanup:
 }
 /* }}} */
 
+static void pdo_sqlite_init_methods(pdo_dbh_t *dbh)
+{
+	dbh->methods = &sqlite_methods;
+	dbh->alloc_own_columns = 1;
+	dbh->max_escaped_char_length = 2;
+}
+
 const pdo_driver_t pdo_sqlite_driver = {
 	PDO_DRIVER_HEADER(sqlite),
-	pdo_sqlite_handle_factory
+	pdo_sqlite_handle_factory,
+	pdo_sqlite_init_methods
 };

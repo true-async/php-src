@@ -626,7 +626,14 @@ fail:
 }
 /* }}} */
 
+static void pdo_odbc_init_methods(pdo_dbh_t *dbh)
+{
+	dbh->methods = &odbc_methods;
+	dbh->alloc_own_columns = 1;
+}
+
 const pdo_driver_t pdo_odbc_driver = {
 	PDO_DRIVER_HEADER(odbc),
-	pdo_odbc_handle_factory
+	pdo_odbc_handle_factory,
+	pdo_odbc_init_methods
 };

@@ -40,6 +40,9 @@ $coro1 = spawn(function() use ($pdo) {
     return "coro1_done";
 });
 
+// Await coro1 first to get deterministic output
+await($coro1);
+
 // Coroutine 2: Start transaction, insert, rollback
 $coro2 = spawn(function() use ($pdo) {
     echo "Coro2: starting transaction\n";
@@ -51,7 +54,6 @@ $coro2 = spawn(function() use ($pdo) {
     return "coro2_done";
 });
 
-await($coro1);
 await($coro2);
 
 // Check results

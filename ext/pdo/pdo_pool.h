@@ -34,49 +34,30 @@ bool pdo_pool_create(pdo_dbh_t *dbh, zval *options);
 /* Destroy pool for a PDO handle */
 void pdo_pool_destroy(pdo_dbh_t *dbh);
 
-/* Get active pdo_dbh_t for current coroutine (auto acquire if needed) */
-pdo_dbh_t *pdo_pool_get_active_dbh(pdo_dbh_t *dbh);
-
-/* Get driver connection for current coroutine (auto acquire if needed) */
-void *pdo_pool_get_connection(pdo_dbh_t *dbh);
-
-/* Release connection for current coroutine */
-void pdo_pool_release_connection(pdo_dbh_t *dbh);
-
 /* Get PHP Pool wrapper object for getPool() method */
 zend_object *pdo_pool_get_wrapper(pdo_dbh_t *dbh);
 
 /*
- * Helper macros for transparent connection pooling in PDO methods.
- *
- * PDO_POOL_ACQUIRE: Switches dbh->driver_data to the pooled connection
- *                   for the current coroutine. If pool is disabled or not
- *                   in a coroutine, uses the main connection.
- *                   Sets __pdo_pool_failed to true if acquisition failed.
- *
- * PDO_POOL_RELEASE: Restores the original driver_data.
- *
- * Usage:
- *   PDO_POOL_ACQUIRE(dbh);
- *   if (__pdo_pool_failed) {
- *       // handle error
- *   }
- *   // ... call driver methods ...
- *   PDO_POOL_RELEASE(dbh);
+ * Get active connection for current context.
+ * - No pool: returns dbh itself
+ * - Pool + slot exists: returns existing pooled pdo_dbh_t
+ * - Pool + slot empty: acquires from pool, stores in slot, registers cleanup
+ * Returns NULL on acquisition failure.
  */
-#define PDO_POOL_ACQUIRE(dbh) \
-	void *__pdo_pool_orig_driver = (dbh)->driver_data; \
-	bool __pdo_pool_failed = false; \
-	do { \
-		void *__pdo_pool_conn = pdo_pool_get_connection(dbh); \
-		if (__pdo_pool_conn == NULL) { \
-			__pdo_pool_failed = true; \
-		} else { \
-			(dbh)->driver_data = __pdo_pool_conn; \
-		} \
-	} while (0)
+pdo_dbh_t *pdo_pool_acquire_conn(pdo_dbh_t *dbh);
 
-#define PDO_POOL_RELEASE(dbh) \
-	(dbh)->driver_data = __pdo_pool_orig_driver
+/*
+ * Release connection if slot exists and no active transaction.
+ * Called when statement is destroyed or after temporary operations.
+ * If transaction is active (in_txn), does nothing — connection stays pinned.
+ */
+void pdo_pool_maybe_release(pdo_dbh_t *dbh);
+
+/* Sync error_code from pooled conn to template dbh */
+static inline void pdo_pool_sync_error(pdo_dbh_t *dbh, pdo_dbh_t *conn) {
+	if (conn != dbh) {
+		memcpy(dbh->error_code, conn->error_code, sizeof(pdo_error_type));
+	}
+}
 
 #endif /* PDO_POOL_H */

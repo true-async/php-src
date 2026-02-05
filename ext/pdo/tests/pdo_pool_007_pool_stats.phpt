@@ -34,9 +34,10 @@ echo "  isClosed: " . ($pool->isClosed() ? "yes" : "no") . "\n";
 // Run a query to create a connection
 $coro = spawn(function() use ($pdo, $pool) {
     echo "In coroutine:\n";
-    $pdo->query("SELECT 1");
+    $stmt = $pdo->query("SELECT 1");
     echo "  count: " . $pool->count() . "\n";
     echo "  activeCount: " . $pool->activeCount() . "\n";
+    unset($stmt);
     return "done";
 });
 
