@@ -51,7 +51,7 @@ pdo_dbh_t *pdo_pool_acquire_conn(pdo_dbh_t *dbh);
 void pdo_pool_maybe_release(pdo_dbh_t *dbh);
 
 /* Sync error_code from pooled conn to template dbh */
-static inline void pdo_pool_sync_error(pdo_dbh_t *dbh, pdo_dbh_t *conn) {
+static inline void pdo_pool_sync_error(pdo_dbh_t *dbh, const pdo_dbh_t *conn) {
 	if (conn != dbh) {
 		memcpy(dbh->error_code, conn->error_code, sizeof(pdo_error_type));
 	}

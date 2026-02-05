@@ -30,6 +30,17 @@ void pdo_pool_shutdown(void)
 {
 }
 
+/* Get a stable hash key for the current coroutine.
+ * Prefers zend_object handle (sequential uint32_t) when available,
+ * falls back to pointer address for internal coroutines. */
+static zend_always_inline zend_ulong pdo_pool_coro_key(zend_coroutine_t *coro)
+{
+	if (ZEND_ASYNC_EVENT_IS_ZEND_OBJ(&coro->event)) {
+		return (zend_ulong)ZEND_ASYNC_EVENT_TO_OBJECT(&coro->event)->handle;
+	}
+	return ((uintptr_t)coro) >> ZEND_MM_ALIGNMENT_LOG2;
+}
+
 /*
  * Pool internal handlers
  */
@@ -37,9 +48,9 @@ void pdo_pool_shutdown(void)
 /* Factory: creates a new driver connection */
 static bool pdo_pool_factory(zend_async_pool_t *pool, zval *result)
 {
-	pdo_dbh_t *dbh = (pdo_dbh_t *)pool->user_data;
+	const pdo_dbh_t *dbh = (const pdo_dbh_t *)pool->user_data;
 
-	if (dbh == NULL || dbh->driver == NULL) {
+	if (UNEXPECTED(dbh == NULL || dbh->driver == NULL)) {
 		return false;
 	}
 
@@ -57,7 +68,7 @@ static bool pdo_pool_factory(zend_async_pool_t *pool, zval *result)
 	conn->password = dbh->password;
 
 	/* Call driver factory to create actual connection */
-	if (!dbh->driver->db_handle_factory(conn, NULL)) {
+	if (UNEXPECTED(!dbh->driver->db_handle_factory(conn, NULL))) {
 		efree(conn);
 		return false;
 	}
@@ -76,7 +87,7 @@ static void pdo_pool_destructor(zend_async_pool_t *pool, zval *resource)
 {
 	pdo_dbh_t *conn = Z_PTR_P(resource);
 
-	if (conn == NULL) {
+	if (UNEXPECTED(conn == NULL)) {
 		return;
 	}
 
@@ -92,7 +103,7 @@ static bool pdo_pool_healthcheck(zend_async_pool_t *pool, zval *resource)
 {
 	pdo_dbh_t *conn = Z_PTR_P(resource);
 
-	if (conn == NULL || conn->methods == NULL) {
+	if (UNEXPECTED(conn == NULL || conn->methods == NULL)) {
 		return false;
 	}
 
@@ -108,7 +119,7 @@ static bool pdo_pool_before_release(zend_async_pool_t *pool, zval *resource)
 {
 	pdo_dbh_t *conn = Z_PTR_P(resource);
 
-	if (conn == NULL) {
+	if (UNEXPECTED(conn == NULL)) {
 		return false;
 	}
 
@@ -154,7 +165,7 @@ bool pdo_pool_create(pdo_dbh_t *dbh, zval *options)
 		(uint32_t)healthcheck_interval
 	);
 
-	if (dbh->pool == NULL) {
+	if (UNEXPECTED(dbh->pool == NULL)) {
 		return false;
 	}
 
@@ -220,7 +231,7 @@ static void pdo_pool_cleanup_callback(
 	void *result,
 	zend_object *exception
 ) {
-	pdo_pool_cleanup_data_t *data = (pdo_pool_cleanup_data_t *)callback;
+	const pdo_pool_cleanup_data_t *data = (const pdo_pool_cleanup_data_t *)callback;
 	pdo_dbh_t *dbh = data->dbh;
 
 	if (dbh && dbh->pool && dbh->pool_connections) {
@@ -244,11 +255,8 @@ pdo_dbh_t *pdo_pool_acquire_conn(pdo_dbh_t *dbh)
 		return dbh;
 	}
 
-	zend_ulong coro_key = 0;
 	zend_coroutine_t *coro = ZEND_ASYNC_CURRENT_COROUTINE;
-	if (coro != NULL) {
-		coro_key = (zend_ulong)(uintptr_t)coro;
-	}
+	const zend_ulong coro_key = coro ? pdo_pool_coro_key(coro) : 0;
 
 	/* Reuse existing slot */
 	zval *conn_zval = zend_hash_index_find(dbh->pool_connections, coro_key);
@@ -258,7 +266,7 @@ pdo_dbh_t *pdo_pool_acquire_conn(pdo_dbh_t *dbh)
 
 	/* Acquire from pool */
 	zval res;
-	if (!ZEND_ASYNC_POOL_ACQUIRE(dbh->pool, &res, 0)) {
+	if (UNEXPECTED(!ZEND_ASYNC_POOL_ACQUIRE(dbh->pool, &res, 0))) {
 		return NULL;
 	}
 
@@ -289,15 +297,12 @@ void pdo_pool_maybe_release(pdo_dbh_t *dbh)
 		return;
 	}
 
-	zend_ulong coro_key = 0;
 	zend_coroutine_t *coro = ZEND_ASYNC_CURRENT_COROUTINE;
-	if (coro != NULL) {
-		coro_key = (zend_ulong)(uintptr_t)coro;
-	}
+	const zend_ulong coro_key = coro ? pdo_pool_coro_key(coro) : 0;
 
 	zval *conn_zval = zend_hash_index_find(dbh->pool_connections, coro_key);
 	if (conn_zval && Z_TYPE_P(conn_zval) == IS_PTR) {
-		pdo_dbh_t *conn = Z_PTR_P(conn_zval);
+		const pdo_dbh_t *conn = Z_PTR_P(conn_zval);
 
 		if (conn->in_txn) {
 			return;

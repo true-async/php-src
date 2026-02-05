@@ -694,7 +694,7 @@ PHP_METHOD(PDO, prepare)
 	}
 
 	pdo_dbh_t *conn = pdo_pool_acquire_conn(dbh);
-	if (conn == NULL) {
+	if (UNEXPECTED(conn == NULL)) {
 		pdo_raise_impl_error(dbh, NULL, "HY000", "Failed to acquire connection from pool");
 		RETURN_FALSE;
 	}
@@ -741,7 +741,7 @@ PHP_METHOD(PDO, prepare)
 
 static bool pdo_is_in_transaction(pdo_dbh_t *dbh) {
 	pdo_dbh_t *conn = pdo_pool_acquire_conn(dbh);
-	if (conn == NULL) {
+	if (UNEXPECTED(conn == NULL)) {
 		return false;
 	}
 
@@ -772,7 +772,7 @@ PHP_METHOD(PDO, beginTransaction)
 	}
 
 	pdo_dbh_t *conn = pdo_pool_acquire_conn(dbh);
-	if (conn == NULL) {
+	if (UNEXPECTED(conn == NULL)) {
 		pdo_raise_impl_error(dbh, NULL, "HY000", "Failed to acquire connection from pool");
 		RETURN_FALSE;
 	}
@@ -804,7 +804,7 @@ PHP_METHOD(PDO, commit)
 	}
 
 	pdo_dbh_t *conn = pdo_pool_acquire_conn(dbh);
-	if (conn == NULL) {
+	if (UNEXPECTED(conn == NULL)) {
 		pdo_raise_impl_error(dbh, NULL, "HY000", "Failed to acquire connection from pool");
 		RETURN_FALSE;
 	}
@@ -837,7 +837,7 @@ PHP_METHOD(PDO, rollBack)
 	}
 
 	pdo_dbh_t *conn = pdo_pool_acquire_conn(dbh);
-	if (conn == NULL) {
+	if (UNEXPECTED(conn == NULL)) {
 		pdo_raise_impl_error(dbh, NULL, "HY000", "Failed to acquire connection from pool");
 		RETURN_FALSE;
 	}
@@ -1067,7 +1067,7 @@ static bool pdo_dbh_attribute_set(pdo_dbh_t *dbh, zend_long attr, zval *value, u
 
 	{
 		pdo_dbh_t *attr_conn = pdo_pool_acquire_conn(dbh);
-		if (attr_conn == NULL || attr_conn->driver_data == NULL) {
+		if (UNEXPECTED(attr_conn == NULL || attr_conn->driver_data == NULL)) {
 			goto fail;
 		}
 
@@ -1166,7 +1166,7 @@ PHP_METHOD(PDO, getAttribute)
 
 	{
 		pdo_dbh_t *attr_conn = pdo_pool_acquire_conn(dbh);
-		if (attr_conn == NULL || attr_conn->driver_data == NULL) {
+		if (UNEXPECTED(attr_conn == NULL || attr_conn->driver_data == NULL)) {
 			pdo_raise_impl_error(dbh, NULL, "HY000", "Failed to acquire connection from pool");
 			RETURN_FALSE;
 		}
@@ -1213,7 +1213,7 @@ PHP_METHOD(PDO, exec)
 	PDO_CONSTRUCT_CHECK;
 
 	pdo_dbh_t *conn = pdo_pool_acquire_conn(dbh);
-	if (conn == NULL) {
+	if (UNEXPECTED(conn == NULL)) {
 		pdo_raise_impl_error(dbh, NULL, "HY000", "Failed to acquire connection from pool");
 		RETURN_FALSE;
 	}
@@ -1253,7 +1253,7 @@ PHP_METHOD(PDO, lastInsertId)
 	}
 
 	pdo_dbh_t *conn = pdo_pool_acquire_conn(dbh);
-	if (conn == NULL) {
+	if (UNEXPECTED(conn == NULL)) {
 		pdo_raise_impl_error(dbh, NULL, "HY000", "Failed to acquire connection from pool");
 		RETURN_FALSE;
 	}
@@ -1372,7 +1372,7 @@ PHP_METHOD(PDO, query)
 	PDO_DBH_CLEAR_ERR();
 
 	pdo_dbh_t *conn = pdo_pool_acquire_conn(dbh);
-	if (conn == NULL) {
+	if (UNEXPECTED(conn == NULL)) {
 		pdo_raise_impl_error(dbh, NULL, "HY000", "Failed to acquire connection from pool");
 		RETURN_FALSE;
 	}
@@ -1462,7 +1462,7 @@ PHP_METHOD(PDO, quote)
 	}
 
 	pdo_dbh_t *conn = pdo_pool_acquire_conn(dbh);
-	if (conn == NULL) {
+	if (UNEXPECTED(conn == NULL)) {
 		pdo_raise_impl_error(dbh, NULL, "HY000", "Failed to acquire connection from pool");
 		RETURN_FALSE;
 	}
