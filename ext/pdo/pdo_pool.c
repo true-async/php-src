@@ -183,17 +183,18 @@ void pdo_pool_destroy(pdo_dbh_t *dbh)
 		dbh->pool_connections = NULL;
 	}
 
-	/* Step 2: Destroy pool via wrapper (wrapper's free_obj calls destroy + efree).
-	 * Create wrapper lazily if it was never requested via getPool(). */
-	if (dbh->pool) {
-		if (!dbh->pool_wrapper) {
-			dbh->pool_wrapper = ZEND_ASYNC_NEW_POOL_OBJ(dbh->pool);
-		}
+	/* Step 2: Release wrapper if userland requested it via getPool() */
+	if (dbh->pool_wrapper) {
 		OBJ_RELEASE(dbh->pool_wrapper);
 		dbh->pool_wrapper = NULL;
 	}
 
-	dbh->pool = NULL;
+	/* Step 3: Close and dispose the pool via event lifecycle */
+	if (dbh->pool) {
+		ZEND_ASYNC_POOL_CLOSE(dbh->pool);
+		ZEND_ASYNC_EVENT_RELEASE(&dbh->pool->event);
+		dbh->pool = NULL;
+	}
 }
 
 /*
