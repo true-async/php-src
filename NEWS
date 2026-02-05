@@ -11,6 +11,11 @@ PHP                                                                        NEWS
   . Fix OSS-Fuzz #429429090 (Failed assertion on unset() with uninitialized
     container). (ilutov)
   . Fixed GH-20564 (Don't call autoloaders with pending exception). (ilutov)
+  . Fix deprecation now showing when accessing null key of an array with JIT.
+    (alexandre-daubois)
+  . Fixed bug GH-20174 (Assertion failure in
+    ReflectionProperty::skipLazyInitialization after failed LazyProxy
+    initialization). (Arnaud)
 
 - Date:
   . Update timelib to 2022.16. (Derick)
@@ -101,6 +106,8 @@ PHP                                                                        NEWS
     while COW violation flag is still set). (alexandre-daubois)
   . Invalid mode values now throw in array_filter() instead of being silently
     defaulted to 0. (Jorg Sowa)
+  . Fixed bug GH-21058 (error_log() crashes with message_type 3 and
+    null destination). (David Carlier)
 
 - Streams:
   . Added so_keepalive, tcp_keepidle, tcp_keepintvl and tcp_keepcnt stream

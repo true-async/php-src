@@ -3855,7 +3855,6 @@ PHP_FUNCTION(pg_unescape_bytea)
 	tmp = (char *)PQunescapeBytea((unsigned char*)from, &to_len);
 	if (!tmp) {
 		zend_error_noreturn(E_ERROR, "Out of memory");
-		return;
 	}
 
 	RETVAL_STRINGL(tmp, to_len);

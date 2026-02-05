@@ -64,7 +64,6 @@
 #include "win32/php_registry.h"
 #include "ext/standard/flock_compat.h"
 #endif
-#include "php_syslog.h"
 #include "Zend/zend_exceptions.h"
 
 #if PHP_SIGCHILD
@@ -75,7 +74,6 @@
 #include "zend_compile.h"
 #include "zend_execute.h"
 #include "zend_highlight.h"
-#include "zend_extensions.h"
 #include "zend_ini.h"
 #include "zend_dtrace.h"
 #include "zend_observer.h"
@@ -673,7 +671,7 @@ static PHP_INI_MH(OnUpdateInputEncoding)
 
 static PHP_INI_MH(OnUpdateReportMemleaks)
 {
-	bool *p = (bool *) ZEND_INI_GET_ADDR();
+	bool *p = ZEND_INI_GET_ADDR();
 	bool new_bool_value = zend_ini_parse_bool(new_value);
 
 	if (!new_bool_value) {
@@ -710,7 +708,7 @@ static PHP_INI_MH(OnUpdateErrorLog)
 			return FAILURE;
 		}
 	}
-	char **p = (char **) ZEND_INI_GET_ADDR();
+	char **p = ZEND_INI_GET_ADDR();
 	*p = new_value && ZSTR_LEN(new_value) > 0 ? ZSTR_VAL(new_value) : NULL;
 	return SUCCESS;
 }
@@ -725,7 +723,7 @@ static PHP_INI_MH(OnUpdateMailLog)
 			return FAILURE;
 		}
 	}
-	char **p = (char **) ZEND_INI_GET_ADDR();
+	char **p = ZEND_INI_GET_ADDR();
 	*p = new_value && ZSTR_LEN(new_value) > 0 ? ZSTR_VAL(new_value) : NULL;
 	return SUCCESS;
 }

@@ -56,10 +56,29 @@ PHP 8.6 INTERNALS UPGRADE NOTES
     node.
   . The zend_exception_save() and zend_exception_restore() functions were
     removed.
+  . Internal functions that return by reference are now expected to
+    automatically unwrap references when the result of the call is stored in an
+    IS_TMP_VAR variable. This may be achieved by calling the
+    zend_return_unwrap_ref() function.
+  . The php_math_round_mode_from_enum() function now takes a
+    zend_enum_RoundingMode parameter.
+  . Added Z_PARAM_ENUM().
+  . Added zend_enum_fetch_case_id().
+  . ZEND_INI_GET_ADDR() is now a void* pointer instead of a char* pointer. This
+    more correctly represents the generic nature of the returned pointer and
+    allows to remove explicit casts, but possibly breaks pointer arithmetic
+    performed on the result.
+  . The zend_dval_to_lval_cap() function no longer takes a second
+    zend_string* parameter.
 
 ========================
 2. Build system changes
 ========================
+
+  . build/gen_stub.php may now generate a _decl.h file in addition to
+    the _arginfo.h file, if the stub declares enums and is annotated with
+    @generate-c-enums. For each enum the file will contain a C enum. Enum values
+    can be compared to the result of zend_enum_fetch_case_id(zend_object*).
 
 ========================
 3. Module changes
