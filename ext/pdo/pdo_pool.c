@@ -237,12 +237,36 @@ static void pdo_pool_cleanup_callback(
 	if (dbh && dbh->pool && dbh->pool_connections) {
 		zval *conn_zval = zend_hash_index_find(dbh->pool_connections, data->coroutine_key);
 		if (conn_zval && Z_TYPE_P(conn_zval) == IS_PTR) {
+			pdo_dbh_t *conn = Z_PTR_P(conn_zval);
+			conn->pool_slot_refcount = 0;
 			ZEND_ASYNC_POOL_RELEASE(dbh->pool, conn_zval);
 			zend_hash_index_del(dbh->pool_connections, data->coroutine_key);
 		}
 	}
 
 	/* Don't efree here — the async framework calls dispose() to free. */
+}
+
+/*
+ * Peek at existing slot connection for current coroutine.
+ * Never acquires a new connection from the pool.
+ * Returns dbh itself when pool is disabled, NULL if slot is empty.
+ */
+pdo_dbh_t *pdo_pool_peek_conn(pdo_dbh_t *dbh)
+{
+	if (dbh->pool == NULL) {
+		return dbh;
+	}
+
+	zend_coroutine_t *coro = ZEND_ASYNC_CURRENT_COROUTINE;
+	const zend_ulong coro_key = coro ? pdo_pool_coro_key(coro) : 0;
+
+	zval *conn_zval = zend_hash_index_find(dbh->pool_connections, coro_key);
+	if (conn_zval && Z_TYPE_P(conn_zval) == IS_PTR) {
+		return Z_PTR_P(conn_zval);
+	}
+
+	return NULL;
 }
 
 /*
@@ -304,7 +328,7 @@ void pdo_pool_maybe_release(pdo_dbh_t *dbh)
 	if (conn_zval && Z_TYPE_P(conn_zval) == IS_PTR) {
 		const pdo_dbh_t *conn = Z_PTR_P(conn_zval);
 
-		if (conn->in_txn) {
+		if (conn->in_txn || conn->pool_slot_refcount > 0) {
 			return;
 		}
 

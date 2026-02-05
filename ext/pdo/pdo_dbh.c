@@ -164,12 +164,13 @@ PDO_API void pdo_handle_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt) /* {{{ */
 		if (stmt && stmt->pooled_conn) {
 			err_dbh = stmt->pooled_conn;
 		} else if (dbh->pool) {
-			pdo_dbh_t *slot_conn = pdo_pool_acquire_conn(dbh);
+			pdo_dbh_t *slot_conn = pdo_pool_peek_conn(dbh);
 			if (slot_conn) {
 				err_dbh = slot_conn;
 			}
 		}
-		if (err_dbh->methods && err_dbh->methods->fetch_err) {
+		/* Skip fetch_err if err_dbh is the template (driver_data is NULL in pool mode) */
+		if (err_dbh->driver_data && err_dbh->methods && err_dbh->methods->fetch_err) {
 			err_dbh->methods->fetch_err(err_dbh, stmt, &info);
 		}
 
@@ -716,6 +717,7 @@ PHP_METHOD(PDO, prepare)
 	/* Track pooled connection on statement */
 	if (dbh->pool) {
 		stmt->pooled_conn = conn;
+		conn->pool_slot_refcount++;
 	}
 
 	if (conn->methods->preparer(conn, statement, stmt, options)) {
@@ -1252,15 +1254,14 @@ PHP_METHOD(PDO, lastInsertId)
 		RETURN_FALSE;
 	}
 
-	pdo_dbh_t *conn = pdo_pool_acquire_conn(dbh);
+	pdo_dbh_t *conn = pdo_pool_peek_conn(dbh);
 	if (UNEXPECTED(conn == NULL)) {
-		pdo_raise_impl_error(dbh, NULL, "HY000", "Failed to acquire connection from pool");
+		/* Pool mode: connection already released, lastInsertId unavailable */
 		RETURN_FALSE;
 	}
 
 	last_id = conn->methods->last_id(conn, name);
 	pdo_pool_sync_error(dbh, conn);
-	pdo_pool_maybe_release(dbh);
 
 	if (!last_id) {
 		PDO_HANDLE_DBH_ERR();
@@ -1319,8 +1320,8 @@ PHP_METHOD(PDO, errorInfo)
 	}
 
 	if (dbh->methods->fetch_err) {
-		/* Route fetch_err through the connection that produced the error */
-		pdo_dbh_t *err_conn = pdo_pool_acquire_conn(dbh);
+		/* Route fetch_err through existing slot connection (peek, never acquire) */
+		pdo_dbh_t *err_conn = pdo_pool_peek_conn(dbh);
 		if (err_conn && err_conn->methods && err_conn->methods->fetch_err) {
 			err_conn->methods->fetch_err(err_conn, dbh->query_stmt, return_value);
 		}
@@ -1395,6 +1396,7 @@ PHP_METHOD(PDO, query)
 	/* Track pooled connection on statement */
 	if (dbh->pool) {
 		stmt->pooled_conn = conn;
+		conn->pool_slot_refcount++;
 	}
 
 	if (conn->methods->preparer(conn, statement, stmt, NULL)) {

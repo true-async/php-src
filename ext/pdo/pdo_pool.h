@@ -44,6 +44,15 @@ zend_object *pdo_pool_get_wrapper(pdo_dbh_t *dbh);
 pdo_dbh_t *pdo_pool_acquire_conn(pdo_dbh_t *dbh);
 
 /*
+ * Peek at existing slot connection without acquiring a new one.
+ * - No pool: returns dbh itself
+ * - Pool + slot exists: returns the pooled pdo_dbh_t
+ * - Pool + slot empty: returns NULL (never acquires)
+ * Use for lastInsertId/errorInfo where a wrong connection is worse than none.
+ */
+pdo_dbh_t *pdo_pool_peek_conn(pdo_dbh_t *dbh);
+
+/*
  * Release connection if slot exists and no active transaction.
  * Called when statement is destroyed or after temporary operations.
  * If transaction is active (in_txn), does nothing — connection stays pinned.

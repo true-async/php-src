@@ -2041,6 +2041,7 @@ PDO_API void php_pdo_free_statement(pdo_stmt_t *stmt)
 
 	/* Release pooled connection back to pool */
 	if (stmt->pooled_conn != NULL) {
+		stmt->pooled_conn->pool_slot_refcount--;
 		pdo_pool_maybe_release(stmt->dbh);
 		stmt->pooled_conn = NULL;
 	}

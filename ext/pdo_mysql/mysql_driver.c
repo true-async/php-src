@@ -52,6 +52,8 @@ int _pdo_mysql_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt, const char *file, int lin
 		S = (pdo_mysql_stmt*)stmt->driver_data;
 		pdo_err = &stmt->error_code;
 		einfo   = &S->einfo;
+		/* Use statement's connection handle — dbh may be a pool template with NULL driver_data */
+		H = S->H;
 	} else {
 		pdo_err = &dbh->error_code;
 		einfo   = &H->einfo;
