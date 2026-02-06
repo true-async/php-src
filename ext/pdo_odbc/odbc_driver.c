@@ -627,7 +627,7 @@ fail:
 }
 /* }}} */
 
-static void pdo_odbc_init_methods(pdo_dbh_t *dbh)
+static void pdo_odbc_init_methods(pdo_dbh_t *dbh, bool *supports_pool)
 {
 	dbh->methods = &odbc_methods;
 	dbh->alloc_own_columns = 1;

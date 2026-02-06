@@ -228,8 +228,10 @@ typedef struct {
 
 	/* Initialize dbh->methods without creating a connection.
 	 * Used for pool templates where driver_data stays NULL.
-	 * If NULL, pool will fall back to db_handle_factory for the template. */
-	void (*db_handle_init_methods)(pdo_dbh_t *dbh);
+	 * If NULL, pool will fall back to db_handle_factory for the template.
+	 * If supports_pool is non-NULL, the driver should set *supports_pool = true
+	 * to indicate that it supports PDO::ATTR_POOL_ENABLED. */
+	void (*db_handle_init_methods)(pdo_dbh_t *dbh, bool *supports_pool);
 
 } pdo_driver_t;
 

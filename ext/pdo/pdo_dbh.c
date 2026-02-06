@@ -514,7 +514,16 @@ PDO_API void php_pdo_internal_construct_driver(INTERNAL_FUNCTION_PARAMETERS, zen
 	if (!is_persistent && options
 		&& pdo_attr_lval(options, PDO_ATTR_POOL_ENABLED, 0)
 		&& driver->db_handle_init_methods) {
-		driver->db_handle_init_methods(dbh);
+		bool supports_pool = false;
+		driver->db_handle_init_methods(dbh, &supports_pool);
+		if (!supports_pool) {
+			dbh->methods = NULL;
+			zend_throw_exception_ex(php_pdo_get_exception(), 0,
+				"Driver \"%s\" does not support PDO::ATTR_POOL_ENABLED",
+				driver->driver_name);
+			zend_restore_error_handling(&zeh);
+			return;
+		}
 		dbh->driver = driver;
 		/* Create pool before attribute processing so driver-specific
 		 * attributes can be dispatched through pooled connections */

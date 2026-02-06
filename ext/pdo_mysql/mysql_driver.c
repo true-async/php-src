@@ -995,11 +995,14 @@ cleanup:
 }
 /* }}} */
 
-static void pdo_mysql_init_methods(pdo_dbh_t *dbh)
+static void pdo_mysql_init_methods(pdo_dbh_t *dbh, bool *supports_pool)
 {
 	dbh->methods = &mysql_methods;
 	dbh->alloc_own_columns = 1;
 	dbh->max_escaped_char_length = 2;
+	if (supports_pool) {
+		*supports_pool = true;
+	}
 }
 
 const pdo_driver_t pdo_mysql_driver = {

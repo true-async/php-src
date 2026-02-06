@@ -632,7 +632,7 @@ cleanup:
 	return ret;
 }
 
-static void pdo_dblib_init_methods(pdo_dbh_t *dbh)
+static void pdo_dblib_init_methods(pdo_dbh_t *dbh, bool *supports_pool)
 {
 	dbh->methods = &dblib_methods;
 	dbh->max_escaped_char_length = 2;

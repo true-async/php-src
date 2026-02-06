@@ -1437,7 +1437,7 @@ static int pdo_firebird_handle_factory(pdo_dbh_t *dbh, zval *driver_options) /* 
 /* }}} */
 
 
-static void pdo_firebird_init_methods(pdo_dbh_t *dbh)
+static void pdo_firebird_init_methods(pdo_dbh_t *dbh, bool *supports_pool)
 {
 	dbh->methods = &firebird_methods;
 	dbh->native_case = PDO_CASE_UPPER;
