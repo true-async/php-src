@@ -24,6 +24,8 @@
 #include <libpq-fe.h>
 #include <libpq/libpq-fs.h>
 #include <php.h>
+#include "main/php_network.h"
+#include "zend_async_API.h"
 
 #define PHP_PDO_PGSQL_CONNECTION_FAILURE_SQLSTATE "08006"
 
@@ -129,5 +131,21 @@ void pgsqlLOBOpen_internal(INTERNAL_FUNCTION_PARAMETERS);
 void pgsqlLOBUnlink_internal(INTERNAL_FUNCTION_PARAMETERS);
 void pgsqlGetNotify_internal(INTERNAL_FUNCTION_PARAMETERS);
 void pgsqlGetPid_internal(INTERNAL_FUNCTION_PARAMETERS);
+
+/* TrueAsync concurrent helpers (implemented in pgsql_driver.c) */
+bool pdo_pgsql_flush(PGconn *pgsql);
+PGresult *pdo_pgsql_get_result_concurrent(PGconn *pgsql);
+PGresult *pdo_pgsql_exec_concurrent(PGconn *pgsql, const char *query);
+PGresult *pdo_pgsql_exec_params_concurrent(PGconn *pgsql, const char *query,
+		int nParams, const Oid *paramTypes, const char *const *paramValues,
+		const int *paramLengths, const int *paramFormats, int resultFormat);
+PGresult *pdo_pgsql_prepare_concurrent(PGconn *pgsql, const char *stmtName,
+		const char *query, int nParams, const Oid *paramTypes);
+PGresult *pdo_pgsql_exec_prepared_concurrent(PGconn *pgsql, const char *stmtName,
+		int nParams, const char *const *paramValues,
+		const int *paramLengths, const int *paramFormats, int resultFormat);
+#ifdef HAVE_PQCLOSEPREPARED
+PGresult *pdo_pgsql_close_prepared_concurrent(PGconn *pgsql, const char *stmtName);
+#endif
 
 #endif /* PHP_PDO_PGSQL_INT_H */
