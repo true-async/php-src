@@ -126,6 +126,7 @@ typedef enum {
 	ZEND_ASYNC_CLASS_CHANNEL = 10,
 	ZEND_ASYNC_CLASS_FUTURE = 11,
 	ZEND_ASYNC_CLASS_GROUP = 12,
+	ZEND_ASYNC_CLASS_POOL = 13,
 
 	ZEND_ASYNC_EXCEPTION_DEFAULT = 30,
 	ZEND_ASYNC_EXCEPTION_CANCELLATION = 31,
@@ -134,6 +135,7 @@ typedef enum {
 	ZEND_ASYNC_EXCEPTION_POLL = 34,
 	ZEND_ASYNC_EXCEPTION_DNS = 35,
 	ZEND_ASYNC_EXCEPTION_DEADLOCK = 36,
+	ZEND_ASYNC_EXCEPTION_SERVICE_UNAVAILABLE = 37,
 } zend_async_class;
 
 /**
@@ -150,6 +152,7 @@ typedef struct _zend_future_s zend_future_t;
  * zend_async_channel_t is a data structure that represents a communication channel.
  */
 typedef struct _zend_async_channel_s zend_async_channel_t;
+typedef struct _zend_async_pool_s zend_async_pool_t;
 typedef struct _zend_async_context_s zend_async_context_t;
 typedef struct _zend_async_waker_s zend_async_waker_t;
 typedef struct _zend_async_microtask_s zend_async_microtask_t;
@@ -162,6 +165,33 @@ typedef void (*zend_coroutine_entry_t)(void);
 /* Channel method function types */
 typedef bool (*zend_channel_send_t)(zend_async_channel_t *channel, zval *value);
 typedef bool (*zend_channel_receive_t)(zend_async_channel_t *channel, zval *result);
+
+/* Pool CircuitBreaker state */
+typedef enum {
+	ZEND_ASYNC_CIRCUIT_STATE_ACTIVE = 0,
+	ZEND_ASYNC_CIRCUIT_STATE_INACTIVE,
+	ZEND_ASYNC_CIRCUIT_STATE_RECOVERING
+} zend_async_circuit_state_t;
+
+/* Pool handler function types */
+typedef bool (*zend_async_pool_factory_fn)(zend_async_pool_t *pool, zval *result);
+typedef void (*zend_async_pool_destructor_fn)(zend_async_pool_t *pool, zval *resource);
+typedef bool (*zend_async_pool_healthcheck_fn)(zend_async_pool_t *pool, zval *resource);
+typedef bool (*zend_async_pool_before_acquire_fn)(zend_async_pool_t *pool, zval *resource);
+typedef bool (*zend_async_pool_before_release_fn)(zend_async_pool_t *pool, zval *resource);
+
+/* Pool CircuitBreakerStrategy function types */
+typedef void (*zend_async_pool_cb_report_success_fn)(zend_async_pool_t *pool);
+typedef void (*zend_async_pool_cb_report_failure_fn)(zend_async_pool_t *pool, zend_object *error);
+typedef bool (*zend_async_pool_cb_should_recover_fn)(zend_async_pool_t *pool);
+
+/* Internal CircuitBreakerStrategy structure */
+typedef struct _zend_async_circuit_breaker_strategy_s {
+	zend_async_pool_cb_report_success_fn report_success;
+	zend_async_pool_cb_report_failure_fn report_failure;
+	zend_async_pool_cb_should_recover_fn should_recover;
+	void *ctx;  /* user data for strategy */
+} zend_async_circuit_breaker_strategy_t;
 
 /* Coroutine Switch Handlers */
 typedef struct _zend_coroutine_switch_handler_s zend_coroutine_switch_handler_t;
@@ -249,8 +279,27 @@ typedef zend_async_channel_t *(*zend_async_new_channel_t)(
 
 typedef zend_async_group_t *(*zend_async_new_group_t)(size_t extra_size);
 
+/* Pool creation function types */
+typedef zend_async_pool_t *(*zend_async_new_pool_t)(
+		zend_async_pool_factory_fn factory,
+		zend_async_pool_destructor_fn destructor,
+		zend_async_pool_healthcheck_fn healthcheck,
+		zend_async_pool_before_acquire_fn before_acquire,
+		zend_async_pool_before_release_fn before_release,
+		uint32_t min_size,
+		uint32_t max_size,
+		uint32_t healthcheck_interval_ms,
+		size_t extra_size);
+
+/* Pool operation function types */
+typedef bool (*zend_async_pool_acquire_t)(zend_async_pool_t *pool, zval *result, zend_long timeout_ms);
+typedef bool (*zend_async_pool_try_acquire_t)(zend_async_pool_t *pool, zval *result);
+typedef void (*zend_async_pool_release_t)(zend_async_pool_t *pool, zval *resource);
+typedef void (*zend_async_pool_close_t)(zend_async_pool_t *pool);
+
 typedef zend_object *(*zend_async_new_future_obj_t)(zend_future_t *future);
 typedef zend_object *(*zend_async_new_channel_obj_t)(zend_async_channel_t *channel);
+typedef zend_object *(*zend_async_new_pool_obj_t)(zend_async_pool_t *pool);
 
 typedef bool (*zend_async_scheduler_launch_t)(void);
 
@@ -542,6 +591,20 @@ typedef struct {
 // Flag indicating that the event has a zend_object reference by extra_offset.
 #define ZEND_ASYNC_EVENT_F_OBJ_REF (1u << 8) /* has zend_object ref */
 #define ZEND_ASYNC_EVENT_F_CLOSE_FD (1u << 9) /* close file descriptor after event cleanup */
+/*
+ * Hidden event flag: the event does not affect active_event_count for deadlock detection.
+ *
+ * The active_event_count is used to detect deadlocks - when it reaches zero and there are
+ * still coroutines waiting, it indicates a potential deadlock situation.
+ *
+ * However, some events should not participate in deadlock detection:
+ * - Background timers (e.g., garbage collection, health checks)
+ * - Internal system events that are always present in the loop
+ * - Events that should not prevent the application from exiting
+ *
+ * Use ZEND_ASYNC_EVENT_SET_HIDDEN(ev) to mark an event as hidden.
+ */
+#define ZEND_ASYNC_EVENT_F_HIDDEN (1u << 10)
 
 #define ZEND_ASYNC_EVENT_REFERENCE_PREFIX ((uint32_t) 0x80) /* prefix for reference structures */
 
@@ -591,6 +654,10 @@ typedef struct {
 #define ZEND_ASYNC_EVENT_SET_CLOSE_FD(ev) ((ev)->flags |= ZEND_ASYNC_EVENT_F_CLOSE_FD)
 #define ZEND_ASYNC_EVENT_CLR_CLOSE_FD(ev) ((ev)->flags &= ~ZEND_ASYNC_EVENT_F_CLOSE_FD)
 #define ZEND_ASYNC_EVENT_SHOULD_CLOSE_FD(ev) (((ev)->flags & ZEND_ASYNC_EVENT_F_CLOSE_FD) != 0)
+
+#define ZEND_ASYNC_EVENT_SET_HIDDEN(ev) ((ev)->flags |= ZEND_ASYNC_EVENT_F_HIDDEN)
+#define ZEND_ASYNC_EVENT_CLR_HIDDEN(ev) ((ev)->flags &= ~ZEND_ASYNC_EVENT_F_HIDDEN)
+#define ZEND_ASYNC_EVENT_IS_HIDDEN(ev) (((ev)->flags & ZEND_ASYNC_EVENT_F_HIDDEN) != 0)
 
 // Convert awaitable Zend object to zend_async_event_t pointer
 #define ZEND_ASYNC_EVENT_IS_REFERENCE(ptr) \
@@ -1057,14 +1124,14 @@ struct _zend_coroutine_s {
 #define ZEND_COROUTINE_SUSPENDED(coroutine) \
 	((coroutine)->waker != NULL && ZEND_ASYNC_WAKER_WAITING((coroutine)->waker))
 
-/* Coroutine flags */
-#define ZEND_COROUTINE_F_STARTED (1u << 10) /* coroutine is started */
-#define ZEND_COROUTINE_F_CANCELLED (1u << 11) /* coroutine is cancelled */
-#define ZEND_COROUTINE_F_ZOMBIE (1u << 12) /* coroutine is a zombie */
-#define ZEND_COROUTINE_F_PROTECTED (1u << 13) /* coroutine is protected */
-#define ZEND_COROUTINE_F_MAIN (1u << 14) /* coroutine is a main coroutine */
-#define ZEND_COROUTINE_F_FIBER (1u << 15) /* coroutine is a fiber. extended_data -> fiber structure */
-#define ZEND_COROUTINE_F_YIELD (1u << 16) /* coroutine is YIELD */
+/* Coroutine flags (bits 13-19, bits 10-12 reserved for event flags) */
+#define ZEND_COROUTINE_F_STARTED (1u << 13) /* coroutine is started */
+#define ZEND_COROUTINE_F_CANCELLED (1u << 14) /* coroutine is cancelled */
+#define ZEND_COROUTINE_F_ZOMBIE (1u << 15) /* coroutine is a zombie */
+#define ZEND_COROUTINE_F_PROTECTED (1u << 16) /* coroutine is protected */
+#define ZEND_COROUTINE_F_MAIN (1u << 17) /* coroutine is a main coroutine */
+#define ZEND_COROUTINE_F_FIBER (1u << 18) /* coroutine is a fiber. extended_data -> fiber structure */
+#define ZEND_COROUTINE_F_YIELD (1u << 19) /* coroutine is YIELD */
 
 #define ZEND_COROUTINE_IS_ZOMBIE(coroutine) \
 	(((coroutine)->event.flags & ZEND_COROUTINE_F_ZOMBIE) != 0)
@@ -1187,8 +1254,9 @@ struct _zend_future_s {
 	zend_async_callbacks_vector_t resolve_callbacks;
 };
 
-#define ZEND_FUTURE_F_THREAD_SAFE (1u << 10)
-#define ZEND_FUTURE_F_IGNORED (1u << 11)
+/* Future flags (bits 13+, bits 10-12 reserved for event flags) */
+#define ZEND_FUTURE_F_THREAD_SAFE (1u << 13)
+#define ZEND_FUTURE_F_IGNORED (1u << 14)
 
 #define ZEND_FUTURE_IS_COMPLETED(future) (((future)->event.flags & ZEND_ASYNC_EVENT_F_CLOSED) != 0)
 #define ZEND_FUTURE_IS_IGNORED(future) (((future)->event.flags & ZEND_FUTURE_F_IGNORED) != 0)
@@ -1254,7 +1322,57 @@ struct _zend_async_channel_s {
 	zend_channel_receive_t receive; /* Receive method */
 };
 
-#define ZEND_ASYNC_CHANNEL_F_THREAD_SAFE (1u << 10)
+/* Channel flags (bits 13+, bits 10-12 reserved for event flags) */
+#define ZEND_ASYNC_CHANNEL_F_THREAD_SAFE (1u << 13)
+
+///////////////////////////////////////////////////////////////
+/// Pool
+///////////////////////////////////////////////////////////////
+
+/**
+ * zend_async_pool_t structure represents a resource pool with CircuitBreaker.
+ * It inherits from zend_async_event_t to participate in the event system.
+ */
+struct _zend_async_pool_s {
+	zend_async_event_t event;           /* Event inheritance (first member) */
+
+	/* Handler flags - which callbacks are internal C functions */
+	uint8_t handler_flags;
+
+	/* CircuitBreaker state */
+	zend_async_circuit_state_t circuit_state;
+
+	/* Pool size limits */
+	uint32_t min_size;
+	uint32_t max_size;
+
+	/* PHP wrapper object (for strategy callbacks) */
+	zend_object *wrapper;
+
+	/* Callbacks - union allows either PHP callable or internal C function */
+	union { zend_fcall_t *fcall; zend_async_pool_factory_fn internal; } factory;
+	union { zend_fcall_t *fcall; zend_async_pool_destructor_fn internal; } destructor;
+	union { zend_fcall_t *fcall; zend_async_pool_healthcheck_fn internal; } healthcheck;
+	union { zend_fcall_t *fcall; zend_async_pool_before_acquire_fn internal; } before_acquire;
+	union { zend_fcall_t *fcall; zend_async_pool_before_release_fn internal; } before_release;
+
+	/* CircuitBreakerStrategy - either PHP object or internal C struct */
+	union {
+		zend_object *object;                          /* PHP CircuitBreakerStrategy */
+		zend_async_circuit_breaker_strategy_t *internal;  /* Internal C strategy */
+	} strategy;
+
+	/* Opaque pointer for internal C pool consumers (e.g. PDO) */
+	void *user_data;
+};
+
+/* Pool handler flags */
+#define ZEND_ASYNC_POOL_F_FACTORY_INTERNAL        (1 << 0)
+#define ZEND_ASYNC_POOL_F_DESTRUCTOR_INTERNAL     (1 << 1)
+#define ZEND_ASYNC_POOL_F_HEALTHCHECK_INTERNAL    (1 << 2)
+#define ZEND_ASYNC_POOL_F_BEFORE_ACQUIRE_INTERNAL (1 << 3)
+#define ZEND_ASYNC_POOL_F_BEFORE_RELEASE_INTERNAL (1 << 4)
+#define ZEND_ASYNC_POOL_F_STRATEGY_INTERNAL       (1 << 5)
 
 ///////////////////////////////////////////////////////////////
 /// Global Macros
@@ -1337,19 +1455,27 @@ END_EXTERN_C()
 #define ZEND_ASYNC_MAIN_SCOPE ZEND_ASYNC_G(main_scope)
 #define ZEND_ASYNC_SCHEDULER ZEND_ASYNC_G(scheduler)
 
-#define ZEND_ASYNC_INCREASE_EVENT_COUNT \
-	if (ZEND_ASYNC_G(active_event_count) < UINT_MAX) { \
-		ZEND_ASYNC_G(active_event_count)++; \
-	} else { \
-		ZEND_ASSERT("The event count is already max."); \
-	}
+#define ZEND_ASYNC_INCREASE_EVENT_COUNT(ev) \
+	do { \
+		if (!ZEND_ASYNC_EVENT_IS_HIDDEN(ev)) { \
+			if (ZEND_ASYNC_G(active_event_count) < UINT_MAX) { \
+				ZEND_ASYNC_G(active_event_count)++; \
+			} else { \
+				ZEND_ASSERT("The event count is already max."); \
+			} \
+		} \
+	} while (0)
 
-#define ZEND_ASYNC_DECREASE_EVENT_COUNT \
-	if (ZEND_ASYNC_G(active_event_count) > 0) { \
-		ZEND_ASYNC_G(active_event_count)--; \
-	} else { \
-		ZEND_ASSERT("The event count is already zero."); \
-	}
+#define ZEND_ASYNC_DECREASE_EVENT_COUNT(ev) \
+	do { \
+		if (!ZEND_ASYNC_EVENT_IS_HIDDEN(ev)) { \
+			if (ZEND_ASYNC_G(active_event_count) > 0) { \
+				ZEND_ASYNC_G(active_event_count)--; \
+			} else { \
+				ZEND_ASSERT("The event count is already zero."); \
+			} \
+		} \
+	} while (0)
 
 #define ZEND_ASYNC_INCREASE_COROUTINE_COUNT \
 	if (ZEND_ASYNC_G(active_coroutine_count) < UINT_MAX) { \
@@ -1428,6 +1554,14 @@ ZEND_API extern zend_async_scheduler_launch_t zend_async_scheduler_launch_fn;
 
 /* GROUP API */
 ZEND_API extern zend_async_new_group_t zend_async_new_group_fn;
+
+/* Pool API */
+ZEND_API extern zend_async_new_pool_t zend_async_new_pool_fn;
+ZEND_API extern zend_async_new_pool_obj_t zend_async_new_pool_obj_fn;
+ZEND_API extern zend_async_pool_acquire_t zend_async_pool_acquire_fn;
+ZEND_API extern zend_async_pool_try_acquire_t zend_async_pool_try_acquire_fn;
+ZEND_API extern zend_async_pool_release_t zend_async_pool_release_fn;
+ZEND_API extern zend_async_pool_close_t zend_async_pool_close_fn;
 
 /* Iterator API */
 ZEND_API extern zend_async_new_iterator_t zend_async_new_iterator_fn;
@@ -1520,6 +1654,15 @@ ZEND_API bool zend_async_reactor_register(char *module, bool allow_override,
 
 ZEND_API void zend_async_thread_pool_register(
 		zend_string *module, bool allow_override, zend_async_queue_task_t queue_task_fn);
+
+ZEND_API void zend_async_pool_api_register(
+		char *module, bool allow_override,
+		zend_async_new_pool_t new_pool_fn,
+		zend_async_new_pool_obj_t new_pool_obj_fn,
+		zend_async_pool_acquire_t acquire_fn,
+		zend_async_pool_try_acquire_t try_acquire_fn,
+		zend_async_pool_release_t release_fn,
+		zend_async_pool_close_t close_fn);
 
 ZEND_API bool zend_async_socket_listening_register(
 		char *module, bool allow_override, zend_async_socket_listen_t socket_listen_fn);
@@ -1628,6 +1771,17 @@ ZEND_API bool zend_async_call_main_coroutine_start_handlers(zend_coroutine_t *ma
 /* GROUP API Functions */
 #define ZEND_ASYNC_NEW_GROUP() zend_async_new_group_fn(0)
 #define ZEND_ASYNC_NEW_GROUP_EX(extra_size) zend_async_new_group_fn(extra_size)
+
+/* Pool API Functions */
+#define ZEND_ASYNC_NEW_POOL(factory, destructor, healthcheck, before_acquire, before_release, min, max, healthcheck_interval) \
+	zend_async_new_pool_fn(factory, destructor, healthcheck, before_acquire, before_release, min, max, healthcheck_interval, 0)
+#define ZEND_ASYNC_NEW_POOL_EX(factory, destructor, healthcheck, before_acquire, before_release, min, max, healthcheck_interval, extra_size) \
+	zend_async_new_pool_fn(factory, destructor, healthcheck, before_acquire, before_release, min, max, healthcheck_interval, extra_size)
+#define ZEND_ASYNC_NEW_POOL_OBJ(pool) zend_async_new_pool_obj_fn(pool)
+#define ZEND_ASYNC_POOL_ACQUIRE(pool, result, timeout_ms) zend_async_pool_acquire_fn(pool, result, timeout_ms)
+#define ZEND_ASYNC_POOL_TRY_ACQUIRE(pool, result) zend_async_pool_try_acquire_fn(pool, result)
+#define ZEND_ASYNC_POOL_RELEASE(pool, resource) zend_async_pool_release_fn(pool, resource)
+#define ZEND_ASYNC_POOL_CLOSE(pool) zend_async_pool_close_fn(pool)
 
 END_EXTERN_C()
 

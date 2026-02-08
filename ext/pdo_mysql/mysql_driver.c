@@ -52,6 +52,8 @@ int _pdo_mysql_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt, const char *file, int lin
 		S = (pdo_mysql_stmt*)stmt->driver_data;
 		pdo_err = &stmt->error_code;
 		einfo   = &S->einfo;
+		/* Use statement's connection handle — dbh may be a pool template with NULL driver_data */
+		H = S->H;
 	} else {
 		pdo_err = &dbh->error_code;
 		einfo   = &H->einfo;
@@ -993,7 +995,18 @@ cleanup:
 }
 /* }}} */
 
+static void pdo_mysql_init_methods(pdo_dbh_t *dbh, bool *supports_pool)
+{
+	dbh->methods = &mysql_methods;
+	dbh->alloc_own_columns = 1;
+	dbh->max_escaped_char_length = 2;
+	if (supports_pool) {
+		*supports_pool = true;
+	}
+}
+
 const pdo_driver_t pdo_mysql_driver = {
 	PDO_DRIVER_HEADER(mysql),
-	pdo_mysql_handle_factory
+	pdo_mysql_handle_factory,
+	pdo_mysql_init_methods
 };
