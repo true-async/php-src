@@ -69,6 +69,9 @@ static bool pdo_pool_factory(zend_async_pool_t *pool, zval *result)
 
 	/* Call driver factory to create actual connection */
 	if (UNEXPECTED(!dbh->driver->db_handle_factory(conn, NULL))) {
+		if (conn->methods && conn->methods->closer) {
+			conn->methods->closer(conn);
+		}
 		efree(conn);
 		return false;
 	}
