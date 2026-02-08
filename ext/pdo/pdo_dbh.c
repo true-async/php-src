@@ -644,7 +644,9 @@ PHP_METHOD(PDO, prepare)
 {
 	pdo_stmt_t *stmt;
 	zend_string *statement;
-	zval *options = NULL, *value, *item, ctor_args;
+	zval *options = NULL, *value, *item;
+	zval ctor_args;
+	ZVAL_UNDEF(&ctor_args);
 	zend_class_entry *dbstmt_ce, *pce;
 	pdo_dbh_object_t *dbh_obj = Z_PDO_OBJECT_P(ZEND_THIS);
 	pdo_dbh_t *dbh = dbh_obj->inner;
@@ -703,6 +705,8 @@ PHP_METHOD(PDO, prepare)
 		ZVAL_COPY_VALUE(&ctor_args, &dbh->def_stmt_ctor_args);
 	}
 
+	HashTable *ctor_args_ht = Z_TYPE(ctor_args) == IS_ARRAY ? Z_ARRVAL(ctor_args) : NULL;
+
 	pdo_dbh_t *conn = pdo_pool_acquire_conn(dbh);
 	if (UNEXPECTED(conn == NULL)) {
 		pdo_raise_impl_error(dbh, NULL, "HY000", "Failed to acquire connection from pool");
@@ -731,11 +735,7 @@ PHP_METHOD(PDO, prepare)
 
 	if (conn->methods->preparer(conn, statement, stmt, options)) {
 		pdo_pool_sync_error(dbh, conn);
-		if (Z_TYPE(ctor_args) == IS_ARRAY) {
-			pdo_stmt_construct(stmt, return_value, dbstmt_ce, Z_ARRVAL(ctor_args));
-		} else {
-			pdo_stmt_construct(stmt, return_value, dbstmt_ce, /* ctor_args */ NULL);
-		}
+		pdo_stmt_construct(stmt, return_value, dbstmt_ce, ctor_args_ht);
 		return;
 	}
 
