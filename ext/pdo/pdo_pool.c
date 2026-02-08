@@ -45,6 +45,26 @@ static zend_always_inline zend_ulong pdo_pool_coro_key(zend_coroutine_t *coro)
  * Pool internal handlers
  */
 
+/* Close driver connection and free the pooled dbh */
+static void pdo_pool_free_conn(pdo_dbh_t *conn)
+{
+	if (conn->methods && conn->methods->closer) {
+		conn->methods->closer(conn);
+	}
+
+	if (conn->data_source) {
+		efree((char *)conn->data_source);
+	}
+	if (conn->username) {
+		efree(conn->username);
+	}
+	if (conn->password) {
+		efree(conn->password);
+	}
+
+	efree(conn);
+}
+
 /* Factory: creates a new driver connection */
 static bool pdo_pool_factory(zend_async_pool_t *pool, zval *result)
 {
@@ -61,25 +81,27 @@ static bool pdo_pool_factory(zend_async_pool_t *pool, zval *result)
 	conn->driver = dbh->driver;
 	conn->auto_commit = dbh->auto_commit;
 
-	/* Borrow template strings for the duration of the factory call */
-	conn->data_source = dbh->data_source;
+	// TODO: This code could be optimized in the future to avoid copying data over and over again.
+	// For now, it is implemented this way to minimize changes.
+
+	/* Copy template strings — drivers may mutate, reallocate, or overwrite
+	 * these fields during factory (e.g. PgSQL replaces ';' with ' ',
+	 * MySQL allocates username from DSN, ODBC rebuilds the whole string). */
+	conn->data_source = estrdup(dbh->data_source);
 	conn->data_source_len = dbh->data_source_len;
-	conn->username = dbh->username;
-	conn->password = dbh->password;
+	conn->username = dbh->username ? estrdup(dbh->username) : NULL;
+	conn->password = dbh->password ? estrdup(dbh->password) : NULL;
 
 	/* Call driver factory to create actual connection */
 	if (UNEXPECTED(!dbh->driver->db_handle_factory(conn, NULL))) {
-		if (conn->methods && conn->methods->closer) {
-			conn->methods->closer(conn);
-		}
-		efree(conn);
+		pdo_pool_free_conn(conn);
 		return false;
 	}
 
-	/* Driver has parsed what it needs — drop references to template strings */
-	conn->data_source = NULL;
-	conn->username = NULL;
-	conn->password = NULL;
+	/* Driver owns driver_data now — free credential copies */
+	if (conn->data_source) { efree((char *)conn->data_source); conn->data_source = NULL; }
+	if (conn->username) { efree(conn->username); conn->username = NULL; }
+	if (conn->password) { efree(conn->password); conn->password = NULL; }
 
 	ZVAL_PTR(result, conn);
 	return true;
@@ -94,11 +116,7 @@ static void pdo_pool_destructor(zend_async_pool_t *pool, zval *resource)
 		return;
 	}
 
-	if (conn->methods && conn->methods->closer) {
-		conn->methods->closer(conn);
-	}
-
-	efree(conn);
+	pdo_pool_free_conn(conn);
 }
 
 /* Healthcheck: verifies connection is still alive */
