@@ -249,6 +249,7 @@ zend_async_io_close_t zend_async_io_close_fn = NULL;
 zend_async_io_await_t zend_async_io_await_fn = NULL;
 zend_async_io_flush_t zend_async_io_flush_fn = NULL;
 zend_async_io_stat_t zend_async_io_stat_fn = NULL;
+zend_async_io_seek_t zend_async_io_seek_fn = NULL;
 
 /* Internal Context API - now uses direct functions */
 
@@ -1659,7 +1660,7 @@ ZEND_API bool zend_async_io_register(char *module, bool allow_override,
 		zend_async_io_create_t create_fn, zend_async_io_read_t read_fn,
 		zend_async_io_write_t write_fn, zend_async_io_close_t close_fn,
 		zend_async_io_await_t await_fn, zend_async_io_flush_t flush_fn,
-		zend_async_io_stat_t stat_fn)
+		zend_async_io_stat_t stat_fn, zend_async_io_seek_t seek_fn)
 {
 	if (zend_atomic_bool_exchange(&io_lock, 1)) {
 		return false;
@@ -1685,6 +1686,7 @@ ZEND_API bool zend_async_io_register(char *module, bool allow_override,
 	zend_async_io_await_fn = await_fn;
 	zend_async_io_flush_fn = flush_fn;
 	zend_async_io_stat_fn = stat_fn;
+	zend_async_io_seek_fn = seek_fn;
 
 	zend_atomic_bool_store(&io_lock, 0);
 

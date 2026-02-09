@@ -103,6 +103,7 @@ typedef enum {
 #define ZEND_ASYNC_IO_WRITABLE    (1 << 1)
 #define ZEND_ASYNC_IO_CLOSED      (1 << 2)
 #define ZEND_ASYNC_IO_EOF         (1 << 3)
+#define ZEND_ASYNC_IO_APPEND      (1 << 4)
 
 typedef struct _zend_async_io_s zend_async_io_t;
 typedef struct _zend_async_io_req_s zend_async_io_req_t;
@@ -378,6 +379,7 @@ typedef int (*zend_async_io_close_t)(zend_async_io_t *io);
 typedef int (*zend_async_io_await_t)(zend_async_io_t *io, uint32_t events, struct timeval *timeout);
 typedef zend_async_io_req_t *(*zend_async_io_flush_t)(zend_async_io_t *io);
 typedef zend_async_io_req_t *(*zend_async_io_stat_t)(zend_async_io_t *io, zend_stat_t *buf);
+typedef void (*zend_async_io_seek_t)(zend_async_io_t *io, zend_off_t offset);
 
 struct _zend_fcall_s {
 	zend_fcall_info fci;
@@ -1674,6 +1676,7 @@ ZEND_API extern zend_async_io_close_t zend_async_io_close_fn;
 ZEND_API extern zend_async_io_await_t zend_async_io_await_fn;
 ZEND_API extern zend_async_io_flush_t zend_async_io_flush_fn;
 ZEND_API extern zend_async_io_stat_t zend_async_io_stat_fn;
+ZEND_API extern zend_async_io_seek_t zend_async_io_seek_fn;
 
 ZEND_API bool zend_async_scheduler_register(char *module, bool allow_override,
 		zend_async_scheduler_launch_t scheduler_launch_fn,
@@ -1726,7 +1729,7 @@ ZEND_API bool zend_async_io_register(char *module, bool allow_override,
 		zend_async_io_create_t create_fn, zend_async_io_read_t read_fn,
 		zend_async_io_write_t write_fn, zend_async_io_close_t close_fn,
 		zend_async_io_await_t await_fn, zend_async_io_flush_t flush_fn,
-		zend_async_io_stat_t stat_fn);
+		zend_async_io_stat_t stat_fn, zend_async_io_seek_t seek_fn);
 
 ZEND_API zend_string *zend_coroutine_gen_info(
 		zend_coroutine_t *coroutine, char *zend_coroutine_name);
@@ -1980,6 +1983,7 @@ END_EXTERN_C()
 #define ZEND_ASYNC_IO_AWAIT(io, events, tv)    zend_async_io_await_fn(io, events, tv)
 #define ZEND_ASYNC_IO_FLUSH(io)                zend_async_io_flush_fn(io)
 #define ZEND_ASYNC_IO_STAT(io, buf)            zend_async_io_stat_fn(io, buf)
+#define ZEND_ASYNC_IO_SEEK(io, offset)         zend_async_io_seek_fn(io, offset)
 
 /* Iterator API Macros */
 #define ZEND_ASYNC_NEW_ITERATOR_SCOPE( \

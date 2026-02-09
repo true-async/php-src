@@ -175,6 +175,9 @@ static uint32_t php_stdiop_mode_to_io_state(const char *mode)
 	if (strchr(mode, 'w') || strchr(mode, 'a') || strchr(mode, 'x') || strchr(mode, 'c') || strchr(mode, '+')) {
 		state |= ZEND_ASYNC_IO_WRITABLE;
 	}
+	if (strchr(mode, 'a')) {
+		state |= ZEND_ASYNC_IO_APPEND;
+	}
 
 	return state;
 }
@@ -437,16 +440,20 @@ static ssize_t php_stdiop_write(php_stream *stream, const char *buf, size_t coun
 					zend_async_waker_callback_resolve, NULL);
 			ZEND_ASYNC_SUSPEND();
 			zend_async_waker_clean(coroutine);
-
-			if (UNEXPECTED(EG(exception))) {
-				req->dispose(req);
-				return -1;
-			}
 		}
 
-		if (UNEXPECTED(req->exception != NULL)) {
-			zend_throw_exception_object(req->exception);
-			req->exception = NULL;
+		if (UNEXPECTED(EG(exception)) || UNEXPECTED(req->exception != NULL)) {
+			if (!(stream->flags & PHP_STREAM_FLAG_SUPPRESS_ERRORS)) {
+				php_error_docref(NULL, E_NOTICE, "Write of %zu bytes failed with async IO error",
+						count);
+			}
+			if (EG(exception)) {
+				zend_clear_exception();
+			}
+			if (req->exception != NULL) {
+				OBJ_RELEASE(req->exception);
+				req->exception = NULL;
+			}
 			req->dispose(req);
 			return -1;
 		}
@@ -521,17 +528,22 @@ static ssize_t php_stdiop_read(php_stream *stream, char *buf, size_t count)
 					zend_async_waker_callback_resolve, NULL);
 			ZEND_ASYNC_SUSPEND();
 			zend_async_waker_clean(coroutine);
-
-			if (UNEXPECTED(EG(exception))) {
-				req->dispose(req);
-				return -1;
-			}
 		}
 
-		if (UNEXPECTED(req->exception != NULL)) {
-			zend_throw_exception_object(req->exception);
-			req->exception = NULL;
+		if (UNEXPECTED(EG(exception)) || UNEXPECTED(req->exception != NULL)) {
+			if (!(stream->flags & PHP_STREAM_FLAG_SUPPRESS_ERRORS)) {
+				php_error_docref(NULL, E_NOTICE, "Read of %zu bytes failed with async IO error",
+						count);
+			}
+			if (EG(exception)) {
+				zend_clear_exception();
+			}
+			if (req->exception != NULL) {
+				OBJ_RELEASE(req->exception);
+				req->exception = NULL;
+			}
 			req->dispose(req);
+			stream->eof = 1;
 			return -1;
 		}
 
@@ -762,11 +774,21 @@ static int php_stdiop_seek(php_stream *stream, zend_off_t offset, int whence, ze
 			return -1;
 
 		*newoffset = result;
+
+		if (data->async_io != NULL && zend_async_io_seek_fn != NULL) {
+			ZEND_ASYNC_IO_SEEK(data->async_io, result);
+		}
+
 		return 0;
 
 	} else {
 		ret = zend_fseek(data->file, offset, whence);
 		*newoffset = zend_ftell(data->file);
+
+		if (ret == 0 && data->async_io != NULL && zend_async_io_seek_fn != NULL) {
+			ZEND_ASYNC_IO_SEEK(data->async_io, *newoffset);
+		}
+
 		return ret;
 	}
 }
