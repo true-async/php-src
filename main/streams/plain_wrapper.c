@@ -35,6 +35,7 @@
 #include "SAPI.h"
 
 #include "php_streams_int.h"
+#include "zend_exceptions.h"
 #ifdef PHP_WIN32
 # include "win32/winutil.h"
 # include "win32/time.h"
@@ -144,6 +145,7 @@ typedef struct {
 	unsigned _reserved:26;
 
 	zend_async_io_t *async_io;
+	zend_async_poll_event_t *poll_event;
 
 	int lock_flag;			/* stores the lock state */
 	zend_string *temp_name;	/* if non-null, this is the path to a temporary file that
@@ -643,6 +645,11 @@ static int php_stdiop_close(php_stream *stream, int close_handle)
 	php_stdio_stream_data *data = (php_stdio_stream_data*)stream->abstract;
 
 	assert(data != NULL);
+
+	if (data->poll_event) {
+		data->poll_event->base.dispose(&data->poll_event->base);
+		data->poll_event = NULL;
+	}
 
 	if (data->async_io != NULL) {
 		const int fd_closed = ZEND_ASYNC_IO_CLOSE(data->async_io);
@@ -1195,6 +1202,41 @@ static int php_stdiop_set_option(php_stream *stream, int option, int value, void
 			return PHP_STREAM_OPTION_RETURN_OK;
 #endif
 			return -1;
+		case PHP_STREAM_OPTION_ASYNC_EVENT_HANDLE:
+			if (fd == -1) {
+				return PHP_STREAM_OPTION_RETURN_NOTIMPL;
+			}
+#ifdef PHP_WIN32
+			return PHP_STREAM_OPTION_RETURN_NOTIMPL;
+#else
+			{
+				zend_async_poll_event_t **handle_ptr = (zend_async_poll_event_t **)ptrparam;
+
+				if (data->poll_event == NULL) {
+					data->poll_event = ZEND_ASYNC_NEW_POLL_EVENT(fd, 0, 0);
+					if (UNEXPECTED(EG(exception) != NULL)) {
+						return PHP_STREAM_OPTION_RETURN_ERR;
+					}
+
+					data->poll_event->base.start(&data->poll_event->base);
+
+					if (UNEXPECTED(EG(exception) != NULL)) {
+						return PHP_STREAM_OPTION_RETURN_ERR;
+					}
+				}
+
+				zend_async_poll_proxy_t *proxy = ZEND_ASYNC_NEW_POLL_PROXY_EVENT(data->poll_event, value);
+				if (UNEXPECTED(EG(exception) != NULL)) {
+					return PHP_STREAM_OPTION_RETURN_ERR;
+				}
+
+				*handle_ptr = (zend_async_poll_event_t*)proxy;
+				proxy->base.ref_count = 0;
+
+				return PHP_STREAM_OPTION_RETURN_OK;
+			}
+#endif
+
 		default:
 			return PHP_STREAM_OPTION_RETURN_NOTIMPL;
 	}

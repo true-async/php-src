@@ -943,8 +943,8 @@ static zend_always_inline bool process_stream_array(
 			*result = -1;
 			return false;
 		} else if (UNEXPECTED(poll_event == NULL)) {
-			zend_throw_error(NULL, "Stream does not support async I/O");
-			*result = -1;
+			/* Stream does not support async poll — signal fallback to regular select() */
+			*result = -2;
 			return false;
 		}
 
