@@ -420,6 +420,11 @@ static ssize_t php_stdiop_write(php_stream *stream, const char *buf, size_t coun
 	assert(data != NULL);
 
 	if (data->async_io != NULL) {
+		ZEND_ASYNC_SCHEDULER_INIT();
+		if (UNEXPECTED(EG(exception))) {
+			return -1;
+		}
+
 		zend_async_io_req_t *req = ZEND_ASYNC_IO_WRITE(data->async_io, buf, count);
 		if (UNEXPECTED(req == NULL)) {
 			return -1;
@@ -499,6 +504,11 @@ static ssize_t php_stdiop_read(php_stream *stream, char *buf, size_t count)
 	assert(data != NULL);
 
 	if (data->async_io != NULL) {
+		ZEND_ASYNC_SCHEDULER_INIT();
+		if (UNEXPECTED(EG(exception))) {
+			return -1;
+		}
+
 		zend_async_io_req_t *req = ZEND_ASYNC_IO_READ(data->async_io, count);
 		if (UNEXPECTED(req == NULL)) {
 			return -1;
@@ -666,7 +676,7 @@ static int php_stdiop_close(php_stream *stream, int close_handle)
 			ret = close(data->fd);
 			data->fd = -1;
 		} else {
-			return 0; /* everything should be closed already -> success */
+			ret = 0; /* everything should be closed already -> success */
 		}
 		if (data->temp_name) {
 #ifdef PHP_WIN32

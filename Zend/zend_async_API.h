@@ -1892,6 +1892,13 @@ END_EXTERN_C()
 
 #define ZEND_ASYNC_SCHEDULER_LAUNCH() zend_async_scheduler_launch_fn()
 
+#define ZEND_ASYNC_SCHEDULER_INIT() \
+	do { \
+		if (UNEXPECTED(ZEND_ASYNC_CURRENT_COROUTINE == NULL)) { \
+			zend_async_scheduler_launch_fn(); \
+		} \
+	} while (0)
+
 #define ZEND_ASYNC_REACTOR_IS_ENABLED() zend_async_reactor_is_enabled()
 #define ZEND_ASYNC_REACTOR_STARTUP() zend_async_reactor_startup_fn()
 #define ZEND_ASYNC_REACTOR_SHUTDOWN() zend_async_reactor_shutdown_fn()
