@@ -754,7 +754,10 @@ PHP_FUNCTION(stream_select)
 			tv_p_async = &tv_async;
 		}
 		retval = network_async_stream_select(r_array, w_array, e_array, tv_p_async);
-		RETURN_LONG(retval >= 0 ? retval : 0);
+		if (retval != -2) {
+			RETURN_LONG(retval >= 0 ? retval : 0);
+		}
+		/* retval == -2: stream does not support async poll, fall through to regular select() */
 	}
 
 	FD_ZERO(&rfds);

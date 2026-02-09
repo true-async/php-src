@@ -18,6 +18,7 @@
 
 #include "zend_API.h"
 #include "zend_globals.h"
+#include "zend_stream.h"
 
 #define ZEND_ASYNC_API "TrueAsync API v0.9.0"
 #define ZEND_ASYNC_API_VERSION_MAJOR 0
@@ -90,6 +91,22 @@ typedef struct io_descriptor_s {
 	};
 	io_descriptor_type type;
 } io_descriptor_t;
+
+/* Async IO API — abstract I/O handle for pipes and files */
+
+typedef enum {
+	ZEND_ASYNC_IO_TYPE_PIPE,
+	ZEND_ASYNC_IO_TYPE_FILE
+} zend_async_io_type;
+
+#define ZEND_ASYNC_IO_READABLE    (1 << 0)
+#define ZEND_ASYNC_IO_WRITABLE    (1 << 1)
+#define ZEND_ASYNC_IO_CLOSED      (1 << 2)
+#define ZEND_ASYNC_IO_EOF         (1 << 3)
+#define ZEND_ASYNC_IO_APPEND      (1 << 4)
+
+typedef struct _zend_async_io_s zend_async_io_t;
+typedef struct _zend_async_io_req_s zend_async_io_req_t;
 
 /**
  * php_exec
@@ -353,6 +370,17 @@ typedef void (*zend_async_task_run_t)(zend_async_task_t *task);
 
 typedef void (*zend_async_microtask_handler_t)(zend_async_microtask_t *microtask);
 
+/* Async IO function pointer types */
+typedef zend_async_io_t *(*zend_async_io_create_t)(
+		zend_file_descriptor_t fd, zend_async_io_type type, uint32_t state);
+typedef zend_async_io_req_t *(*zend_async_io_read_t)(zend_async_io_t *io, size_t max_size);
+typedef zend_async_io_req_t *(*zend_async_io_write_t)(zend_async_io_t *io, const char *buf, size_t count);
+typedef int (*zend_async_io_close_t)(zend_async_io_t *io);
+typedef int (*zend_async_io_await_t)(zend_async_io_t *io, uint32_t events, struct timeval *timeout);
+typedef zend_async_io_req_t *(*zend_async_io_flush_t)(zend_async_io_t *io);
+typedef zend_async_io_req_t *(*zend_async_io_stat_t)(zend_async_io_t *io, zend_stat_t *buf);
+typedef void (*zend_async_io_seek_t)(zend_async_io_t *io, zend_off_t offset);
+
 struct _zend_fcall_s {
 	zend_fcall_info fci;
 	zend_fcall_info_cache fci_cache;
@@ -547,6 +575,26 @@ struct _zend_async_event_s {
 	 * May be NULL.
 	 */
 	zend_async_event_callbacks_notify_t notify_handler;
+};
+
+/* Async IO handle — full definition (requires zend_async_event_t) */
+struct _zend_async_io_s {
+	zend_async_event_t event;
+	zend_file_descriptor_t fd;
+	zend_async_io_type type;
+	uint32_t state;
+};
+
+/* Async IO request — one-shot operation request */
+struct _zend_async_io_req_s {
+	union {
+		ssize_t result;
+		ssize_t transferred;
+	};
+	zend_object *exception;
+	char *buf;
+	bool completed;
+	void (*dispose)(zend_async_io_req_t *req);
 };
 
 /**
@@ -1620,6 +1668,16 @@ ZEND_API extern zend_async_queue_task_t zend_async_queue_task_fn;
 /* Trigger Event API */
 ZEND_API extern zend_async_new_trigger_event_t zend_async_new_trigger_event_fn;
 
+/* Async IO API */
+ZEND_API extern zend_async_io_create_t zend_async_io_create_fn;
+ZEND_API extern zend_async_io_read_t zend_async_io_read_fn;
+ZEND_API extern zend_async_io_write_t zend_async_io_write_fn;
+ZEND_API extern zend_async_io_close_t zend_async_io_close_fn;
+ZEND_API extern zend_async_io_await_t zend_async_io_await_fn;
+ZEND_API extern zend_async_io_flush_t zend_async_io_flush_fn;
+ZEND_API extern zend_async_io_stat_t zend_async_io_stat_fn;
+ZEND_API extern zend_async_io_seek_t zend_async_io_seek_fn;
+
 ZEND_API bool zend_async_scheduler_register(char *module, bool allow_override,
 		zend_async_scheduler_launch_t scheduler_launch_fn,
 		zend_async_new_coroutine_t new_coroutine_fn, zend_async_new_scope_t new_scope_fn,
@@ -1666,6 +1724,12 @@ ZEND_API void zend_async_pool_api_register(
 
 ZEND_API bool zend_async_socket_listening_register(
 		char *module, bool allow_override, zend_async_socket_listen_t socket_listen_fn);
+
+ZEND_API bool zend_async_io_register(char *module, bool allow_override,
+		zend_async_io_create_t create_fn, zend_async_io_read_t read_fn,
+		zend_async_io_write_t write_fn, zend_async_io_close_t close_fn,
+		zend_async_io_await_t await_fn, zend_async_io_flush_t flush_fn,
+		zend_async_io_stat_t stat_fn, zend_async_io_seek_t seek_fn);
 
 ZEND_API zend_string *zend_coroutine_gen_info(
 		zend_coroutine_t *coroutine, char *zend_coroutine_name);
@@ -1831,6 +1895,13 @@ END_EXTERN_C()
 
 #define ZEND_ASYNC_SCHEDULER_LAUNCH() zend_async_scheduler_launch_fn()
 
+#define ZEND_ASYNC_SCHEDULER_INIT() \
+	do { \
+		if (UNEXPECTED(ZEND_ASYNC_CURRENT_COROUTINE == NULL)) { \
+			zend_async_scheduler_launch_fn(); \
+		} \
+	} while (0)
+
 #define ZEND_ASYNC_REACTOR_IS_ENABLED() zend_async_reactor_is_enabled()
 #define ZEND_ASYNC_REACTOR_STARTUP() zend_async_reactor_startup_fn()
 #define ZEND_ASYNC_REACTOR_SHUTDOWN() zend_async_reactor_shutdown_fn()
@@ -1903,6 +1974,16 @@ END_EXTERN_C()
 	zend_async_socket_listen_fn(host, port, backlog, 0)
 #define ZEND_ASYNC_SOCKET_LISTEN_EX(host, port, backlog, extra_size) \
 	zend_async_socket_listen_fn(host, port, backlog, extra_size)
+
+/* Async IO API Macros */
+#define ZEND_ASYNC_IO_CREATE(fd, type, state)  zend_async_io_create_fn(fd, type, state)
+#define ZEND_ASYNC_IO_READ(io, max_size)       zend_async_io_read_fn(io, max_size)
+#define ZEND_ASYNC_IO_WRITE(io, buf, count)    zend_async_io_write_fn(io, buf, count)
+#define ZEND_ASYNC_IO_CLOSE(io)                zend_async_io_close_fn(io)
+#define ZEND_ASYNC_IO_AWAIT(io, events, tv)    zend_async_io_await_fn(io, events, tv)
+#define ZEND_ASYNC_IO_FLUSH(io)                zend_async_io_flush_fn(io)
+#define ZEND_ASYNC_IO_STAT(io, buf)            zend_async_io_stat_fn(io, buf)
+#define ZEND_ASYNC_IO_SEEK(io, offset)         zend_async_io_seek_fn(io, offset)
 
 /* Iterator API Macros */
 #define ZEND_ASYNC_NEW_ITERATOR_SCOPE( \

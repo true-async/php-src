@@ -1684,6 +1684,10 @@ PHPAPI zend_result _php_stream_copy_to_stream_ex(php_stream *src, php_stream *de
 				src->position += nbytes;
 				dest->position += nbytes;
 
+				/* Align async IO internal positions after copy_file_range moved fd offsets directly */
+				php_stream_set_option(src, PHP_STREAM_OPTION_ALIGN_POSITION, 0, &src->position);
+				php_stream_set_option(dest, PHP_STREAM_OPTION_ALIGN_POSITION, 0, &dest->position);
+
 				if ((maxlen != PHP_STREAM_COPY_ALL && nbytes == maxlen) || php_stream_eof(src)) {
 					/* the whole request was satisfied or end-of-file reached - done */
 					*len = haveread;

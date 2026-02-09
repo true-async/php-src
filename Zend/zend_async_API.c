@@ -241,6 +241,16 @@ zend_async_new_iterator_t zend_async_new_iterator_fn = NULL;
 /* Context API */
 zend_async_new_context_t zend_async_new_context_fn = new_context;
 
+/* Async IO API */
+zend_async_io_create_t zend_async_io_create_fn = NULL;
+zend_async_io_read_t zend_async_io_read_fn = NULL;
+zend_async_io_write_t zend_async_io_write_fn = NULL;
+zend_async_io_close_t zend_async_io_close_fn = NULL;
+zend_async_io_await_t zend_async_io_await_fn = NULL;
+zend_async_io_flush_t zend_async_io_flush_fn = NULL;
+zend_async_io_stat_t zend_async_io_stat_fn = NULL;
+zend_async_io_seek_t zend_async_io_seek_fn = NULL;
+
 /* Internal Context API - now uses direct functions */
 
 ZEND_API bool zend_async_is_enabled(void)
@@ -1638,6 +1648,47 @@ ZEND_API bool zend_async_socket_listening_register(
 
 	socket_listening_module_name = module;
 	zend_async_socket_listen_fn = socket_listen_fn;
+
+	return true;
+}
+
+/* Registration lock for async IO */
+static zend_atomic_bool io_lock = { 0 };
+static char *io_module_name = NULL;
+
+ZEND_API bool zend_async_io_register(char *module, bool allow_override,
+		zend_async_io_create_t create_fn, zend_async_io_read_t read_fn,
+		zend_async_io_write_t write_fn, zend_async_io_close_t close_fn,
+		zend_async_io_await_t await_fn, zend_async_io_flush_t flush_fn,
+		zend_async_io_stat_t stat_fn, zend_async_io_seek_t seek_fn)
+{
+	if (zend_atomic_bool_exchange(&io_lock, 1)) {
+		return false;
+	}
+
+	if (io_module_name == module) {
+		return true;
+	}
+
+	if (io_module_name != NULL && false == allow_override) {
+		zend_error(E_CORE_ERROR,
+				"The module %s is trying to override Async IO API, which was registered by "
+				"the module %s.",
+				module, io_module_name);
+		return false;
+	}
+
+	io_module_name = module;
+	zend_async_io_create_fn = create_fn;
+	zend_async_io_read_fn = read_fn;
+	zend_async_io_write_fn = write_fn;
+	zend_async_io_close_fn = close_fn;
+	zend_async_io_await_fn = await_fn;
+	zend_async_io_flush_fn = flush_fn;
+	zend_async_io_stat_fn = stat_fn;
+	zend_async_io_seek_fn = seek_fn;
+
+	zend_atomic_bool_store(&io_lock, 0);
 
 	return true;
 }

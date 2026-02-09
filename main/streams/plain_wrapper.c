@@ -35,6 +35,7 @@
 #include "SAPI.h"
 
 #include "php_streams_int.h"
+#include "zend_exceptions.h"
 #ifdef PHP_WIN32
 # include "win32/winutil.h"
 # include "win32/time.h"
@@ -143,6 +144,9 @@ typedef struct {
 	unsigned is_seekable:1;		/* don't try and seek, if not set */
 	unsigned _reserved:26;
 
+	zend_async_io_t *async_io;
+	zend_async_poll_event_t *poll_event;
+
 	int lock_flag;			/* stores the lock state */
 	zend_string *temp_name;	/* if non-null, this is the path to a temporary file that
 							 * is to be deleted when the stream is closed */
@@ -162,6 +166,41 @@ typedef struct {
 	zend_stat_t sb;
 } php_stdio_stream_data;
 #define PHP_STDIOP_GET_FD(anfd, data)	anfd = (data)->file ? fileno((data)->file) : (data)->fd
+
+static uint32_t php_stdiop_mode_to_io_state(const char *mode)
+{
+	uint32_t state = 0;
+
+	if (strchr(mode, 'r') || strchr(mode, '+')) {
+		state |= ZEND_ASYNC_IO_READABLE;
+	}
+	if (strchr(mode, 'w') || strchr(mode, 'a') || strchr(mode, 'x') || strchr(mode, 'c') || strchr(mode, '+')) {
+		state |= ZEND_ASYNC_IO_WRITABLE;
+	}
+	if (strchr(mode, 'a')) {
+		state |= ZEND_ASYNC_IO_APPEND;
+	}
+
+	return state;
+}
+
+static void php_stdiop_init_async_io(php_stdio_stream_data *self, const char *mode)
+{
+	if (UNEXPECTED(zend_async_io_create_fn == NULL)) {
+		return;
+	}
+
+	const zend_async_io_type type = self->is_pipe ? ZEND_ASYNC_IO_TYPE_PIPE : ZEND_ASYNC_IO_TYPE_FILE;
+	const uint32_t state = php_stdiop_mode_to_io_state(mode);
+
+#ifdef PHP_WIN32
+	zend_file_descriptor_t fd = (HANDLE)(intptr_t) self->fd;
+#else
+	zend_file_descriptor_t fd = self->fd;
+#endif
+
+	self->async_io = ZEND_ASYNC_IO_CREATE(fd, type, state);
+}
 
 static int do_fstat(php_stdio_stream_data *d, int force)
 {
@@ -324,6 +363,8 @@ PHPAPI php_stream *_php_stream_fopen_from_fd(int fd, const char *mode, const cha
 			}
 #endif
 		}
+
+		php_stdiop_init_async_io(self, mode);
 	}
 
 	return stream;
@@ -343,6 +384,8 @@ PHPAPI php_stream *_php_stream_fopen_from_file(FILE *file, const char *mode STRE
 		} else {
 			stream->position = zend_ftell(file);
 		}
+
+		php_stdiop_init_async_io(self, mode);
 	}
 
 	return stream;
@@ -368,6 +411,9 @@ PHPAPI php_stream *_php_stream_fopen_from_pipe(FILE *file, const char *mode STRE
 
 	stream = php_stream_alloc_rel(&php_stream_stdio_ops, self, 0, mode);
 	stream->flags |= PHP_STREAM_FLAG_NO_SEEK;
+
+	php_stdiop_init_async_io(self, mode);
+
 	return stream;
 }
 
@@ -377,6 +423,47 @@ static ssize_t php_stdiop_write(php_stream *stream, const char *buf, size_t coun
 	ssize_t bytes_written;
 
 	assert(data != NULL);
+
+	if (data->async_io != NULL) {
+		ZEND_ASYNC_SCHEDULER_INIT();
+		if (UNEXPECTED(EG(exception))) {
+			return -1;
+		}
+
+		zend_async_io_req_t *req = ZEND_ASYNC_IO_WRITE(data->async_io, buf, count);
+		if (UNEXPECTED(req == NULL)) {
+			return -1;
+		}
+
+		if (!req->completed) {
+			zend_coroutine_t *const coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+			zend_async_waker_new(coroutine);
+			zend_async_resume_when(coroutine, &data->async_io->event, false,
+					zend_async_waker_callback_resolve, NULL);
+			ZEND_ASYNC_SUSPEND();
+			zend_async_waker_clean(coroutine);
+		}
+
+		if (UNEXPECTED(EG(exception)) || UNEXPECTED(req->exception != NULL)) {
+			if (!(stream->flags & PHP_STREAM_FLAG_SUPPRESS_ERRORS)) {
+				php_error_docref(NULL, E_NOTICE, "Write of %zu bytes failed with async IO error",
+						count);
+			}
+			if (EG(exception)) {
+				zend_clear_exception();
+			}
+			if (req->exception != NULL) {
+				OBJ_RELEASE(req->exception);
+				req->exception = NULL;
+			}
+			req->dispose(req);
+			return -1;
+		}
+
+		const ssize_t transferred = req->transferred;
+		req->dispose(req);
+		return transferred;
+	}
 
 	if (data->fd >= 0) {
 #ifdef PHP_WIN32
@@ -424,6 +511,53 @@ static ssize_t php_stdiop_read(php_stream *stream, char *buf, size_t count)
 	ssize_t ret;
 
 	assert(data != NULL);
+
+	if (data->async_io != NULL) {
+		ZEND_ASYNC_SCHEDULER_INIT();
+		if (UNEXPECTED(EG(exception))) {
+			return -1;
+		}
+
+		zend_async_io_req_t *req = ZEND_ASYNC_IO_READ(data->async_io, count);
+		if (UNEXPECTED(req == NULL)) {
+			return -1;
+		}
+
+		if (!req->completed) {
+			zend_coroutine_t *const coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+			zend_async_waker_new(coroutine);
+			zend_async_resume_when(coroutine, &data->async_io->event, false,
+					zend_async_waker_callback_resolve, NULL);
+			ZEND_ASYNC_SUSPEND();
+			zend_async_waker_clean(coroutine);
+		}
+
+		if (UNEXPECTED(EG(exception)) || UNEXPECTED(req->exception != NULL)) {
+			if (!(stream->flags & PHP_STREAM_FLAG_SUPPRESS_ERRORS)) {
+				php_error_docref(NULL, E_NOTICE, "Read of %zu bytes failed with async IO error",
+						count);
+			}
+			if (EG(exception)) {
+				zend_clear_exception();
+			}
+			if (req->exception != NULL) {
+				OBJ_RELEASE(req->exception);
+				req->exception = NULL;
+			}
+			req->dispose(req);
+			stream->eof = 1;
+			return -1;
+		}
+
+		const ssize_t transferred = req->transferred;
+		if (transferred > 0) {
+			memcpy(buf, req->buf, transferred);
+		} else if (transferred == 0) {
+			stream->eof = 1;
+		}
+		req->dispose(req);
+		return transferred;
+	}
 
 	if (data->fd >= 0) {
 #ifdef PHP_WIN32
@@ -512,6 +646,20 @@ static int php_stdiop_close(php_stream *stream, int close_handle)
 
 	assert(data != NULL);
 
+	if (data->poll_event) {
+		data->poll_event->base.dispose(&data->poll_event->base);
+		data->poll_event = NULL;
+	}
+
+	if (data->async_io != NULL) {
+		const int fd_closed = ZEND_ASYNC_IO_CLOSE(data->async_io);
+		data->async_io = NULL;
+		if (fd_closed) {
+			data->fd = -1;
+			data->file = NULL;
+		}
+	}
+
 #ifdef HAVE_MMAP
 	if (data->last_mapped_addr) {
 		munmap(data->last_mapped_addr, data->last_mapped_len);
@@ -547,7 +695,7 @@ static int php_stdiop_close(php_stream *stream, int close_handle)
 			ret = close(data->fd);
 			data->fd = -1;
 		} else {
-			return 0; /* everything should be closed already -> success */
+			ret = 0; /* everything should be closed already -> success */
 		}
 		if (data->temp_name) {
 #ifdef PHP_WIN32
@@ -633,11 +781,21 @@ static int php_stdiop_seek(php_stream *stream, zend_off_t offset, int whence, ze
 			return -1;
 
 		*newoffset = result;
+
+		if (data->async_io != NULL && zend_async_io_seek_fn != NULL) {
+			ZEND_ASYNC_IO_SEEK(data->async_io, result);
+		}
+
 		return 0;
 
 	} else {
 		ret = zend_fseek(data->file, offset, whence);
 		*newoffset = zend_ftell(data->file);
+
+		if (ret == 0 && data->async_io != NULL && zend_async_io_seek_fn != NULL) {
+			ZEND_ASYNC_IO_SEEK(data->async_io, *newoffset);
+		}
+
 		return ret;
 	}
 }
@@ -1044,6 +1202,49 @@ static int php_stdiop_set_option(php_stream *stream, int option, int value, void
 			return PHP_STREAM_OPTION_RETURN_OK;
 #endif
 			return -1;
+		case PHP_STREAM_OPTION_ASYNC_EVENT_HANDLE:
+			if (fd == -1) {
+				return PHP_STREAM_OPTION_RETURN_NOTIMPL;
+			}
+#ifdef PHP_WIN32
+			return PHP_STREAM_OPTION_RETURN_NOTIMPL;
+#else
+			{
+				zend_async_poll_event_t **handle_ptr = (zend_async_poll_event_t **)ptrparam;
+
+				if (data->poll_event == NULL) {
+					data->poll_event = ZEND_ASYNC_NEW_POLL_EVENT(fd, 0, 0);
+					if (UNEXPECTED(EG(exception) != NULL)) {
+						return PHP_STREAM_OPTION_RETURN_ERR;
+					}
+
+					data->poll_event->base.start(&data->poll_event->base);
+
+					if (UNEXPECTED(EG(exception) != NULL)) {
+						return PHP_STREAM_OPTION_RETURN_ERR;
+					}
+				}
+
+				zend_async_poll_proxy_t *proxy = ZEND_ASYNC_NEW_POLL_PROXY_EVENT(data->poll_event, value);
+				if (UNEXPECTED(EG(exception) != NULL)) {
+					return PHP_STREAM_OPTION_RETURN_ERR;
+				}
+
+				*handle_ptr = (zend_async_poll_event_t*)proxy;
+				proxy->base.ref_count = 0;
+
+				return PHP_STREAM_OPTION_RETURN_OK;
+			}
+#endif
+
+		case PHP_STREAM_OPTION_ALIGN_POSITION:
+			if (data->async_io != NULL && ptrparam != NULL && zend_async_io_seek_fn != NULL) {
+				zend_off_t *pos = (zend_off_t *)ptrparam;
+				ZEND_ASYNC_IO_SEEK(data->async_io, *pos);
+				return PHP_STREAM_OPTION_RETURN_OK;
+			}
+			return PHP_STREAM_OPTION_RETURN_NOTIMPL;
+
 		default:
 			return PHP_STREAM_OPTION_RETURN_NOTIMPL;
 	}
