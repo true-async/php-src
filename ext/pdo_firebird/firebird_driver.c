@@ -526,8 +526,15 @@ void php_firebird_set_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt, const char *state,
 {
 	pdo_error_type *const error_code = stmt ? &stmt->error_code : &dbh->error_code;
 	pdo_firebird_db_handle *H = (pdo_firebird_db_handle *)dbh->driver_data;
-	pdo_firebird_error_info *einfo = &H->einfo;
+	pdo_firebird_error_info *einfo;
 	int sqlcode = -999;
+
+	/* Use statement's connection handle — dbh may be a pool template with NULL driver_data */
+	if (stmt) {
+		H = ((pdo_firebird_stmt *)stmt->driver_data)->H;
+	}
+
+	einfo = &H->einfo;
 
 	if (einfo->errmsg) {
 		pefree(einfo->errmsg, dbh->is_persistent);
@@ -1430,8 +1437,16 @@ static int pdo_firebird_handle_factory(pdo_dbh_t *dbh, zval *driver_options) /* 
 /* }}} */
 
 
+static void pdo_firebird_init_methods(pdo_dbh_t *dbh, bool *supports_pool)
+{
+	dbh->methods = &firebird_methods;
+	dbh->native_case = PDO_CASE_UPPER;
+	dbh->alloc_own_columns = 1;
+}
+
 const pdo_driver_t pdo_firebird_driver = { /* {{{ */
 	PDO_DRIVER_HEADER(firebird),
-	pdo_firebird_handle_factory
+	pdo_firebird_handle_factory,
+	pdo_firebird_init_methods
 };
 /* }}} */

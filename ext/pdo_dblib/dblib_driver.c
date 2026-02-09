@@ -34,14 +34,18 @@ zval* pdo_dblib_datatypes;
 static void dblib_fetch_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt, zval *info)
 {
 	pdo_dblib_db_handle *H = (pdo_dblib_db_handle *)dbh->driver_data;
-	pdo_dblib_err *einfo = &H->err;
+	pdo_dblib_err *einfo;
 	pdo_dblib_stmt *S = NULL;
 	char *message;
 	char *msg;
 
 	if (stmt) {
 		S = (pdo_dblib_stmt*)stmt->driver_data;
+		/* Use statement's connection handle — dbh may be a pool template with NULL driver_data */
+		H = S->H;
 		einfo = &S->err;
+	} else {
+		einfo = &H->err;
 	}
 
 	if (einfo->lastmsg) {
@@ -628,6 +632,13 @@ cleanup:
 	return ret;
 }
 
+static void pdo_dblib_init_methods(pdo_dbh_t *dbh, bool *supports_pool)
+{
+	dbh->methods = &dblib_methods;
+	dbh->max_escaped_char_length = 2;
+	dbh->alloc_own_columns = 1;
+}
+
 const pdo_driver_t pdo_dblib_driver = {
 #ifdef PDO_DBLIB_IS_MSSQL
 	PDO_DRIVER_HEADER(mssql),
@@ -637,5 +648,6 @@ const pdo_driver_t pdo_dblib_driver = {
 #else
 	PDO_DRIVER_HEADER(dblib),
 #endif
-	pdo_dblib_handle_factory
+	pdo_dblib_handle_factory,
+	pdo_dblib_init_methods
 };

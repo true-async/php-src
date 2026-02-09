@@ -29,6 +29,7 @@ MySQLPDOTest::skipNotTransactionalEngine();
         'quote'								=> true,
         'inTransaction'						=> true,
         'getAvailableDrivers'				=> true,
+        'getPool'							=> true,
     ];
     $classname = get_class($db);
 

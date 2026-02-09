@@ -70,7 +70,8 @@ void pdo_odbc_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt, PDO_ODBC_HSTMT statement, 
 
 	if (stmt) {
 		S = (pdo_odbc_stmt*)stmt->driver_data;
-
+		/* Use statement's connection handle — dbh may be a pool template with NULL driver_data */
+		H = S->H;
 		einfo = &S->einfo;
 		pdo_err = &stmt->error_code;
 	}
@@ -626,7 +627,14 @@ fail:
 }
 /* }}} */
 
+static void pdo_odbc_init_methods(pdo_dbh_t *dbh, bool *supports_pool)
+{
+	dbh->methods = &odbc_methods;
+	dbh->alloc_own_columns = 1;
+}
+
 const pdo_driver_t pdo_odbc_driver = {
 	PDO_DRIVER_HEADER(odbc),
-	pdo_odbc_handle_factory
+	pdo_odbc_handle_factory,
+	pdo_odbc_init_methods
 };
