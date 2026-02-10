@@ -19,6 +19,9 @@
 */
 
 #include <stdio.h>
+#ifdef __GLIBC__
+# include <execinfo.h>
+#endif
 #include "zend.h"
 #include "zend_API.h"
 #include "zend_ast.h"
@@ -60,6 +63,39 @@ ZEND_API void ZEND_FASTCALL rc_dtor_func(zend_refcounted *p)
 #if ZEND_DEBUG
 static void ZEND_FASTCALL zend_string_destroy(zend_string *str)
 {
+	if (ZSTR_VAL(str)[ZSTR_LEN(str)] != '\0') {
+		fprintf(stderr, "\n=== ZEND_STRING CORRUPTION DETECTED ===\n");
+		fprintf(stderr, "String ptr:    %p\n", (void *)str);
+		fprintf(stderr, "String len:    %zu\n", ZSTR_LEN(str));
+		fprintf(stderr, "Byte at [len]: 0x%02x\n", (unsigned char)ZSTR_VAL(str)[ZSTR_LEN(str)]);
+		fprintf(stderr, "GC refcount:   %u\n", GC_REFCOUNT(str));
+		fprintf(stderr, "GC type:       %u\n", GC_TYPE_INFO(str));
+		size_t dump_len = ZSTR_LEN(str) < 256 ? ZSTR_LEN(str) : 256;
+		fprintf(stderr, "Content (first %zu bytes): [", dump_len);
+		for (size_t i = 0; i < dump_len; i++) {
+			unsigned char c = (unsigned char)ZSTR_VAL(str)[i];
+			if (c >= 32 && c < 127) {
+				fputc(c, stderr);
+			} else {
+				fprintf(stderr, "\\x%02x", c);
+			}
+		}
+		fprintf(stderr, "]\n");
+		fprintf(stderr, "Bytes around [len] (len-4..len+4): ");
+		for (ssize_t i = (ssize_t)ZSTR_LEN(str) - 4; i <= (ssize_t)ZSTR_LEN(str) + 4; i++) {
+			if (i >= 0) {
+				fprintf(stderr, "%02x ", (unsigned char)ZSTR_VAL(str)[i]);
+			}
+		}
+#ifdef __GLIBC__
+		fprintf(stderr, "C backtrace:\n");
+		void *bt[64];
+		int bt_size = backtrace(bt, 64);
+		backtrace_symbols_fd(bt, bt_size, 2);
+#endif
+		fprintf(stderr, "\n=== END CORRUPTION DUMP ===\n");
+		fflush(stderr);
+	}
 	CHECK_ZVAL_STRING(str);
 	ZEND_ASSERT(!ZSTR_IS_INTERNED(str));
 	ZEND_ASSERT(GC_REFCOUNT(str) == 0);
