@@ -1039,6 +1039,10 @@ ZEND_API int network_async_stream_select(zval *read_streams, zval *write_streams
 {
 	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 
+	if (UNEXPECTED(EG(exception))) {
+		return -1;
+	}
+
 	if (coroutine == NULL) {
 		errno = EINVAL;
 		return -1;

@@ -745,6 +745,29 @@ PHP_FUNCTION(stream_select)
 		Z_PARAM_LONG_OR_NULL(usec, usecnull)
 	ZEND_PARSE_PARAMETERS_END();
 
+	/* Check for buffered data before async path.
+	 * PHP streams may have data in their read buffer from a previous fgets/fread.
+	 * The async path uses libuv poll on OS-level descriptors and cannot see
+	 * data that is already in PHP's internal stream buffer. */
+	if (r_array != NULL) {
+		retval = stream_array_emulate_read_fd_set(r_array);
+		if (retval > 0) {
+			if (w_array != NULL) {
+				zval_ptr_dtor(w_array);
+				ZVAL_EMPTY_ARRAY(w_array);
+			}
+			if (e_array != NULL) {
+				zval_ptr_dtor(e_array);
+				ZVAL_EMPTY_ARRAY(e_array);
+			}
+			RETURN_LONG(retval);
+		}
+
+		if (UNEXPECTED(EG(exception))) {
+			RETURN_THROWS();
+		}
+	}
+
 	// Early async select path - avoid all fd_set processing
 	if(ZEND_ASYNC_IS_ACTIVE && (sec > 0 || usec > 0 || (secnull && usecnull))) {
 		struct timeval tv_async, *tv_p_async = NULL;
