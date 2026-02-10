@@ -30,7 +30,12 @@
 			| (ZEND_ASYNC_API_VERSION_PATCH))
 
 #ifndef PHP_WIN32
+#include <sys/socket.h>
+#include <netinet/in.h>
 #include <netdb.h>
+#else
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #endif
 
 /* Reactor Poll API */
@@ -96,7 +101,9 @@ typedef struct io_descriptor_s {
 
 typedef enum {
 	ZEND_ASYNC_IO_TYPE_PIPE,
-	ZEND_ASYNC_IO_TYPE_FILE
+	ZEND_ASYNC_IO_TYPE_FILE,
+	ZEND_ASYNC_IO_TYPE_TCP,
+	ZEND_ASYNC_IO_TYPE_UDP
 } zend_async_io_type;
 
 #define ZEND_ASYNC_IO_READABLE    (1 << 0)
@@ -107,6 +114,7 @@ typedef enum {
 
 typedef struct _zend_async_io_s zend_async_io_t;
 typedef struct _zend_async_io_req_s zend_async_io_req_t;
+typedef struct _zend_async_udp_req_s zend_async_udp_req_t;
 
 /**
  * php_exec
@@ -381,6 +389,30 @@ typedef zend_async_io_req_t *(*zend_async_io_flush_t)(zend_async_io_t *io);
 typedef zend_async_io_req_t *(*zend_async_io_stat_t)(zend_async_io_t *io, zend_stat_t *buf);
 typedef void (*zend_async_io_seek_t)(zend_async_io_t *io, zend_off_t offset);
 
+/* Socket options enum */
+typedef enum {
+	ZEND_ASYNC_SOCKET_OPT_BROADCAST = 1,      /* UDP: enable broadcast */
+	ZEND_ASYNC_SOCKET_OPT_MULTICAST_LOOP,     /* UDP: multicast loopback */
+	ZEND_ASYNC_SOCKET_OPT_MULTICAST_TTL,      /* UDP: multicast TTL */
+	ZEND_ASYNC_SOCKET_OPT_TTL,                /* UDP: packet TTL */
+	ZEND_ASYNC_SOCKET_OPT_NODELAY,            /* TCP: disable Nagle algorithm */
+	ZEND_ASYNC_SOCKET_OPT_KEEPALIVE           /* TCP: enable keep-alive */
+} zend_async_socket_option_t;
+
+/* UDP-specific function pointer types */
+typedef zend_async_udp_req_t *(*zend_async_udp_sendto_t)(
+		zend_async_io_t *io, const char *buf, size_t count,
+		const struct sockaddr *addr, socklen_t addr_len);
+typedef zend_async_udp_req_t *(*zend_async_udp_recvfrom_t)(
+		zend_async_io_t *io, size_t max_size);
+
+/* Socket option setting functions */
+typedef int (*zend_async_io_set_option_t)(
+		zend_async_io_t *io, zend_async_socket_option_t option, int value);
+typedef int (*zend_async_udp_set_membership_t)(
+		zend_async_io_t *io, const char *multicast_addr,
+		const char *interface_addr, bool join);
+
 struct _zend_fcall_s {
 	zend_fcall_info fci;
 	zend_fcall_info_cache fci_cache;
@@ -580,7 +612,10 @@ struct _zend_async_event_s {
 /* Async IO handle — full definition (requires zend_async_event_t) */
 struct _zend_async_io_s {
 	zend_async_event_t event;
-	zend_file_descriptor_t fd;
+	union {
+		zend_file_descriptor_t fd;      /* for PIPE/FILE */
+		zend_socket_t socket;            /* for TCP/UDP */
+	} descriptor;
 	zend_async_io_type type;
 	uint32_t state;
 };
@@ -595,6 +630,17 @@ struct _zend_async_io_req_s {
 	char *buf;
 	bool completed;
 	void (*dispose)(zend_async_io_req_t *req);
+};
+
+/* Async UDP request — for sendto/recvfrom operations */
+struct _zend_async_udp_req_s {
+	ssize_t transferred;
+	zend_object *exception;
+	char *buf;
+	bool completed;
+	void (*dispose)(zend_async_udp_req_t *req);
+	struct sockaddr_storage addr;  /* destination (sendto) or source (recvfrom) */
+	socklen_t addr_len;
 };
 
 /**
@@ -1677,6 +1723,10 @@ ZEND_API extern zend_async_io_await_t zend_async_io_await_fn;
 ZEND_API extern zend_async_io_flush_t zend_async_io_flush_fn;
 ZEND_API extern zend_async_io_stat_t zend_async_io_stat_fn;
 ZEND_API extern zend_async_io_seek_t zend_async_io_seek_fn;
+ZEND_API extern zend_async_udp_sendto_t zend_async_udp_sendto_fn;
+ZEND_API extern zend_async_udp_recvfrom_t zend_async_udp_recvfrom_fn;
+ZEND_API extern zend_async_io_set_option_t zend_async_io_set_option_fn;
+ZEND_API extern zend_async_udp_set_membership_t zend_async_udp_set_membership_fn;
 
 ZEND_API bool zend_async_scheduler_register(char *module, bool allow_override,
 		zend_async_scheduler_launch_t scheduler_launch_fn,
@@ -1729,7 +1779,9 @@ ZEND_API bool zend_async_io_register(char *module, bool allow_override,
 		zend_async_io_create_t create_fn, zend_async_io_read_t read_fn,
 		zend_async_io_write_t write_fn, zend_async_io_close_t close_fn,
 		zend_async_io_await_t await_fn, zend_async_io_flush_t flush_fn,
-		zend_async_io_stat_t stat_fn, zend_async_io_seek_t seek_fn);
+		zend_async_io_stat_t stat_fn, zend_async_io_seek_t seek_fn,
+		zend_async_udp_sendto_t udp_sendto_fn, zend_async_udp_recvfrom_t udp_recvfrom_fn,
+		zend_async_io_set_option_t set_option_fn, zend_async_udp_set_membership_t udp_set_membership_fn);
 
 ZEND_API zend_string *zend_coroutine_gen_info(
 		zend_coroutine_t *coroutine, char *zend_coroutine_name);
@@ -1984,6 +2036,12 @@ END_EXTERN_C()
 #define ZEND_ASYNC_IO_FLUSH(io)                zend_async_io_flush_fn(io)
 #define ZEND_ASYNC_IO_STAT(io, buf)            zend_async_io_stat_fn(io, buf)
 #define ZEND_ASYNC_IO_SEEK(io, offset)         zend_async_io_seek_fn(io, offset)
+#define ZEND_ASYNC_UDP_SENDTO(io, buf, count, addr, addr_len) \
+	zend_async_udp_sendto_fn(io, buf, count, addr, addr_len)
+#define ZEND_ASYNC_UDP_RECVFROM(io, max_size)  zend_async_udp_recvfrom_fn(io, max_size)
+#define ZEND_ASYNC_IO_SET_OPTION(io, opt, val) zend_async_io_set_option_fn(io, opt, val)
+#define ZEND_ASYNC_UDP_SET_MEMBERSHIP(io, mcast, iface, join) \
+	zend_async_udp_set_membership_fn(io, mcast, iface, join)
 
 /* Iterator API Macros */
 #define ZEND_ASYNC_NEW_ITERATOR_SCOPE( \
