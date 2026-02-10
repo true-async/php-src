@@ -484,6 +484,11 @@ ZEND_API void zend_async_thread_pool_register(
 	zend_async_queue_task_fn = queue_task_fn;
 }
 
+ZEND_API bool zend_async_thread_pool_is_enabled(void)
+{
+	return thread_pool_module_name != NULL;
+}
+
 static char *pool_module_name = NULL;
 
 ZEND_API void zend_async_pool_api_register(
