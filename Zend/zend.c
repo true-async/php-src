@@ -1084,7 +1084,6 @@ void zend_startup(zend_utility_functions *utility_functions) /* {{{ */
 #endif
 
     zend_enum_startup();
-    zend_closure_startup();
     zend_threads_startup();
 }
 /* }}} */

@@ -21,7 +21,7 @@ endforeach()
 
 add_executable(php ${SOURCES})
 
-set(PHP_INCLUDE_DIR "e:/php/deps/include")
+set(PHP_INCLUDE_DIR "../deps/include")
 
 target_include_directories(php PRIVATE
         ${CMAKE_SOURCE_DIR}
