@@ -565,6 +565,19 @@ SAPI_API void sapi_initialize_empty_request(void)
 	SG(request_info).content_type_dup = NULL;
 }
 
+SAPI_API void sapi_thread_begin(void)
+{
+	if (sapi_module.thread_begin) {
+		sapi_module.thread_begin();
+	}
+}
+
+SAPI_API void sapi_thread_end(void)
+{
+	if (sapi_module.thread_end) {
+		sapi_module.thread_end();
+	}
+}
 
 static int sapi_extract_response_code(const char *header_line)
 {

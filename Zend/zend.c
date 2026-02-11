@@ -35,6 +35,7 @@
 #include "zend_attributes.h"
 #include "zend_observer.h"
 #include "zend_fibers.h"
+#include "zend_threads.h"
 #include "zend_call_stack.h"
 #include "zend_max_execution_timer.h"
 #include "zend_hrtime.h"
@@ -1083,6 +1084,8 @@ void zend_startup(zend_utility_functions *utility_functions) /* {{{ */
 #endif
 
     zend_enum_startup();
+    zend_closure_startup();
+    zend_threads_startup();
 }
 /* }}} */
 
@@ -1166,6 +1169,8 @@ zend_result zend_post_startup(void) /* {{{ */
 
 void zend_shutdown(void) /* {{{ */
 {
+	zend_threads_shutdown();
+
 	zend_vm_dtor();
 
 	zend_destroy_rsrc_list(&EG(persistent_list));

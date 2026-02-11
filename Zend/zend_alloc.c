@@ -15,6 +15,7 @@
    | Authors: Andi Gutmans <andi@php.net>                                 |
    |          Zeev Suraski <zeev@php.net>                                 |
    |          Dmitry Stogov <dmitry@php.net>                              |
+   |          Edmond Dantes <edmondifthen@proton.me>     				  |
    +----------------------------------------------------------------------+
 */
 
@@ -231,6 +232,19 @@ typedef struct  _zend_mm_huge_list zend_mm_huge_list;
 
 static bool zend_mm_use_huge_pages = false;
 
+/**********************/
+/* Global MM Registry */
+/**********************/
+
+#define ZEND_MM_INITIAL_HEAPS 64
+
+static struct {
+	zend_mm_heap **heaps;        /* dynamic array */
+	int capacity;
+	int count;
+	MUTEX_T lock;
+} zend_mm_global_registry;
+
 /*
  * Memory is retrieved from OS by chunks of fixed size 2MB.
  * Inside chunk it's managed by pages of fixed size 4096B.
@@ -262,6 +276,41 @@ static bool zend_mm_use_huge_pages = false;
  *              (5 bits) bin number (e.g. 0 for sizes 0-2, 1 for 3-4,
  *               2 for 5-8, 3 for 9-16 etc) see zend_alloc_sizes.h
  */
+
+#ifdef ZTS
+#include "zend_spsc_queue.h"
+#include "zend_atomic.h"
+
+/* Message types for cross-thread deallocation */
+typedef enum {
+	ZEND_MM_FREE_SMALL = 0,
+	ZEND_MM_FREE_LARGE = 1,
+	ZEND_MM_FREE_HUGE  = 2
+} zend_mm_free_type;
+
+/* Remote free message */
+typedef struct _zend_mm_remote_free_msg {
+	zend_mm_free_type type;
+	void *ptr;
+	union {
+		struct {
+			int bin_num;
+		} small;
+		struct {
+			zend_mm_chunk *chunk;
+			int page_num;
+			int pages_count;
+		} large;
+		struct {
+			size_t size;
+		} huge;
+	} data;
+} zend_mm_remote_free_msg;
+
+#define ZEND_MM_INCOMING_QUEUES_INITIAL_CAPACITY 16
+#define ZEND_MM_SPSC_QUEUE_INITIAL_SIZE 8
+
+#endif
 
 struct _zend_mm_heap {
 #if ZEND_MM_CUSTOM
@@ -321,6 +370,20 @@ struct _zend_mm_heap {
 	pid_t pid;
 #endif
 	zend_random_bytes_insecure_state rand_state;
+
+#ifdef ZTS
+	/* Cross-thread support */
+	uint32_t           heap_id;                      /* unique heap ID */
+	THREAD_T           thread_id;                    /* current owner thread */
+
+	/* MPSC incoming queues (array of SPSC queues) */
+	zend_atomic_ptr    incoming_queues;              /* atomic pointer to zend_atomic_ptr[capacity] */
+	zend_atomic_int    incoming_queues_capacity;     /* atomic capacity */
+	MUTEX_T            incoming_queues_lock;         /* for resize/lazy init */
+#else
+	uint32_t           heap_id;                      /* always 0 in non-ZTS */
+	THREAD_T           thread_id;                    /* always 0 in non-ZTS */
+#endif
 };
 
 struct _zend_mm_chunk {
@@ -607,7 +670,7 @@ ZEND_ATTRIBUTE_CONST static zend_always_inline int zend_mm_bitset_nts(zend_mm_bi
 #endif
 }
 
-static zend_always_inline int zend_mm_bitset_is_set(zend_mm_bitset *bitset, int bit)
+static zend_always_inline int zend_mm_bitset_is_set(const zend_mm_bitset *bitset, const int bit)
 {
 	return ZEND_BIT_TEST(bitset, bit);
 }
@@ -896,6 +959,12 @@ static void zend_mm_free_huge(zend_mm_heap *heap, void *ptr ZEND_FILE_LINE_DC ZE
 static void zend_mm_change_huge_block_size(zend_mm_heap *heap, void *ptr, size_t size, size_t dbg_size ZEND_FILE_LINE_DC ZEND_FILE_LINE_ORIG_DC);
 #else
 static void zend_mm_change_huge_block_size(zend_mm_heap *heap, void *ptr, size_t size ZEND_FILE_LINE_DC ZEND_FILE_LINE_ORIG_DC);
+#endif
+
+#ifdef ZTS
+static void zend_mm_free_small_remote(zend_mm_heap *owner_heap, void *ptr, int bin_num ZEND_FILE_LINE_DC ZEND_FILE_LINE_ORIG_DC);
+static void zend_mm_free_large_remote(zend_mm_heap *owner_heap, zend_mm_chunk *chunk, int page_num, int pages_count ZEND_FILE_LINE_DC ZEND_FILE_LINE_ORIG_DC);
+static void zend_mm_free_huge_remote(zend_mm_heap *owner_heap, void *ptr ZEND_FILE_LINE_DC ZEND_FILE_LINE_ORIG_DC);
 #endif
 
 /**************/
@@ -1413,6 +1482,36 @@ static zend_always_inline void *zend_mm_alloc_small(zend_mm_heap *heap, int bin_
 	}
 }
 
+#ifdef ZTS
+/**
+ * Compare thread IDs in a platform-independent way.
+ */
+static zend_always_inline bool zend_mm_thread_equal(THREAD_T t1, THREAD_T t2)
+{
+#ifdef TSRM_WIN32
+	return t1 == t2;
+#else
+	return pthread_equal(t1, t2);
+#endif
+}
+
+/**
+ * Determine heap owner for a given pointer (small/large blocks only).
+ * Returns NULL for huge blocks (ownership detection not yet implemented).
+ */
+static zend_always_inline zend_mm_heap *zend_mm_ptr_to_heap(void *ptr)
+{
+	const size_t page_offset = ZEND_MM_ALIGNED_OFFSET(ptr, ZEND_MM_CHUNK_SIZE);
+
+	if (UNEXPECTED(page_offset == 0)) {
+		return NULL;
+	}
+
+	const zend_mm_chunk *chunk = (zend_mm_chunk*)ZEND_MM_ALIGNED_BASE(ptr, ZEND_MM_CHUNK_SIZE);
+	return chunk->heap;
+}
+#endif
+
 static zend_always_inline void zend_mm_free_small(zend_mm_heap *heap, void *ptr, int bin_num)
 {
 	ZEND_ASSERT(bin_data_size[bin_num] >= ZEND_MM_MIN_USEABLE_BIN_SIZE);
@@ -1434,6 +1533,217 @@ static zend_always_inline void zend_mm_free_small(zend_mm_heap *heap, void *ptr,
 	zend_mm_set_next_free_slot(heap, bin_num, p, heap->free_slot[bin_num]);
 	heap->free_slot[bin_num] = p;
 }
+
+#ifdef ZTS
+/**
+ * Get or create SPSC queue for cross-thread deallocation.
+ * Uses atomic operations + double-checked locking for thread safety.
+ * Fast path: lock-free atomic loads (hot path).
+ * Slow path: mutex-protected resize/allocation (rare).
+ */
+static zend_spsc_queue *zend_mm_get_or_create_incoming_queue(zend_mm_heap *owner_heap, const int sender_heap_id)
+{
+	zend_atomic_ptr *queues_array = zend_atomic_ptr_load_ex(&owner_heap->incoming_queues);
+	int capacity = zend_atomic_int_load_ex(&owner_heap->incoming_queues_capacity);
+	const int sender_heap_index = sender_heap_id - 1;
+
+	if (EXPECTED(queues_array != NULL && sender_heap_id < capacity)) {
+		zend_spsc_queue *queue = zend_atomic_ptr_load_ex(&queues_array[sender_heap_index]);
+
+		if (EXPECTED(queue != NULL)) {
+			return queue;
+		}
+	}
+
+	tsrm_mutex_lock(owner_heap->incoming_queues_lock);
+
+	queues_array = (zend_atomic_ptr*)zend_atomic_ptr_load_ex(&owner_heap->incoming_queues);
+	capacity = zend_atomic_int_load_ex(&owner_heap->incoming_queues_capacity);
+
+	if (sender_heap_id >= capacity) {
+		const int new_capacity = (sender_heap_id + 1 > ZEND_MM_INCOMING_QUEUES_INITIAL_CAPACITY)
+			? sender_heap_id + 1
+			: ZEND_MM_INCOMING_QUEUES_INITIAL_CAPACITY;
+
+		zend_atomic_ptr *new_queues = calloc(new_capacity, sizeof(zend_atomic_ptr));
+
+		if (UNEXPECTED(!new_queues)) {
+			tsrm_mutex_unlock(owner_heap->incoming_queues_lock);
+			return NULL;
+		}
+
+		if (queues_array != NULL) {
+			memcpy(new_queues, queues_array, capacity * sizeof(zend_atomic_ptr));
+			free(queues_array);
+		}
+
+		zend_atomic_ptr_store_ex(&owner_heap->incoming_queues, new_queues);
+		zend_atomic_int_store_ex(&owner_heap->incoming_queues_capacity, new_capacity);
+
+		queues_array = new_queues;
+		capacity = new_capacity;
+	}
+
+	zend_spsc_queue *queue = zend_atomic_ptr_load_ex(&queues_array[sender_heap_index]);
+
+	if (queue == NULL) {
+		queue = malloc(sizeof(zend_spsc_queue));
+
+		if (UNEXPECTED(!queue)) {
+			tsrm_mutex_unlock(owner_heap->incoming_queues_lock);
+			return NULL;
+		}
+
+		if (!zend_spsc_queue_init(queue, ZEND_MM_SPSC_QUEUE_INITIAL_SIZE, true)) {
+			free(queue);
+			tsrm_mutex_unlock(owner_heap->incoming_queues_lock);
+			return NULL;
+		}
+
+		zend_atomic_ptr_store_ex(&queues_array[sender_heap_index], queue);
+	}
+
+	tsrm_mutex_unlock(owner_heap->incoming_queues_lock);
+	return queue;
+}
+
+/**
+ * Cross-thread free for small blocks.
+ * Enqueues message to owner heap's SPSC incoming queue.
+ */
+static void zend_mm_free_small_remote(zend_mm_heap *owner_heap, void *ptr, int bin_num ZEND_FILE_LINE_DC ZEND_FILE_LINE_ORIG_DC)
+{
+	const zend_mm_heap *current_heap = zend_mm_get_heap();
+	zend_spsc_queue *queue = zend_mm_get_or_create_incoming_queue(owner_heap, (int)current_heap->heap_id);
+
+	if (UNEXPECTED(!queue)) {
+		zend_mm_panic("Failed to create incoming queue for remote free");
+		return;
+	}
+
+	zend_mm_remote_free_msg *msg = malloc(sizeof(zend_mm_remote_free_msg));
+	if (UNEXPECTED(!msg)) {
+		zend_mm_panic("Failed to allocate remote free message");
+		return;
+	}
+
+	msg->type = ZEND_MM_FREE_SMALL;
+	msg->ptr = ptr;
+	msg->data.small.bin_num = bin_num;
+
+	if (UNEXPECTED(!zend_spsc_queue_push(queue, msg))) {
+		free(msg);
+		zend_mm_panic("Failed to enqueue remote free message");
+	}
+}
+
+/**
+ * Cross-thread free for large blocks.
+ * Enqueues message to owner heap's SPSC incoming queue.
+ */
+static void zend_mm_free_large_remote(zend_mm_heap *owner_heap, zend_mm_chunk *chunk, int page_num, int pages_count ZEND_FILE_LINE_DC ZEND_FILE_LINE_ORIG_DC)
+{
+	const zend_mm_heap *current_heap = zend_mm_get_heap();
+	zend_spsc_queue *queue = zend_mm_get_or_create_incoming_queue(owner_heap, (int)current_heap->heap_id);
+
+	if (UNEXPECTED(!queue)) {
+		zend_mm_panic("Failed to create incoming queue for remote free");
+		return;
+	}
+
+	zend_mm_remote_free_msg *msg = (zend_mm_remote_free_msg *)malloc(sizeof(zend_mm_remote_free_msg));
+	if (UNEXPECTED(!msg)) {
+		zend_mm_panic("Failed to allocate remote free message");
+		return;
+	}
+
+	msg->type = ZEND_MM_FREE_LARGE;
+	msg->ptr = ZEND_MM_PAGE_ADDR(chunk, page_num);
+	msg->data.large.chunk = chunk;
+	msg->data.large.page_num = page_num;
+	msg->data.large.pages_count = pages_count;
+
+	if (UNEXPECTED(!zend_spsc_queue_push(queue, &msg))) {
+		free(msg);
+		zend_mm_panic("Failed to enqueue remote free message");
+	}
+}
+
+/**
+ * Cross-thread free for huge blocks.
+ * TODO: Phase 3 - implement global free huge pool with recycling.
+ * For now, enqueue message (size will be determined by owner).
+ */
+static void zend_mm_free_huge_remote(zend_mm_heap *owner_heap, void *ptr ZEND_FILE_LINE_DC ZEND_FILE_LINE_ORIG_DC)
+{
+	const zend_mm_heap *current_heap = zend_mm_get_heap();
+	zend_spsc_queue *queue = zend_mm_get_or_create_incoming_queue(owner_heap, (int)current_heap->heap_id);
+
+	if (UNEXPECTED(!queue)) {
+		zend_mm_panic("Failed to create incoming queue for remote free");
+		return;
+	}
+
+	zend_mm_remote_free_msg *msg = (zend_mm_remote_free_msg *)malloc(sizeof(zend_mm_remote_free_msg));
+	if (UNEXPECTED(!msg)) {
+		zend_mm_panic("Failed to allocate remote free message");
+		return;
+	}
+
+	msg->type = ZEND_MM_FREE_HUGE;
+	msg->ptr = ptr;
+	msg->data.huge.size = 0;
+
+	if (UNEXPECTED(!zend_spsc_queue_push(queue, &msg))) {
+		free(msg);
+		zend_mm_panic("Failed to enqueue remote free message");
+	}
+}
+
+/**
+ * Collect and process all pending remote frees for this heap.
+ * Should be called periodically by heap owner thread.
+ */
+static void zend_mm_collect_remote_frees(zend_mm_heap *heap)
+{
+	zend_atomic_ptr *queues_array = zend_atomic_ptr_load_ex(&heap->incoming_queues);
+	if (UNEXPECTED(queues_array == NULL)) {
+		return;
+	}
+
+	const int capacity = zend_atomic_int_load_ex(&heap->incoming_queues_capacity);
+
+	for (int i = 0; i < capacity; i++) {
+		zend_spsc_queue *queue = zend_atomic_ptr_load_ex(&queues_array[i]);
+
+		if (EXPECTED(queue == NULL)) {
+			continue;
+		}
+
+		void *msg_ptr;
+		while (zend_spsc_queue_pop(queue, &msg_ptr)) {
+			zend_mm_remote_free_msg *msg = msg_ptr;
+
+			switch (msg->type) {
+				case ZEND_MM_FREE_SMALL:
+					zend_mm_free_small(heap, msg->ptr, msg->data.small.bin_num);
+					break;
+
+				case ZEND_MM_FREE_LARGE:
+					zend_mm_free_large(heap, msg->data.large.chunk,
+						msg->data.large.page_num, msg->data.large.pages_count);
+					break;
+
+				case ZEND_MM_FREE_HUGE:
+					zend_mm_free_huge(heap, msg->ptr ZEND_FILE_LINE_CC ZEND_FILE_LINE_EMPTY_CC);
+					break;
+			}
+
+			free(msg);
+		}
+	}
+}
+#endif
 
 /********/
 /* Heap */
@@ -1514,27 +1824,61 @@ static zend_always_inline void *zend_mm_alloc_heap(zend_mm_heap *heap, size_t si
 
 static zend_always_inline void zend_mm_free_heap(zend_mm_heap *heap, void *ptr ZEND_FILE_LINE_DC ZEND_FILE_LINE_ORIG_DC)
 {
+	if (UNEXPECTED(ptr == NULL)) {
+		return;
+	}
+
 	size_t page_offset = ZEND_MM_ALIGNED_OFFSET(ptr, ZEND_MM_CHUNK_SIZE);
 
-	if (UNEXPECTED(page_offset == 0)) {
-		if (ptr != NULL) {
-			zend_mm_free_huge(heap, ptr ZEND_FILE_LINE_RELAY_CC ZEND_FILE_LINE_ORIG_RELAY_CC);
+#ifdef ZTS
+	// Small/large blocks
+	if (EXPECTED(page_offset != 0)) {
+		zend_mm_heap *owner_heap = zend_mm_ptr_to_heap(ptr);
+		zend_mm_chunk *chunk = (zend_mm_chunk*)ZEND_MM_ALIGNED_BASE(ptr, ZEND_MM_CHUNK_SIZE);
+		int page_num = (int)(page_offset / ZEND_MM_PAGE_SIZE);
+		zend_mm_page_info info = chunk->map[page_num];
+
+		ZEND_MM_CHECK(chunk->heap == owner_heap, "zend_mm_heap corrupted");
+
+		// Local free: same thread (hot path)
+		if (EXPECTED(zend_mm_thread_equal(tsrm_thread_id(), owner_heap->thread_id))) {
+			if (EXPECTED(info & ZEND_MM_IS_SRUN)) {
+				zend_mm_free_small(owner_heap, ptr, ZEND_MM_SRUN_BIN_NUM(info));
+			} else {
+				ZEND_MM_CHECK(ZEND_MM_ALIGNED_OFFSET(page_offset, ZEND_MM_PAGE_SIZE) == 0, "zend_mm_heap corrupted");
+				zend_mm_free_large(owner_heap, chunk, page_num, ZEND_MM_LRUN_PAGES(info));
+			}
+		} else {
+			// Remote free: cross-thread
+			if (EXPECTED(info & ZEND_MM_IS_SRUN)) {
+				zend_mm_free_small_remote(owner_heap, ptr, ZEND_MM_SRUN_BIN_NUM(info) ZEND_FILE_LINE_RELAY_CC ZEND_FILE_LINE_ORIG_RELAY_CC);
+			} else {
+				ZEND_MM_CHECK(ZEND_MM_ALIGNED_OFFSET(page_offset, ZEND_MM_PAGE_SIZE) == 0, "zend_mm_heap corrupted");
+				zend_mm_free_large_remote(owner_heap, chunk, page_num, ZEND_MM_LRUN_PAGES(info) ZEND_FILE_LINE_RELAY_CC ZEND_FILE_LINE_ORIG_RELAY_CC);
+			}
 		}
+	} else {
+		// Huge blocks: ownership unknown
+		zend_mm_free_huge(heap, ptr ZEND_FILE_LINE_RELAY_CC ZEND_FILE_LINE_ORIG_RELAY_CC);
+	}
+#else
+	if (UNEXPECTED(page_offset == 0)) {
+		zend_mm_free_huge(heap, ptr ZEND_FILE_LINE_RELAY_CC ZEND_FILE_LINE_ORIG_RELAY_CC);
 	} else {
 		zend_mm_chunk *chunk = (zend_mm_chunk*)ZEND_MM_ALIGNED_BASE(ptr, ZEND_MM_CHUNK_SIZE);
 		int page_num = (int)(page_offset / ZEND_MM_PAGE_SIZE);
 		zend_mm_page_info info = chunk->map[page_num];
 
 		ZEND_MM_CHECK(chunk->heap == heap, "zend_mm_heap corrupted");
+
 		if (EXPECTED(info & ZEND_MM_IS_SRUN)) {
 			zend_mm_free_small(heap, ptr, ZEND_MM_SRUN_BIN_NUM(info));
-		} else /* if (info & ZEND_MM_IS_LRUN) */ {
-			int pages_count = ZEND_MM_LRUN_PAGES(info);
-
+		} else {
 			ZEND_MM_CHECK(ZEND_MM_ALIGNED_OFFSET(page_offset, ZEND_MM_PAGE_SIZE) == 0, "zend_mm_heap corrupted");
-			zend_mm_free_large(heap, chunk, page_num, pages_count);
+			zend_mm_free_large(heap, chunk, page_num, ZEND_MM_LRUN_PAGES(info));
 		}
 	}
+#endif
 }
 
 static size_t zend_mm_size(zend_mm_heap *heap, void *ptr ZEND_FILE_LINE_DC ZEND_FILE_LINE_ORIG_DC)
@@ -1872,8 +2216,12 @@ static size_t zend_mm_del_huge_block(zend_mm_heap *heap, void *ptr ZEND_FILE_LIN
 		prev = list;
 		list = list->next;
 	}
+#ifdef ZTS
+	return 0;  /* Not found - cross-thread huge free */
+#else
 	ZEND_MM_CHECK(0, "zend_mm_heap corrupted");
 	return 0;
+#endif
 }
 
 static size_t zend_mm_get_huge_block_size(zend_mm_heap *heap, void *ptr ZEND_FILE_LINE_DC ZEND_FILE_LINE_ORIG_DC)
@@ -1991,6 +2339,13 @@ static void zend_mm_free_huge(zend_mm_heap *heap, void *ptr ZEND_FILE_LINE_DC ZE
 
 	ZEND_MM_CHECK(ZEND_MM_ALIGNED_OFFSET(ptr, ZEND_MM_CHUNK_SIZE) == 0, "zend_mm_heap corrupted");
 	size = zend_mm_del_huge_block(heap, ptr ZEND_FILE_LINE_RELAY_CC ZEND_FILE_LINE_ORIG_RELAY_CC);
+#ifdef ZTS
+	if (UNEXPECTED(size == 0)) {
+		// Cross-thread free
+		zend_mm_free_huge_remote(heap, ptr ZEND_FILE_LINE_RELAY_CC ZEND_FILE_LINE_ORIG_RELAY_CC);
+		return;
+	}
+#endif
 	zend_mm_chunk_free(heap, ptr, size);
 #if ZEND_MM_STAT || ZEND_MM_LIMIT
 	heap->real_size -= size;
@@ -2043,8 +2398,89 @@ ZEND_API void zend_mm_refresh_key_child(zend_mm_heap *heap)
 #endif
 }
 
+#ifdef ZTS
+/**********************/
+/* Registry Functions */
+/**********************/
+
+static void zend_mm_registry_init(void)
+{
+	if (zend_mm_global_registry.lock == NULL) {
+		zend_mm_global_registry.lock = tsrm_mutex_alloc();
+	}
+
+	tsrm_mutex_lock(zend_mm_global_registry.lock);
+
+	if (zend_mm_global_registry.heaps == NULL) {
+		zend_mm_global_registry.heaps = (zend_mm_heap**)calloc(ZEND_MM_INITIAL_HEAPS, sizeof(zend_mm_heap*));
+		zend_mm_global_registry.capacity = ZEND_MM_INITIAL_HEAPS;
+		zend_mm_global_registry.count = 0;
+	}
+
+	tsrm_mutex_unlock(zend_mm_global_registry.lock);
+}
+
+static uint32_t zend_mm_registry_allocate_id(zend_mm_heap *heap)
+{
+	tsrm_mutex_lock(zend_mm_global_registry.lock);
+
+	/* Find free slot */
+	for (int i = 0; i < zend_mm_global_registry.capacity; i++) {
+		if (zend_mm_global_registry.heaps[i] == NULL) {
+			zend_mm_global_registry.heaps[i] = heap;
+			zend_mm_global_registry.count++;
+			tsrm_mutex_unlock(zend_mm_global_registry.lock);
+			return (uint32_t)i;
+		}
+	}
+
+	/* Need to expand */
+	int old_capacity = zend_mm_global_registry.capacity;
+	int new_capacity = old_capacity * 2;
+	zend_mm_heap **new_heaps = (zend_mm_heap**)realloc(
+		zend_mm_global_registry.heaps,
+		new_capacity * sizeof(zend_mm_heap*)
+	);
+
+	if (new_heaps == NULL) {
+		tsrm_mutex_unlock(zend_mm_global_registry.lock);
+		return (uint32_t)-1;  /* allocation failed */
+	}
+
+	/* Zero new slots */
+	memset(new_heaps + old_capacity, 0, old_capacity * sizeof(zend_mm_heap*));
+
+	zend_mm_global_registry.heaps = new_heaps;
+	zend_mm_global_registry.capacity = new_capacity;
+
+	/* Use first new slot */
+	zend_mm_global_registry.heaps[old_capacity] = heap;
+	zend_mm_global_registry.count++;
+
+	tsrm_mutex_unlock(zend_mm_global_registry.lock);
+	return (uint32_t)old_capacity;
+}
+
+static void zend_mm_registry_free_id(uint32_t heap_id)
+{
+	tsrm_mutex_lock(zend_mm_global_registry.lock);
+
+	if (heap_id < zend_mm_global_registry.capacity) {
+		zend_mm_global_registry.heaps[heap_id] = NULL;
+		zend_mm_global_registry.count--;
+	}
+
+	tsrm_mutex_unlock(zend_mm_global_registry.lock);
+}
+#endif /* ZTS */
+
 static zend_mm_heap *zend_mm_init(void)
 {
+#ifdef ZTS
+	/* Initialize global registry if needed */
+	zend_mm_registry_init();
+#endif
+
 	zend_mm_chunk *chunk = (zend_mm_chunk*)zend_mm_chunk_alloc_int(ZEND_MM_CHUNK_SIZE, ZEND_MM_CHUNK_SIZE);
 	zend_mm_heap *heap;
 
@@ -2094,6 +2530,21 @@ static zend_mm_heap *zend_mm_init(void)
 #if ZEND_DEBUG
 	heap->pid = getpid();
 #endif
+
+#ifdef ZTS
+	/* Register heap in global registry */
+	heap->heap_id = zend_mm_registry_allocate_id(heap);
+	heap->thread_id = tsrm_thread_id();
+
+	/* Initialize MPSC incoming queues (atomic pointers, lazy allocation) */
+	zend_atomic_ptr_store_ex(&heap->incoming_queues, NULL);
+	zend_atomic_int_store_ex(&heap->incoming_queues_capacity, 0);
+	heap->incoming_queues_lock = tsrm_mutex_alloc();
+#else
+	heap->heap_id = 0;
+	heap->thread_id = 0;
+#endif
+
 	return heap;
 }
 
@@ -2307,6 +2758,36 @@ static zend_long zend_mm_find_leaks_huge(zend_mm_heap *heap, zend_mm_huge_list *
 	return count;
 }
 
+static bool zend_mm_chunk_is_empty(const zend_mm_chunk *chunk)
+{
+	/* Check if all pages in chunk are free */
+	for (uint32_t i = ZEND_MM_FIRST_PAGE; i < chunk->free_tail; i++) {
+		if (zend_mm_bitset_is_set(chunk->free_map, (int)i)) {
+			return false; /* Found allocated page */
+		}
+	}
+	return true;
+}
+
+static bool zend_mm_has_active_allocations(const zend_mm_heap *heap)
+{
+	/* Check for huge blocks */
+	if (heap->huge_list != NULL) {
+		return true;
+	}
+
+	/* Check all chunks for allocated pages */
+	const zend_mm_chunk *p = heap->main_chunk;
+	do {
+		if (!zend_mm_chunk_is_empty(p)) {
+			return true;
+		}
+		p = p->next;
+	} while (p != heap->main_chunk);
+
+	return false;
+}
+
 static void zend_mm_check_leaks(zend_mm_heap *heap)
 {
 	zend_mm_huge_list *list;
@@ -2430,6 +2911,85 @@ static void zend_mm_check_freelists(zend_mm_heap *heap)
 }
 #endif
 
+/**
+ * Free empty chunks and move them to cache according to average usage.
+ * Walks through active chunks list, checks each chunk for allocations.
+ * Empty chunks are either moved to cache or freed based on avg_chunks_count formula.
+ *
+ * Returns true if all chunks (except main_chunk) are empty, false otherwise.
+ */
+static bool zend_mm_free_empty_chunks(zend_mm_heap *heap)
+{
+	bool all_chunks_empty = true;
+
+	zend_mm_chunk *prev = heap->main_chunk;
+	zend_mm_chunk *chunk = heap->main_chunk->next;
+
+	while (chunk != heap->main_chunk) {
+		zend_mm_chunk *next = chunk->next;
+
+		if (zend_mm_chunk_is_empty(chunk)) {
+			/* Remove from active list */
+			prev->next = next;
+			next->prev = prev;
+			heap->chunks_count--;
+
+			/* Decide: move to cache OR free immediately based on average formula */
+			if (heap->chunks_count + heap->cached_chunks_count < heap->avg_chunks_count + 0.1) {
+				/* Move to cache for future reuse */
+				chunk->next = heap->cached_chunks;
+				heap->cached_chunks = chunk;
+				heap->cached_chunks_count++;
+			} else {
+				/* Free immediately - too many cached already */
+#if ZEND_MM_STAT || ZEND_MM_LIMIT
+				heap->real_size -= ZEND_MM_CHUNK_SIZE;
+#endif
+				zend_mm_chunk_free(heap, chunk, ZEND_MM_CHUNK_SIZE);
+			}
+		} else {
+			/* Chunk has active allocations, keep in list */
+			all_chunks_empty = false;
+			prev = chunk;
+		}
+
+		chunk = next;
+	}
+
+	return all_chunks_empty;
+}
+
+/**
+ * Cleanup cached chunks based on average usage formula.
+ * Frees some cached chunks to maintain optimal cache size,
+ * clears (memsets to 0) remaining cached chunks.
+ */
+static void zend_mm_cleanup_cached_chunks(zend_mm_heap *heap)
+{
+	zend_mm_chunk *p;
+
+	/* Update average chunks count based on peak usage */
+	heap->avg_chunks_count = (heap->avg_chunks_count + (double)heap->peak_chunks_count) / 2.0;
+
+	/* Free cached chunks exceeding average count */
+	while ((double)heap->cached_chunks_count + 0.9 > heap->avg_chunks_count &&
+	       heap->cached_chunks) {
+		p = heap->cached_chunks;
+		heap->cached_chunks = p->next;
+		zend_mm_chunk_free(heap, p, ZEND_MM_CHUNK_SIZE);
+		heap->cached_chunks_count--;
+	}
+
+	/* Clear remaining cached chunks (memset to 0) */
+	p = heap->cached_chunks;
+	while (p != NULL) {
+		zend_mm_chunk *q = p->next;
+		memset(p, 0, sizeof(zend_mm_chunk));
+		p->next = q;
+		p = q;
+	}
+}
+
 ZEND_API void zend_mm_shutdown(zend_mm_heap *heap, bool full, bool silent)
 {
 	zend_mm_chunk *p;
@@ -2468,8 +3028,22 @@ ZEND_API void zend_mm_shutdown(zend_mm_heap *heap, bool full, bool silent)
 	}
 #endif
 
+#ifdef ZTS
+	/* Process all pending remote frees before checking for leaks */
+	zend_mm_collect_remote_frees(heap);
+
+	// TODO: optimize it: Instead of calling this function, it’s better to immediately free everything that can be freed.
+	const bool has_active_allocations = zend_mm_has_active_allocations(heap);
+#else
+	const bool has_active_allocations = false;
+#endif
+
 #if ZEND_DEBUG
-	if (!silent) {
+	/* Only check for leaks if:
+	 * - full shutdown is requested (final cleanup), OR
+	 * - there are no active allocations held by other threads
+	 */
+	if (!silent && (full || !has_active_allocations)) {
 		char *tmp = getenv("ZEND_ALLOC_PRINT_LEAKS");
 		if (!tmp || ZEND_ATOL(tmp)) {
 			zend_mm_check_leaks(heap);
@@ -2477,7 +3051,12 @@ ZEND_API void zend_mm_shutdown(zend_mm_heap *heap, bool full, bool silent)
 	}
 #endif
 
-	/* free huge blocks */
+	/*
+	 * Free huge blocks that should be empty at this point.
+	 * If heap->huge_list is not empty after remote frees were processed,
+	 * it indicates either a memory leak or cross-thread references.
+	 * We free them anyway at this stage.
+	 */
 	list = heap->huge_list;
 	heap->huge_list = NULL;
 	while (list) {
@@ -2486,44 +3065,53 @@ ZEND_API void zend_mm_shutdown(zend_mm_heap *heap, bool full, bool silent)
 		zend_mm_chunk_free(heap, q->ptr, q->size);
 	}
 
-	/* move all chunks except of the first one into the cache */
-	p = heap->main_chunk->next;
-	while (p != heap->main_chunk) {
-		zend_mm_chunk *q = p->next;
-		p->next = heap->cached_chunks;
-		heap->cached_chunks = p;
-		p = q;
-		heap->chunks_count--;
-		heap->cached_chunks_count++;
+	/*
+	 * Free empty chunks and move them to cache.
+	 * Non-empty chunks (with active allocations) remain in the active list.
+	 * Returns true if all chunks (except main_chunk) are empty.
+	 */
+	const bool all_chunks_freed = zend_mm_free_empty_chunks(heap);
+
+	/*
+	 * If not full shutdown and some chunks still have allocations,
+	 * cleanup cached chunks only and keep heap alive for remote frees.
+	 */
+	if (!full && !all_chunks_freed) {
+		zend_mm_cleanup_cached_chunks(heap);
+		return;
 	}
 
 	if (full) {
-		/* free all cached chunks */
+#ifdef ZTS
+		zend_atomic_ptr *queues_array = zend_atomic_ptr_load_ex(&heap->incoming_queues);
+
+		if (queues_array != NULL) {
+			const uint32_t capacity = zend_atomic_int_load_ex(&heap->incoming_queues_capacity);
+
+			for (uint32_t i = 0; i < capacity; i++) {
+				zend_spsc_queue *queue = zend_atomic_ptr_load_ex(&queues_array[i]);
+
+				if (queue != NULL) {
+					zend_spsc_queue_free(queue);
+					free(queue);
+				}
+			}
+
+			free(queues_array);
+		}
+
+		tsrm_mutex_free(heap->incoming_queues_lock);
+		zend_mm_registry_free_id(heap->heap_id);
+#endif
 		while (heap->cached_chunks) {
 			p = heap->cached_chunks;
 			heap->cached_chunks = p->next;
 			zend_mm_chunk_free(heap, p, ZEND_MM_CHUNK_SIZE);
 		}
-		/* free the first chunk */
 		zend_mm_chunk_free(heap, heap->main_chunk, ZEND_MM_CHUNK_SIZE);
 	} else {
-		/* free some cached chunks to keep average count */
-		heap->avg_chunks_count = (heap->avg_chunks_count + (double)heap->peak_chunks_count) / 2.0;
-		while ((double)heap->cached_chunks_count + 0.9 > heap->avg_chunks_count &&
-		       heap->cached_chunks) {
-			p = heap->cached_chunks;
-			heap->cached_chunks = p->next;
-			zend_mm_chunk_free(heap, p, ZEND_MM_CHUNK_SIZE);
-			heap->cached_chunks_count--;
-		}
-		/* clear cached chunks */
-		p = heap->cached_chunks;
-		while (p != NULL) {
-			zend_mm_chunk *q = p->next;
-			memset(p, 0, sizeof(zend_mm_chunk));
-			p->next = q;
-			p = q;
-		}
+		/* Cleanup cached chunks */
+		zend_mm_cleanup_cached_chunks(heap);
 
 		/* reinitialize the first chunk and heap */
 		p = heap->main_chunk;

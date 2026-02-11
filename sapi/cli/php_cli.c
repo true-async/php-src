@@ -365,6 +365,19 @@ static int sapi_cli_deactivate(void) /* {{{ */
 }
 /* }}} */
 
+static void sapi_cli_thread_begin(void) /* {{{ */
+{
+#ifdef ZTS
+	ZEND_TSRMLS_CACHE_UPDATE();
+#endif
+}
+/* }}} */
+
+static void sapi_cli_thread_end(void) /* {{{ */
+{
+}
+/* }}} */
+
 static char* sapi_cli_read_cookies(void) /* {{{ */
 {
 	return NULL;
@@ -420,6 +433,9 @@ static sapi_module_struct cli_sapi_module = {
 
 	NULL,							/* activate */
 	sapi_cli_deactivate,			/* deactivate */
+
+	sapi_cli_thread_begin,			/* thread_begin */
+	sapi_cli_thread_end,			/* thread_end */
 
 	sapi_cli_ub_write,		    	/* unbuffered write */
 	sapi_cli_flush,				    /* flush */

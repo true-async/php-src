@@ -572,9 +572,7 @@ static void zend_closure_free_storage(zend_object *object) /* {{{ */
 
 static zend_object *zend_closure_new(zend_class_entry *class_type) /* {{{ */
 {
-	zend_closure *closure;
-
-	closure = emalloc(sizeof(zend_closure));
+	zend_closure *closure = emalloc(sizeof(zend_closure));
 	memset(closure, 0, sizeof(zend_closure));
 
 	zend_object_std_init(&closure->std, class_type);
