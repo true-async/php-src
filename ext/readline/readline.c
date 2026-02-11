@@ -393,13 +393,9 @@ PHP_FUNCTION(readline_read_history)
 		RETURN_FALSE;
 	}
 
-	/* XXX from & to NYI */
-	if (read_history(arg)) {
-		/* If filename is NULL, then read from `~/.history' */
-		RETURN_FALSE;
-	} else {
-		RETURN_TRUE;
-	}
+	/* XXX from & to NYI  
+		If filename is NULL, then read from `~/.history' */
+	RETURN_BOOL(!read_history(arg));
 }
 
 /* }}} */
@@ -417,11 +413,7 @@ PHP_FUNCTION(readline_write_history)
 		RETURN_FALSE;
 	}
 
-	if (write_history(arg)) {
-		RETURN_FALSE;
-	} else {
-		RETURN_TRUE;
-	}
+	RETURN_BOOL(!write_history(arg));
 }
 
 /* }}} */
@@ -503,10 +495,8 @@ PHP_FUNCTION(readline_completion_function)
 
 	/* NOTE: The rl_attempted_completion_function variable (and others) are part of the readline library, not php */
 	rl_attempted_completion_function = php_readline_completion_cb;
-	if (rl_attempted_completion_function == NULL) {
-		RETURN_FALSE;
-	}
-	RETURN_TRUE;
+	
+	RETURN_BOOL(rl_attempted_completion_function != NULL);
 }
 
 /* }}} */
