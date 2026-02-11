@@ -97,13 +97,14 @@ typedef struct io_descriptor_s {
 	io_descriptor_type type;
 } io_descriptor_t;
 
-/* Async IO API — abstract I/O handle for pipes and files */
+/* Async IO API — abstract I/O handle for pipes, files and terminals */
 
 typedef enum {
 	ZEND_ASYNC_IO_TYPE_PIPE,
 	ZEND_ASYNC_IO_TYPE_FILE,
 	ZEND_ASYNC_IO_TYPE_TCP,
-	ZEND_ASYNC_IO_TYPE_UDP
+	ZEND_ASYNC_IO_TYPE_UDP,
+	ZEND_ASYNC_IO_TYPE_TTY
 } zend_async_io_type;
 
 #define ZEND_ASYNC_IO_READABLE    (1 << 0)

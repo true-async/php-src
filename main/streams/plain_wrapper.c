@@ -190,7 +190,14 @@ static void php_stdiop_init_async_io(php_stdio_stream_data *self, const char *mo
 		return;
 	}
 
-	const zend_async_io_type type = self->is_pipe ? ZEND_ASYNC_IO_TYPE_PIPE : ZEND_ASYNC_IO_TYPE_FILE;
+	zend_async_io_type type;
+	if (self->is_pipe) {
+		type = ZEND_ASYNC_IO_TYPE_PIPE;
+	} else if (self->fd >= 0 && isatty(self->fd)) {
+		type = ZEND_ASYNC_IO_TYPE_TTY;
+	} else {
+		type = ZEND_ASYNC_IO_TYPE_FILE;
+	}
 	const uint32_t state = php_stdiop_mode_to_io_state(mode);
 
 #ifdef PHP_WIN32
