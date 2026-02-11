@@ -216,7 +216,7 @@ static void php_stdiop_init_async_io(php_stdio_stream_data *self, const char *mo
 		type = ZEND_ASYNC_IO_TYPE_FILE;
 	}
 
-	zend_file_descriptor_t fd = (HANDLE)(intptr_t) self->fd;
+	zend_file_descriptor_t fd = self->fd;
 #else
 	if (self->is_pipe) {
 		type = ZEND_ASYNC_IO_TYPE_PIPE;

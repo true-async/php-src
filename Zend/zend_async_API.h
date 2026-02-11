@@ -63,13 +63,17 @@ typedef enum {
 //
 // Definitions compatibles with proc_open()
 //
+// zend_file_descriptor_t is a C runtime file descriptor (int) on all platforms.
+// On Windows, this is NOT a native OS HANDLE. Use _get_osfhandle() to convert
+// to HANDLE when calling Win32 API, and _open_osfhandle() for the reverse.
+//
 #ifdef PHP_WIN32
-typedef HANDLE zend_file_descriptor_t;
-#define ZEND_FD_NULL NULL
+typedef int zend_file_descriptor_t;
+#define ZEND_FD_NULL -1
 typedef DWORD zend_process_id_t;
 typedef HANDLE zend_process_t;
 typedef SOCKET zend_socket_t;
-#define INVALID_IO_DESCRIPTOR INVALID_HANDLE_VALUE
+#define INVALID_IO_DESCRIPTOR -1
 #else
 typedef int zend_file_descriptor_t;
 typedef pid_t zend_process_id_t;
