@@ -191,6 +191,33 @@ static void php_stdiop_init_async_io(php_stdio_stream_data *self, const char *mo
 	}
 
 	zend_async_io_type type;
+#ifdef PHP_WIN32
+	/* On Windows, use GetFileType + GetConsoleMode for reliable type detection.
+	 * isatty() can return true for CRT fd even when the underlying OS handle
+	 * is not a real console (e.g. NUL device, MSYS pipes). */
+	const intptr_t os_handle = _get_osfhandle(self->fd);
+
+	if (os_handle == -1 || os_handle == (intptr_t)INVALID_HANDLE_VALUE) {
+		return;
+	}
+
+	const DWORD file_type = GetFileType((HANDLE)os_handle);
+
+	if (self->is_pipe || file_type == FILE_TYPE_PIPE) {
+		type = ZEND_ASYNC_IO_TYPE_PIPE;
+	} else if (file_type == FILE_TYPE_CHAR) {
+		DWORD console_mode;
+		if (GetConsoleMode((HANDLE)os_handle, &console_mode)) {
+			type = ZEND_ASYNC_IO_TYPE_TTY;
+		} else {
+			type = ZEND_ASYNC_IO_TYPE_FILE;
+		}
+	} else {
+		type = ZEND_ASYNC_IO_TYPE_FILE;
+	}
+
+	zend_file_descriptor_t fd = self->fd;
+#else
 	if (self->is_pipe) {
 		type = ZEND_ASYNC_IO_TYPE_PIPE;
 	} else if (self->fd >= 0 && isatty(self->fd)) {
@@ -198,13 +225,10 @@ static void php_stdiop_init_async_io(php_stdio_stream_data *self, const char *mo
 	} else {
 		type = ZEND_ASYNC_IO_TYPE_FILE;
 	}
-	const uint32_t state = php_stdiop_mode_to_io_state(mode);
 
-#ifdef PHP_WIN32
-	zend_file_descriptor_t fd = (HANDLE)(intptr_t) self->fd;
-#else
 	zend_file_descriptor_t fd = self->fd;
 #endif
+	const uint32_t state = php_stdiop_mode_to_io_state(mode);
 
 	self->async_io = ZEND_ASYNC_IO_CREATE(fd, type, state);
 }
