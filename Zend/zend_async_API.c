@@ -1902,6 +1902,30 @@ ZEND_API bool zend_async_call_main_coroutine_start_handlers(zend_coroutine_t *ma
 	return EG(exception) == NULL;
 }
 
+ZEND_API void zend_fcall_release(zend_fcall_t *fcall)
+{
+	if (fcall == NULL) {
+		return;
+	}
+
+	if (fcall->fci.param_count) {
+		for (uint32_t i = 0; i < fcall->fci.param_count; i++) {
+			zval_ptr_dtor(&fcall->fci.params[i]);
+		}
+		efree(fcall->fci.params);
+	}
+
+	if (fcall->fci.named_params) {
+		GC_DELREF(fcall->fci.named_params);
+	}
+
+	if (Z_REFCOUNTED(fcall->fci.function_name)) {
+		zval_ptr_dtor(&fcall->fci.function_name);
+	}
+
+	efree(fcall);
+}
+
 /* Global cleanup function - called during PHP shutdown */
 static void zend_async_main_handlers_shutdown(void)
 {
