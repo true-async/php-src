@@ -478,6 +478,8 @@ typedef void (*zend_async_iterator_method_t)(zend_async_iterator_t *iterator);
 	void *extended_data; \
 	/* NULLABLE. An additional destructor that will be called. */ \
 	zend_async_iterator_method_t extended_dtor; \
+	/* NULLABLE. Event that is notified when the iterator is fully completed. */ \
+	zend_async_event_t *completion_event; \
 	/* A method that starts the iterator in the current coroutine. */ \
 	zend_async_iterator_method_t run; \
 	/* A method that starts the iterator in a separate coroutine with the specified priority. */ \
@@ -1306,6 +1308,8 @@ static zend_always_inline zend_string *zend_coroutine_callable_name(
 		GC_ADDREF(named_args); \
 	} \
 	Z_TRY_ADDREF(fcall->fci.function_name);
+
+ZEND_API void zend_fcall_release(zend_fcall_t *fcall);
 
 ///////////////////////////////////////////////////////////////
 /// Async Context Structures
