@@ -448,7 +448,7 @@ struct _zend_async_microtask_s {
 #define ZEND_ASYNC_MICROTASK_ADD_REF(microtask) \
 	do { \
 		if (microtask != NULL) { \
-			microtask->ref_count++; \
+			(microtask)->ref_count++; \
 		} \
 	} while (0)
 
