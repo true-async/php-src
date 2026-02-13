@@ -448,7 +448,7 @@ struct _zend_async_microtask_s {
 #define ZEND_ASYNC_MICROTASK_ADD_REF(microtask) \
 	do { \
 		if (microtask != NULL) { \
-			microtask->ref_count++; \
+			(microtask)->ref_count++; \
 		} \
 	} while (0)
 
@@ -996,6 +996,15 @@ struct _zend_async_scope_s {
 	zend_async_after_coroutine_enqueue_t after_coroutine_enqueue;
 
 	/**
+	 * Checks whether the scope can be disposed based on its coroutines and child scopes state.
+	 *
+	 * @param with_zombies      If true, zombie coroutines are counted as active.
+	 * @param check_zend_objects If true, additionally verifies that the scope object
+	 *                          is destroyed or the scope is cancelled.
+	 */
+	bool (*can_be_disposed)(zend_async_scope_t *scope, bool with_zombies, bool check_zend_objects);
+
+	/**
 	 * The method determines the moment when the Scope can be destructed.
 	 * It checks the conditions and, if necessary, calls the dispose method.
 	 */
@@ -1028,6 +1037,13 @@ struct _zend_async_scope_s {
 #define ZEND_ASYNC_SCOPE_CATCH(scope, coroutine, from_scope, exception, transfer_error, is_safely) \
 	((scope)->catch_or_cancel((scope), (coroutine), (from_scope), (exception), (transfer_error), \
 			(is_safely), false))
+
+#define ZEND_ASYNC_SCOPE_IS_COMPLETED(scope) \
+	((scope)->can_be_disposed((scope), false, false))
+#define ZEND_ASYNC_SCOPE_IS_COMPLETELY_DONE(scope) \
+	((scope)->can_be_disposed((scope), true, false))
+#define ZEND_ASYNC_SCOPE_CAN_BE_DISPOSED(scope) \
+	((scope)->can_be_disposed((scope), true, true))
 
 #define ZEND_ASYNC_SCOPE_F_CLOSED ZEND_ASYNC_EVENT_F_CLOSED /* scope was closed */
 #define ZEND_ASYNC_SCOPE_F_NO_FREE_MEMORY \
