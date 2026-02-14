@@ -41,6 +41,7 @@ ZEND_API zend_class_entry *zend_ce_throwable;
 ZEND_API zend_class_entry *zend_ce_exception;
 ZEND_API zend_class_entry *zend_ce_error_exception;
 ZEND_API zend_class_entry *zend_ce_error;
+ZEND_API zend_class_entry *zend_ce_cancellation;
 ZEND_API zend_class_entry *zend_ce_compile_error;
 ZEND_API zend_class_entry *zend_ce_parse_error;
 ZEND_API zend_class_entry *zend_ce_type_error;
@@ -71,7 +72,8 @@ static int zend_implement_throwable(zend_class_entry *interface, zend_class_entr
 		root = root->parent;
 	}
 	if (zend_string_equals_literal(root->name, "Exception")
-			|| zend_string_equals_literal(root->name, "Error")) {
+			|| zend_string_equals_literal(root->name, "Error")
+			|| zend_string_equals_literal(root->name, "Cancellation")) {
 		return SUCCESS;
 	}
 
@@ -79,7 +81,7 @@ static int zend_implement_throwable(zend_class_entry *interface, zend_class_entr
 
 	zend_error_noreturn(E_ERROR,
 		can_extend
-			? "%s %s cannot implement interface %s, extend Exception or Error instead"
+			? "%s %s cannot implement interface %s, extend Exception, Error or Cancellation instead"
 			: "%s %s cannot implement interface %s",
 		zend_get_object_type_uc(class_type),
 		ZSTR_VAL(class_type->name),
@@ -90,7 +92,13 @@ static int zend_implement_throwable(zend_class_entry *interface, zend_class_entr
 
 static inline zend_class_entry *i_get_exception_base(const zend_object *object) /* {{{ */
 {
-	return instanceof_function(object->ce, zend_ce_exception) ? zend_ce_exception : zend_ce_error;
+	if (instanceof_function(object->ce, zend_ce_exception)) {
+		return zend_ce_exception;
+	}
+	if (instanceof_function(object->ce, zend_ce_cancellation)) {
+		return zend_ce_cancellation;
+	}
+	return zend_ce_error;
 }
 /* }}} */
 
@@ -791,6 +799,9 @@ void zend_register_default_exception(void) /* {{{ */
 	zend_ce_error = register_class_Error(zend_ce_throwable);
 	zend_init_exception_class_entry(zend_ce_error);
 
+	zend_ce_cancellation = register_class_Cancellation(zend_ce_throwable);
+	zend_init_exception_class_entry(zend_ce_cancellation);
+
 	zend_ce_compile_error = register_class_CompileError(zend_ce_error);
 	zend_init_exception_class_entry(zend_ce_compile_error);
 
@@ -949,7 +960,7 @@ ZEND_API ZEND_COLD zend_result zend_exception_error(zend_object *ex, int severit
 
 			ZVAL_OBJ(&zv, EG(exception));
 			/* do the best we can to inform about the inner exception */
-			if (instanceof_function(ce_exception, zend_ce_exception) || instanceof_function(ce_exception, zend_ce_error)) {
+			if (instanceof_function(ce_exception, zend_ce_exception) || instanceof_function(ce_exception, zend_ce_error) || instanceof_function(ce_exception, zend_ce_cancellation)) {
 				file = zval_get_string(GET_PROPERTY_SILENT(&zv, ZEND_STR_FILE));
 				line = zval_get_long(GET_PROPERTY_SILENT(&zv, ZEND_STR_LINE));
 			}
