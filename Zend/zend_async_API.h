@@ -307,7 +307,7 @@ typedef zend_future_t *(*zend_async_new_future_t)(bool thread_safe, size_t extra
 typedef zend_async_channel_t *(*zend_async_new_channel_t)(
 		size_t buffer_size, bool resizable, bool thread_safe, size_t extra_size);
 
-typedef zend_async_group_t *(*zend_async_new_group_t)(size_t extra_size);
+typedef zend_async_group_t *(*zend_async_new_group_t)(uint32_t concurrency, zend_object *scope);
 
 /* Pool creation function types */
 typedef zend_async_pool_t *(*zend_async_new_pool_t)(
@@ -560,7 +560,7 @@ struct _zend_async_waker_trigger_s {
 };
 
 /* Dynamic array of async event callbacks with single iterator protection */
-typedef struct _zend_async_callbacks_vector_s {
+typedef struct {
 	uint32_t length; /* current number of callbacks */
 	uint32_t capacity; /* allocated slots in the array */
 	zend_async_event_callback_t **data; /* dynamically allocated callback array */
@@ -1445,6 +1445,19 @@ struct _zend_async_channel_s {
 #define ZEND_ASYNC_CHANNEL_F_THREAD_SAFE (1u << 13)
 
 ///////////////////////////////////////////////////////////////
+/// Group (TaskGroup)
+///////////////////////////////////////////////////////////////
+
+/**
+ * zend_async_group_t structure represents a task group with concurrency control.
+ * It inherits from zend_async_event_t to participate in the event system.
+ * The group event uses multi-shot notifications (not one-shot).
+ */
+struct _zend_async_group_s {
+	zend_async_event_t event; /* Event inheritance (first member), IS all() semantics */
+};
+
+///////////////////////////////////////////////////////////////
 /// Pool
 ///////////////////////////////////////////////////////////////
 
@@ -1910,8 +1923,7 @@ ZEND_API bool zend_async_call_main_coroutine_start_handlers(zend_coroutine_t *ma
 #define ZEND_ASYNC_NEW_CHANNEL_OBJ(channel) zend_async_new_channel_obj_fn(channel)
 
 /* GROUP API Functions */
-#define ZEND_ASYNC_NEW_GROUP() zend_async_new_group_fn(0)
-#define ZEND_ASYNC_NEW_GROUP_EX(extra_size) zend_async_new_group_fn(extra_size)
+#define ZEND_ASYNC_NEW_GROUP(concurrency, scope) zend_async_new_group_fn(concurrency, scope)
 
 /* Pool API Functions */
 #define ZEND_ASYNC_NEW_POOL(factory, destructor, healthcheck, before_acquire, before_release, min, max, healthcheck_interval) \

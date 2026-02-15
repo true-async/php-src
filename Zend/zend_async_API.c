@@ -76,11 +76,12 @@ static zend_async_channel_t *new_channel_stub(
 	return NULL;
 }
 
-static zend_async_group_t *new_group_stub(size_t extra_size)
+static zend_async_group_t *new_group_stub(uint32_t concurrency, zend_object *scope)
 {
 	ASYNC_THROW_ERROR("Async API is not enabled");
 	return NULL;
 }
+
 
 static zend_object *new_future_obj_stub(zend_future_t *future)
 {
