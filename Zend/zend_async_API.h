@@ -1308,22 +1308,22 @@ static zend_always_inline zend_string *zend_coroutine_callable_name(
  * Z_PARAM_FUNC(fci, fcc);
  * Z_PARAM_VARIADIC_WITH_NAMED(args, args_count, named_args);
  */
-#define ZEND_ASYNC_FCALL_DEFINE(fcall, fci, fcc, args, args_count, named_args) \
-	zend_fcall_t *fcall = ecalloc(1, sizeof(zend_fcall_t)); \
-	fcall->fci = fci; \
-	fcall->fci_cache = fcc; \
-	if (args_count) { \
-		fcall->fci.param_count = args_count; \
-		fcall->fci.params = safe_emalloc(args_count, sizeof(zval), 0); \
-		for (uint32_t i = 0; i < args_count; i++) { \
-			ZVAL_COPY(&fcall->fci.params[i], &args[i]); \
+#define ZEND_ASYNC_FCALL_DEFINE(_fcall_var, _src_fci, _src_fcc, _src_args, _src_args_count, _src_named_args) \
+	zend_fcall_t *_fcall_var = ecalloc(1, sizeof(zend_fcall_t)); \
+	_fcall_var->fci = _src_fci; \
+	_fcall_var->fci_cache = _src_fcc; \
+	if (_src_args_count) { \
+		_fcall_var->fci.param_count = _src_args_count; \
+		_fcall_var->fci.params = safe_emalloc(_src_args_count, sizeof(zval), 0); \
+		for (uint32_t _fcall_i = 0; _fcall_i < _src_args_count; _fcall_i++) { \
+			ZVAL_COPY(&_fcall_var->fci.params[_fcall_i], &_src_args[_fcall_i]); \
 		} \
 	} \
-	if (named_args) { \
-		fcall->fci.named_params = named_args; \
-		GC_ADDREF(named_args); \
+	if (_src_named_args) { \
+		_fcall_var->fci.named_params = _src_named_args; \
+		GC_ADDREF(_src_named_args); \
 	} \
-	Z_TRY_ADDREF(fcall->fci.function_name);
+	Z_TRY_ADDREF(_fcall_var->fci.function_name);
 
 ZEND_API void zend_fcall_release(zend_fcall_t *fcall);
 
