@@ -307,7 +307,7 @@ typedef zend_future_t *(*zend_async_new_future_t)(bool thread_safe, size_t extra
 typedef zend_async_channel_t *(*zend_async_new_channel_t)(
 		size_t buffer_size, bool resizable, bool thread_safe, size_t extra_size);
 
-typedef zend_async_group_t *(*zend_async_new_group_t)(size_t extra_size);
+typedef zend_async_group_t *(*zend_async_new_group_t)(uint32_t concurrency, zend_object *scope);
 
 /* Pool creation function types */
 typedef zend_async_pool_t *(*zend_async_new_pool_t)(
@@ -560,7 +560,7 @@ struct _zend_async_waker_trigger_s {
 };
 
 /* Dynamic array of async event callbacks with single iterator protection */
-typedef struct _zend_async_callbacks_vector_s {
+typedef struct {
 	uint32_t length; /* current number of callbacks */
 	uint32_t capacity; /* allocated slots in the array */
 	zend_async_event_callback_t **data; /* dynamically allocated callback array */
@@ -1308,22 +1308,22 @@ static zend_always_inline zend_string *zend_coroutine_callable_name(
  * Z_PARAM_FUNC(fci, fcc);
  * Z_PARAM_VARIADIC_WITH_NAMED(args, args_count, named_args);
  */
-#define ZEND_ASYNC_FCALL_DEFINE(fcall, fci, fcc, args, args_count, named_args) \
-	zend_fcall_t *fcall = ecalloc(1, sizeof(zend_fcall_t)); \
-	fcall->fci = fci; \
-	fcall->fci_cache = fcc; \
-	if (args_count) { \
-		fcall->fci.param_count = args_count; \
-		fcall->fci.params = safe_emalloc(args_count, sizeof(zval), 0); \
-		for (uint32_t i = 0; i < args_count; i++) { \
-			ZVAL_COPY(&fcall->fci.params[i], &args[i]); \
+#define ZEND_ASYNC_FCALL_DEFINE(_fcall_var, _src_fci, _src_fcc, _src_args, _src_args_count, _src_named_args) \
+	zend_fcall_t *_fcall_var = ecalloc(1, sizeof(zend_fcall_t)); \
+	_fcall_var->fci = _src_fci; \
+	_fcall_var->fci_cache = _src_fcc; \
+	if (_src_args_count) { \
+		_fcall_var->fci.param_count = _src_args_count; \
+		_fcall_var->fci.params = safe_emalloc(_src_args_count, sizeof(zval), 0); \
+		for (uint32_t _fcall_i = 0; _fcall_i < _src_args_count; _fcall_i++) { \
+			ZVAL_COPY(&_fcall_var->fci.params[_fcall_i], &_src_args[_fcall_i]); \
 		} \
 	} \
-	if (named_args) { \
-		fcall->fci.named_params = named_args; \
-		GC_ADDREF(named_args); \
+	if (_src_named_args) { \
+		_fcall_var->fci.named_params = _src_named_args; \
+		GC_ADDREF(_src_named_args); \
 	} \
-	Z_TRY_ADDREF(fcall->fci.function_name);
+	Z_TRY_ADDREF(_fcall_var->fci.function_name);
 
 ZEND_API void zend_fcall_release(zend_fcall_t *fcall);
 
@@ -1443,6 +1443,19 @@ struct _zend_async_channel_s {
 
 /* Channel flags (bits 13+, bits 10-12 reserved for event flags) */
 #define ZEND_ASYNC_CHANNEL_F_THREAD_SAFE (1u << 13)
+
+///////////////////////////////////////////////////////////////
+/// Group (TaskGroup)
+///////////////////////////////////////////////////////////////
+
+/**
+ * zend_async_group_t structure represents a task group with concurrency control.
+ * It inherits from zend_async_event_t to participate in the event system.
+ * The group event uses multi-shot notifications (not one-shot).
+ */
+struct _zend_async_group_s {
+	zend_async_event_t event; /* Event inheritance (first member), IS all() semantics */
+};
 
 ///////////////////////////////////////////////////////////////
 /// Pool
@@ -1910,8 +1923,7 @@ ZEND_API bool zend_async_call_main_coroutine_start_handlers(zend_coroutine_t *ma
 #define ZEND_ASYNC_NEW_CHANNEL_OBJ(channel) zend_async_new_channel_obj_fn(channel)
 
 /* GROUP API Functions */
-#define ZEND_ASYNC_NEW_GROUP() zend_async_new_group_fn(0)
-#define ZEND_ASYNC_NEW_GROUP_EX(extra_size) zend_async_new_group_fn(extra_size)
+#define ZEND_ASYNC_NEW_GROUP(concurrency, scope) zend_async_new_group_fn(concurrency, scope)
 
 /* Pool API Functions */
 #define ZEND_ASYNC_NEW_POOL(factory, destructor, healthcheck, before_acquire, before_release, min, max, healthcheck_interval) \
