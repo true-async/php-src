@@ -1580,12 +1580,27 @@ ZEND_API struct hostent* php_network_gethostbyname_async(const char *name)
 
 	struct hostent *hostent = ecalloc(1, sizeof(struct hostent));
 
-	char **addr_list = emalloc(2 * sizeof(char *));
-	addr_list[0] = emalloc(sizeof(struct in_addr));
-	addr_list[1] = NULL;
+	/* Count all IPv4 addresses in the addrinfo linked list */
+	int addr_count = 0;
+	for (const struct addrinfo *ai = result; ai != NULL; ai = ai->ai_next) {
+		if (ai->ai_family == AF_INET) {
+			addr_count++;
+		}
+	}
 
-	struct sockaddr_in *addr_in = (struct sockaddr_in *)result->ai_addr;
-	memcpy(addr_list[0], &addr_in->sin_addr, sizeof(struct in_addr));
+	char **addr_list = emalloc((addr_count + 1) * sizeof(char *));
+	int idx = 0;
+
+	for (const struct addrinfo *ai = result; ai != NULL; ai = ai->ai_next) {
+		if (ai->ai_family == AF_INET) {
+			addr_list[idx] = emalloc(sizeof(struct in_addr));
+			struct sockaddr_in *addr_in = (struct sockaddr_in *)ai->ai_addr;
+			memcpy(addr_list[idx], &addr_in->sin_addr, sizeof(struct in_addr));
+			idx++;
+		}
+	}
+
+	addr_list[idx] = NULL;
 
 	hostent->h_name = result->ai_canonname ? estrdup(result->ai_canonname) : estrdup(name);
 	hostent->h_aliases = NULL;
