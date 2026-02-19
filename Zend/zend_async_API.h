@@ -898,6 +898,13 @@ struct _zend_async_thread_event_s {
 	zend_async_event_t base;
 };
 
+/* Filesystem event types (backend-agnostic) */
+#define ZEND_ASYNC_FS_EVENT_RENAME    (1u << 0)
+#define ZEND_ASYNC_FS_EVENT_CHANGE    (1u << 1)
+
+/* Filesystem event flags (backend-agnostic) */
+#define ZEND_ASYNC_FS_EVENT_RECURSIVE (1u << 0)
+
 struct _zend_async_filesystem_event_s {
 	zend_async_event_t base;
 	zend_string *path;
