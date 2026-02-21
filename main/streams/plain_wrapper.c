@@ -477,8 +477,12 @@ static ssize_t php_stdiop_write(php_stream *stream, const char *buf, size_t coun
 
 		if (UNEXPECTED(EG(exception)) || UNEXPECTED(req->exception != NULL)) {
 			if (!(stream->flags & PHP_STREAM_FLAG_SUPPRESS_ERRORS)) {
-				php_error_docref(NULL, E_NOTICE, "Write of %zu bytes failed with async IO error",
-						count);
+				zval rv;
+				const zval *message =
+						zend_read_property_ex(EG(exception)->ce, EG(exception), zend_known_strings[ZEND_STR_MESSAGE], 0, &rv);
+
+				php_error_docref(NULL, E_NOTICE, "Write of %zu bytes failed with async IO error: %s",
+						count, Z_STRVAL_P(message));
 			}
 			if (EG(exception)) {
 				zend_clear_exception();
@@ -565,8 +569,11 @@ static ssize_t php_stdiop_read(php_stream *stream, char *buf, size_t count)
 
 		if (UNEXPECTED(EG(exception)) || UNEXPECTED(req->exception != NULL)) {
 			if (!(stream->flags & PHP_STREAM_FLAG_SUPPRESS_ERRORS)) {
-				php_error_docref(NULL, E_NOTICE, "Read of %zu bytes failed with async IO error",
-						count);
+				zval rv;
+				const zval *message =
+						zend_read_property_ex(EG(exception)->ce, EG(exception), zend_known_strings[ZEND_STR_MESSAGE], 0, &rv);
+				php_error_docref(NULL, E_NOTICE, "Read of %zu bytes failed with async IO error: %s",
+						count, Z_STRVAL_P(message));
 			}
 			if (EG(exception)) {
 				zend_clear_exception();
