@@ -56,6 +56,8 @@ PHP                                                                        NEWS
   . Added GB18030-2022 to default encoding list for zh-CN. (HeRaNO)
   . Fixed bug GH-20836 (Stack overflow in mb_convert_variables with
     recursive array references). (alexandre-daubois)
+  . Fixed bug GH-21223; mb_guess_encoding no longer crashes when passed huge
+    list of candidate encodings (with 200,000+ entries). (Jordi Kroon)
 
 - Opcache:
   . Fixed bug GH-20051 (apache2 shutdowns when restart is requested during
@@ -78,21 +80,29 @@ PHP                                                                        NEWS
   . Mark Phar::buildFromIterator() base directory argument as a path.
     (ndossche)
 
+- Posix:
+  . Added validity check to the flags argument for posix_access(). (arshidkv12)
+
 - Reflection:
   . Fixed bug GH-20217 (ReflectionClass::isIterable() incorrectly returns true
     for classes with property hooks). (alexandre-daubois)
+  . Added ReflectionConstant::inNamespace(). (Khaled Alam)
+
+- Session:
+  . Fixed bug 71162 (updateTimestamp never called when session data is empty).
+    (Girgias)
 
 - Soap:
-  . Soap::__setCookie() when cookie name is a digit is now not stored and represented
-    as a string anymore but a int. (David Carlier)
+  . Soap::__setCookie() when cookie name is a digit is now not stored and
+    represented as a string anymore but a int. (David Carlier)
 
 - Sockets:
-  . Added the TCP_USER_TIMEOUT constant for Linux to set the maximum time in milliseconds
-    transmitted data can remain unacknowledged. (James Lucas)
+  . Added the TCP_USER_TIMEOUT constant for Linux to set the maximum time in
+    milliseconds transmitted data can remain unacknowledged. (James Lucas)
   . Added AF_UNSPEC support for sock_addrinfo_lookup() as a sole umbrella for
     AF_INET* family only. (David Carlier)
-  . Fixed GH-20532 (socket_addrinfo_lookup gives the error code with a new optional
-    parameter). (David Carlier)
+  . Fixed GH-20532 (socket_addrinfo_lookup gives the error code with a new
+    optional parameter). (David Carlier)
 
 - SPL:
   . DirectoryIterator key can now work better with filesystem supporting larger
