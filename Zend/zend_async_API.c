@@ -233,7 +233,7 @@ zend_async_exec_t zend_async_exec_fn = NULL;
 /* Trigger Event API */
 zend_async_new_trigger_event_t zend_async_new_trigger_event_fn = NULL;
 
-static zend_string *thread_pool_module_name = NULL;
+static char *thread_pool_module_name = NULL;
 zend_async_queue_task_t zend_async_queue_task_fn = NULL;
 
 /* Iterator API */
@@ -468,20 +468,16 @@ ZEND_API bool zend_async_reactor_register(char *module, bool allow_override,
 }
 
 ZEND_API void zend_async_thread_pool_register(
-		zend_string *module, bool allow_override, zend_async_queue_task_t queue_task_fn)
+		char *module, bool allow_override, zend_async_queue_task_t queue_task_fn)
 {
 	if (thread_pool_module_name != NULL && false == allow_override) {
 		zend_error(E_CORE_ERROR,
 				"The module %s is trying to override Thread Pool, which was registered by the "
 				"module %s.",
-				ZSTR_VAL(module), ZSTR_VAL(thread_pool_module_name));
+				module, thread_pool_module_name);
 	}
 
-	if (thread_pool_module_name != NULL) {
-		zend_string_release(thread_pool_module_name);
-	}
-
-	thread_pool_module_name = zend_string_copy(module);
+	thread_pool_module_name = module;
 	zend_async_queue_task_fn = queue_task_fn;
 }
 

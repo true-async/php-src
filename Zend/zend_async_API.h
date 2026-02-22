@@ -1806,7 +1806,7 @@ ZEND_API bool zend_async_reactor_register(char *module, bool allow_override,
 		zend_async_exec_t exec_fn, zend_async_new_trigger_event_t new_trigger_event_fn);
 
 ZEND_API void zend_async_thread_pool_register(
-		zend_string *module, bool allow_override, zend_async_queue_task_t queue_task_fn);
+		char *module, bool allow_override, zend_async_queue_task_t queue_task_fn);
 
 ZEND_API void zend_async_pool_api_register(
 		char *module, bool allow_override,
