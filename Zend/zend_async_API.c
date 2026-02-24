@@ -233,6 +233,12 @@ zend_async_exec_t zend_async_exec_fn = NULL;
 /* Trigger Event API */
 zend_async_new_trigger_event_t zend_async_new_trigger_event_fn = NULL;
 
+/* Waker API */
+static zend_async_waker_t *zend_async_waker_new_default(zend_coroutine_t *coroutine);
+static void zend_async_waker_destroy_default(zend_coroutine_t *coroutine);
+zend_async_waker_new_t zend_async_waker_new_fn = zend_async_waker_new_default;
+zend_async_waker_destroy_t zend_async_waker_destroy_fn = zend_async_waker_destroy_default;
+
 static char *thread_pool_module_name = NULL;
 zend_async_queue_task_t zend_async_queue_task_fn = NULL;
 
@@ -348,6 +354,7 @@ ZEND_API bool zend_async_scheduler_register(char *module, bool allow_override,
 		zend_async_suspend_t suspend_fn, zend_async_enqueue_coroutine_t enqueue_coroutine_fn,
 		zend_async_resume_t resume_fn, zend_async_cancel_t cancel_fn,
 		zend_async_spawn_and_throw_t spawn_and_throw_fn, zend_async_shutdown_t shutdown_fn,
+		zend_async_waker_new_t waker_new_fn, zend_async_waker_destroy_t waker_destroy_fn,
 		zend_async_get_coroutines_t get_coroutines_fn, zend_async_add_microtask_t add_microtask_fn,
 		zend_async_get_awaiting_info_t get_awaiting_info_fn,
 		zend_async_get_class_ce_t get_class_ce_fn, zend_async_new_iterator_t new_iterator_fn,
@@ -386,6 +393,8 @@ ZEND_API bool zend_async_scheduler_register(char *module, bool allow_override,
 	zend_async_cancel_fn = cancel_fn;
 	zend_async_spawn_and_throw_fn = spawn_and_throw_fn;
 	zend_async_shutdown_fn = shutdown_fn;
+	zend_async_waker_new_fn = waker_new_fn ? waker_new_fn : zend_async_waker_new_default;
+	zend_async_waker_destroy_fn = waker_destroy_fn ? waker_destroy_fn : zend_async_waker_destroy_default;
 	zend_async_get_coroutines_fn = get_coroutines_fn;
 	zend_async_add_microtask_fn = add_microtask_fn;
 	zend_async_get_awaiting_info_fn = get_awaiting_info_fn;
@@ -681,10 +690,10 @@ ZEND_API zend_async_waker_t *zend_async_waker_define(zend_coroutine_t *coroutine
 		return coroutine->waker;
 	}
 
-	return zend_async_waker_new(coroutine);
+	return ZEND_ASYNC_WAKER_NEW(coroutine);
 }
 
-ZEND_API zend_async_waker_t *zend_async_waker_new(zend_coroutine_t *coroutine)
+static zend_async_waker_t *zend_async_waker_new_default(zend_coroutine_t *coroutine)
 {
 	if (UNEXPECTED(coroutine == NULL)) {
 		coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
@@ -768,7 +777,7 @@ ZEND_API void zend_async_waker_clean(zend_coroutine_t *coroutine)
 	zend_hash_clean(&waker->events);
 }
 
-ZEND_API void zend_async_waker_destroy(zend_coroutine_t *coroutine)
+static void zend_async_waker_destroy_default(zend_coroutine_t *coroutine)
 {
 	if (UNEXPECTED(coroutine->waker == NULL)) {
 		return;
@@ -1084,7 +1093,7 @@ ZEND_API zend_async_waker_t *zend_async_waker_new_with_timeout(
 		return NULL;
 	}
 
-	zend_async_waker_t *waker = zend_async_waker_new(coroutine);
+	zend_async_waker_t *waker = ZEND_ASYNC_WAKER_NEW(coroutine);
 
 	if (timeout > 0) {
 		zend_async_resume_when(coroutine, &ZEND_ASYNC_NEW_TIMER_EVENT(timeout, false)->base, true,

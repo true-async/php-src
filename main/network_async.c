@@ -1448,7 +1448,7 @@ ZEND_API int php_network_getaddrinfo_async(const char *node, const char *service
 		return -1;
 	}
 
-	zend_async_waker_new(coroutine);
+	ZEND_ASYNC_WAKER_NEW(coroutine);
 	IF_EXCEPTION_GOTO_ERROR;
 
 	zend_async_dns_addrinfo_t *dns_event = ZEND_ASYNC_GETADDRINFO(node, service, hints);
@@ -1647,7 +1647,7 @@ ZEND_API zend_string* php_network_gethostbyaddr_async(const char *ip)
 		return NULL;
 	}
 
-	zend_async_waker_new(coroutine);
+	ZEND_ASYNC_WAKER_NEW(coroutine);
 	IF_EXCEPTION_GOTO_ERROR;
 
 	zend_async_dns_nameinfo_t *dns_event = ZEND_ASYNC_GETNAMEINFO((struct sockaddr*)&ss, 0);

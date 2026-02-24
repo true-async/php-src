@@ -427,7 +427,7 @@ CURLcode curl_async_perform(CURL* curl)
 		return CURLE_FAILED_INIT;
 	}
 
-	if (!zend_async_waker_new(coroutine)) {
+	if (!ZEND_ASYNC_WAKER_NEW(coroutine)) {
 		return CURLE_FAILED_INIT;
 	}
 
