@@ -1125,7 +1125,7 @@ static zend_long sleep_async(zend_long ms, zend_long nanoseconds)
 	if (nanoseconds == 0) {
 		zend_async_waker_new_with_timeout(coroutine, ms, NULL);
 	} else {
-		zend_async_waker_new(coroutine);
+		ZEND_ASYNC_WAKER_NEW(coroutine);
 		zend_async_resume_when(
 			coroutine,
 			&ZEND_ASYNC_NEW_TIMER_EVENT_NS(ms, nanoseconds, false)->base,

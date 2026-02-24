@@ -1148,6 +1148,10 @@ static zend_always_inline void zend_async_scope_free_children(zend_async_scope_t
 
 typedef void (*zend_async_waker_dtor)(zend_coroutine_t *coroutine);
 
+/* Waker API function pointer types */
+typedef zend_async_waker_t *(*zend_async_waker_new_t)(zend_coroutine_t *coroutine);
+typedef void (*zend_async_waker_destroy_t)(zend_coroutine_t *coroutine);
+
 typedef enum {
 	ZEND_ASYNC_WAKER_NO_STATUS,
 	ZEND_ASYNC_WAKER_WAITING,
@@ -1753,6 +1757,10 @@ ZEND_API extern zend_async_freeaddrinfo_t zend_async_freeaddrinfo_fn;
 ZEND_API extern zend_async_new_exec_event_t zend_async_new_exec_event_fn;
 ZEND_API extern zend_async_exec_t zend_async_exec_fn;
 
+/* Waker API */
+ZEND_API extern zend_async_waker_new_t zend_async_waker_new_fn;
+ZEND_API extern zend_async_waker_destroy_t zend_async_waker_destroy_fn;
+
 /* Thread pool API */
 ZEND_API bool zend_async_thread_pool_is_enabled(void);
 ZEND_API extern zend_async_queue_task_t zend_async_queue_task_fn;
@@ -1781,6 +1789,7 @@ ZEND_API bool zend_async_scheduler_register(char *module, bool allow_override,
 		zend_async_suspend_t suspend_fn, zend_async_enqueue_coroutine_t enqueue_coroutine_fn,
 		zend_async_resume_t resume_fn, zend_async_cancel_t cancel_fn,
 		zend_async_spawn_and_throw_t spawn_and_throw_fn, zend_async_shutdown_t shutdown_fn,
+		zend_async_waker_new_t waker_new_fn, zend_async_waker_destroy_t waker_destroy_fn,
 		zend_async_get_coroutines_t get_coroutines_fn, zend_async_add_microtask_t add_microtask_fn,
 		zend_async_get_awaiting_info_t get_awaiting_info_fn,
 		zend_async_get_class_ce_t get_class_ce_fn, zend_async_new_iterator_t new_iterator_fn,
@@ -1859,7 +1868,8 @@ ZEND_API zend_async_waker_t *zend_async_waker_define(zend_coroutine_t *coroutine
  * @param coroutine The coroutine to create the waker for.
  * @return Pointer to the newly created waker object.
  */
-ZEND_API zend_async_waker_t *zend_async_waker_new(zend_coroutine_t *coroutine);
+#define ZEND_ASYNC_WAKER_NEW(coroutine) zend_async_waker_new_fn(coroutine)
+
 ZEND_API zend_async_waker_t *zend_async_waker_new_with_timeout(
 		zend_coroutine_t *coroutine, const zend_ulong timeout, zend_async_event_t *cancellation);
 ZEND_API bool zend_async_waker_apply_error(zend_async_waker_t *waker, zend_object *error,
@@ -1873,7 +1883,8 @@ ZEND_API void zend_async_waker_clean(zend_coroutine_t *coroutine);
  *
  * @param coroutine Coroutine to destroy the waker for.
  */
-ZEND_API void zend_async_waker_destroy(zend_coroutine_t *coroutine);
+#define ZEND_ASYNC_WAKER_DESTROY(coroutine) zend_async_waker_destroy_fn(coroutine)
+
 ZEND_API void zend_async_waker_add_triggered_event(
 		zend_coroutine_t *coroutine, zend_async_event_t *event);
 ZEND_API bool zend_async_waker_is_event_exists(

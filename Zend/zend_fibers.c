@@ -868,7 +868,7 @@ static zend_result zend_fiber_await(zend_fiber *fiber, zval *return_value)
 		}
 	}
 
-	zend_async_waker_t *waker = zend_async_waker_new(current_coroutine);
+	zend_async_waker_t *waker = ZEND_ASYNC_WAKER_NEW(current_coroutine);
 	if (UNEXPECTED(waker == NULL)) {
 		return FAILURE;
 	}
@@ -944,7 +944,7 @@ static zend_result zend_fiber_yield(zend_fiber *fiber, zval *value, zval *return
 		}
 	}
 
-	zend_async_waker_t *waker = zend_async_waker_new(coroutine);
+	zend_async_waker_t *waker = ZEND_ASYNC_WAKER_NEW(coroutine);
 	if (UNEXPECTED(waker == NULL)) {
 		return FAILURE;
 	}

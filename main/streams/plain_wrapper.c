@@ -468,7 +468,7 @@ static ssize_t php_stdiop_write(php_stream *stream, const char *buf, size_t coun
 
 		if (!req->completed) {
 			zend_coroutine_t *const coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
-			zend_async_waker_new(coroutine);
+			ZEND_ASYNC_WAKER_NEW(coroutine);
 			zend_async_resume_when(coroutine, &data->async_io->event, false,
 					zend_async_waker_callback_resolve, NULL);
 			ZEND_ASYNC_SUSPEND();
@@ -561,7 +561,7 @@ static ssize_t php_stdiop_read(php_stream *stream, char *buf, size_t count)
 
 		if (!req->completed) {
 			zend_coroutine_t *const coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
-			zend_async_waker_new(coroutine);
+			ZEND_ASYNC_WAKER_NEW(coroutine);
 			zend_async_resume_when(coroutine, &data->async_io->event, false,
 					zend_async_waker_callback_resolve, NULL);
 			ZEND_ASYNC_SUSPEND();
