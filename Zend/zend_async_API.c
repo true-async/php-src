@@ -1046,14 +1046,15 @@ ZEND_API void zend_async_waker_callback_cancel(zend_async_event_t *event,
 {
 	zend_coroutine_t *coroutine = ((zend_coroutine_event_callback_t *) callback)->coroutine;
 
+	zend_object *cancel_exc = zend_async_new_exception(
+			ZEND_ASYNC_EXCEPTION_OPERATION_CANCELLED, "Operation has been cancelled");
+
 	if (UNEXPECTED(exception != NULL)) {
-		ZEND_ASYNC_RESUME_WITH_ERROR(coroutine, exception, false);
-	} else {
-		ZEND_ASYNC_RESUME_WITH_ERROR(coroutine,
-				zend_async_new_exception(
-						ZEND_ASYNC_EXCEPTION_CANCELLATION, "Operation has been cancelled"),
-				true);
+		GC_ADDREF(exception);
+		zend_exception_set_previous(cancel_exc, exception);
 	}
+
+	ZEND_ASYNC_RESUME_WITH_ERROR(coroutine, cancel_exc, true);
 }
 
 ZEND_API void zend_async_waker_callback_timeout(zend_async_event_t *event,
