@@ -860,16 +860,38 @@ static zend_result zend_fiber_await(zend_fiber *fiber, zval *return_value)
 		return FAILURE;
 	}
 
+	/* Record the caller on the called fiber for backtrace linking. */
+	fiber->caller_coroutine = current_coroutine;
+
+	/* Link backtrace chain to caller's execute_data. */
+	if (fiber->stack_bottom) {
+		/* Resume: root frame exists, update link directly. */
+		fiber->stack_bottom->prev_execute_data = EG(current_execute_data);
+	} else {
+		/* Start: root frame not created yet, save for coroutine_entry_point. */
+		fiber->execute_data = EG(current_execute_data);
+	}
+
 	if (fiber->yield_event == NULL) {
 		fiber->yield_event = zend_fiber_event_new(fiber, false);
 
 		if (UNEXPECTED(fiber->yield_event == NULL)) {
+			fiber->caller_coroutine = NULL;
+			if (fiber->stack_bottom) {
+				fiber->stack_bottom->prev_execute_data = NULL;
+			}
+			fiber->execute_data = NULL;
 			return FAILURE;
 		}
 	}
 
 	zend_async_waker_t *waker = ZEND_ASYNC_WAKER_NEW(current_coroutine);
 	if (UNEXPECTED(waker == NULL)) {
+		fiber->caller_coroutine = NULL;
+		if (fiber->stack_bottom) {
+			fiber->stack_bottom->prev_execute_data = NULL;
+		}
+		fiber->execute_data = NULL;
 		return FAILURE;
 	}
 
@@ -884,12 +906,28 @@ static zend_result zend_fiber_await(zend_fiber *fiber, zval *return_value)
 	);
 
 	if (!UNEXPECTED(ZEND_ASYNC_SUSPEND())) {
+		fiber->caller_coroutine = NULL;
+		if (fiber->stack_bottom) {
+			fiber->stack_bottom->prev_execute_data = NULL;
+		}
 		zend_async_waker_clean(current_coroutine);
 		return FAILURE;
 	}
 
+	fiber->caller_coroutine = NULL;
+	if (fiber->stack_bottom) {
+		fiber->stack_bottom->prev_execute_data = NULL;
+	}
+
 	if (!Z_ISUNDEF_P(&waker->result)) {
-		ZVAL_COPY_VALUE(return_value, &waker->result);
+		if (!ZEND_COROUTINE_IS_FINISHED(fiber->coroutine)) {
+			/* Fiber yielded — return the suspended value */
+			ZVAL_COPY_VALUE(return_value, &waker->result);
+		} else {
+			/* Fiber completed — start()/resume() returns NULL.
+			 * The return value is accessible via getReturn(). */
+			zval_ptr_dtor(&waker->result);
+		}
 		ZVAL_UNDEF(&waker->result);
 	}
 
@@ -1030,6 +1068,13 @@ static void coroutine_entry_point(void)
 		return;
 	}
 
+	/* Save root frame and link backtrace to caller. */
+	fiber->stack_bottom = EG(current_execute_data);
+	if (fiber->execute_data) {
+		fiber->stack_bottom->prev_execute_data = fiber->execute_data;
+		fiber->execute_data = NULL;
+	}
+
 	/*
 	 * SHARE OWNERSHIP of fcall from fiber.
 	 * Fiber may be destroyed during execution,
@@ -1094,6 +1139,8 @@ static void coroutine_entry_point(void)
 				if (zend_is_graceful_exit(exception) || zend_is_unwind_exit(exception)) {
 					OBJ_RELEASE(exception);
 					exception = NULL;
+				} else if (fiber) {
+					fiber->flags |= ZEND_FIBER_FLAG_THREW;
 				}
 			}
 
@@ -1715,10 +1762,12 @@ ZEND_METHOD(Fiber, isSuspended)
 	fiber = (zend_fiber *) Z_OBJ_P(ZEND_THIS);
 
 	if (EXPECTED(fiber->coroutine)) {
-		RETURN_BOOL(ZEND_ASYNC_CURRENT_COROUTINE != fiber->coroutine
+		RETURN_BOOL(
+			ZEND_ASYNC_CURRENT_COROUTINE != fiber->coroutine
+			&& ZEND_COROUTINE_IS_YIELD(fiber->coroutine)
 			&& ZEND_COROUTINE_IS_STARTED(fiber->coroutine)
 			&& !ZEND_COROUTINE_IS_FINISHED(fiber->coroutine)
-			);
+		);
 	}
 
 	RETURN_BOOL(fiber->context.status == ZEND_FIBER_STATUS_SUSPENDED && fiber->caller == NULL);
@@ -1733,10 +1782,12 @@ ZEND_METHOD(Fiber, isRunning)
 	fiber = (zend_fiber *) Z_OBJ_P(ZEND_THIS);
 
 	if (EXPECTED(fiber->coroutine)) {
-		RETURN_BOOL(ZEND_ASYNC_CURRENT_COROUTINE == fiber->coroutine
-			&& ZEND_COROUTINE_IS_STARTED(fiber->coroutine)
+		RETURN_BOOL(
+			ZEND_COROUTINE_IS_STARTED(fiber->coroutine)
 			&& !ZEND_COROUTINE_IS_FINISHED(fiber->coroutine)
-			);
+			&& (ZEND_ASYNC_CURRENT_COROUTINE == fiber->coroutine
+				|| !ZEND_COROUTINE_IS_YIELD(fiber->coroutine))
+		);
 	}
 
 	RETURN_BOOL(fiber->context.status == ZEND_FIBER_STATUS_RUNNING || fiber->caller != NULL);
@@ -1767,17 +1818,26 @@ ZEND_METHOD(Fiber, getReturn)
 	fiber = (zend_fiber *) Z_OBJ_P(ZEND_THIS);
 
 	if (EXPECTED(fiber->coroutine)) {
-		if (UNEXPECTED(!ZEND_COROUTINE_IS_FINISHED(fiber->coroutine))) {
-			zend_throw_error(zend_ce_fiber_error, "Cannot get fiber return value: The fiber has not returned");
-			RETURN_THROWS();
+		if (ZEND_COROUTINE_IS_FINISHED(fiber->coroutine)) {
+			if (fiber->flags & ZEND_FIBER_FLAG_THREW) {
+				message = "The fiber threw an exception";
+			} else if (fiber->flags & ZEND_FIBER_FLAG_BAILOUT) {
+				message = "The fiber exited with a fatal error";
+			} else {
+				/* Result is stored in coroutine->result */
+				if (!Z_ISUNDEF_P(&fiber->coroutine->result)) {
+					RETURN_COPY_DEREF(&fiber->coroutine->result);
+				}
+				RETURN_NULL();
+			}
+		} else if (!ZEND_COROUTINE_IS_STARTED(fiber->coroutine)) {
+			message = "The fiber has not been started";
+		} else {
+			message = "The fiber has not returned";
 		}
 
-		/* Result is stored in coroutine->result */
-		if (!Z_ISUNDEF_P(&fiber->coroutine->result)) {
-			RETURN_COPY_DEREF(&fiber->coroutine->result);
-		}
-
-		RETURN_NULL();
+		zend_throw_error(zend_ce_fiber_error, "Cannot get fiber return value: %s", message);
+		RETURN_THROWS();
 	}
 
 	if (fiber->context.status == ZEND_FIBER_STATUS_DEAD) {

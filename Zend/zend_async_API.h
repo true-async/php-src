@@ -1757,6 +1757,12 @@ ZEND_API extern zend_async_freeaddrinfo_t zend_async_freeaddrinfo_fn;
 ZEND_API extern zend_async_new_exec_event_t zend_async_new_exec_event_fn;
 ZEND_API extern zend_async_exec_t zend_async_exec_fn;
 
+/* Coroutine VM execute data accessor */
+typedef zend_execute_data *(*zend_async_coroutine_get_execute_data_t)(zend_coroutine_t *coroutine);
+ZEND_API extern zend_async_coroutine_get_execute_data_t zend_async_coroutine_get_execute_data_fn;
+#define ZEND_ASYNC_COROUTINE_GET_EXECUTE_DATA(coroutine) \
+	(zend_async_coroutine_get_execute_data_fn ? zend_async_coroutine_get_execute_data_fn(coroutine) : NULL)
+
 /* Waker API */
 ZEND_API extern zend_async_waker_new_t zend_async_waker_new_fn;
 ZEND_API extern zend_async_waker_destroy_t zend_async_waker_destroy_fn;

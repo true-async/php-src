@@ -233,6 +233,9 @@ zend_async_exec_t zend_async_exec_fn = NULL;
 /* Trigger Event API */
 zend_async_new_trigger_event_t zend_async_new_trigger_event_fn = NULL;
 
+/* Coroutine VM execute data accessor */
+zend_async_coroutine_get_execute_data_t zend_async_coroutine_get_execute_data_fn = NULL;
+
 /* Waker API */
 static zend_async_waker_t *zend_async_waker_new_default(zend_coroutine_t *coroutine);
 static void zend_async_waker_destroy_default(zend_coroutine_t *coroutine);
