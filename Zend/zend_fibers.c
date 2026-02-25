@@ -1015,7 +1015,7 @@ static zend_result zend_fiber_yield(zend_fiber *fiber, zval *value, zval *return
 static void zend_fiber_resume_coroutine(zend_fiber *fiber, zval *value, zval *exception, zval *return_value)
 {
 	if (ZEND_ASYNC_CURRENT_COROUTINE == fiber->coroutine) {
-		zend_throw_error(zend_ce_fiber_error, "Cannot resume a fiber from within itself");
+		zend_throw_error(zend_ce_fiber_error, "Cannot resume a fiber that is not suspended");
 		return;
 	}
 
@@ -1530,8 +1530,12 @@ ZEND_METHOD(Fiber, __construct)
 
 	zend_fiber *fiber = (zend_fiber *) Z_OBJ_P(ZEND_THIS);
 
-	if (UNEXPECTED(fiber->coroutine == NULL
-		&& (fiber->context.status != ZEND_FIBER_STATUS_INIT || Z_TYPE(fiber->fci.function_name) != IS_UNDEF))) {
+	if (EXPECTED(fiber->coroutine != NULL)) {
+		if (UNEXPECTED(fiber->fcall != NULL || ZEND_COROUTINE_IS_STARTED(fiber->coroutine))) {
+			zend_throw_error(zend_ce_fiber_error, "Cannot call constructor twice");
+			RETURN_THROWS();
+		}
+	} else if (UNEXPECTED(fiber->context.status != ZEND_FIBER_STATUS_INIT || Z_TYPE(fiber->fci.function_name) != IS_UNDEF)) {
 		zend_throw_error(zend_ce_fiber_error, "Cannot call constructor twice");
 		RETURN_THROWS();
 	}
