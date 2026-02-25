@@ -147,6 +147,9 @@ typedef struct {
 	zend_async_io_t *async_io;
 	zend_async_poll_event_t *poll_event;
 
+	struct timeval timeout;		/* read timeout; tv_sec == -1 means "not set" */
+	bool timeout_event;			/* true if last read timed out */
+
 	int lock_flag;			/* stores the lock state */
 	zend_string *temp_name;	/* if non-null, this is the path to a temporary file that
 							 * is to be deleted when the stream is closed */
@@ -261,6 +264,7 @@ static php_stream *_php_stream_fopen_from_fd_int(int fd, const char *mode, const
 	self->is_process_pipe = 0;
 	self->temp_name = NULL;
 	self->fd = fd;
+	self->timeout.tv_sec = -1;
 #ifdef PHP_WIN32
 	self->is_pipe_blocking = 0;
 #endif
@@ -436,6 +440,7 @@ PHPAPI php_stream *_php_stream_fopen_from_pipe(FILE *file, const char *mode STRE
 	self->is_process_pipe = 1;
 	self->fd = fileno(file);
 	self->temp_name = NULL;
+	self->timeout.tv_sec = -1;
 #ifdef PHP_WIN32
 	self->is_pipe_blocking = 0;
 #endif
@@ -554,6 +559,8 @@ static ssize_t php_stdiop_read(php_stream *stream, char *buf, size_t count)
 			return -1;
 		}
 
+		data->timeout_event = false;
+
 		zend_async_io_req_t *req = ZEND_ASYNC_IO_READ(data->async_io, count);
 		if (UNEXPECTED(req == NULL)) {
 			return -1;
@@ -561,10 +568,35 @@ static ssize_t php_stdiop_read(php_stream *stream, char *buf, size_t count)
 
 		if (!req->completed) {
 			zend_coroutine_t *const coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+			const zend_ulong timeout_ms = data->timeout.tv_sec >= 0
+				? (zend_ulong)data->timeout.tv_sec * 1000 + (zend_ulong)data->timeout.tv_usec / 1000
+				: 0;
+
 			ZEND_ASYNC_WAKER_NEW(coroutine);
+
+			if (timeout_ms) {
+				zend_async_resume_when(coroutine, &ZEND_ASYNC_NEW_TIMER_EVENT(timeout_ms, false)->base, true,
+						zend_async_waker_callback_timeout, NULL);
+			}
+
 			zend_async_resume_when(coroutine, &data->async_io->event, false,
 					zend_async_waker_callback_resolve, NULL);
-			ZEND_ASYNC_SUSPEND();
+
+			if (!ZEND_ASYNC_SUSPEND()) {
+				zend_async_waker_clean(coroutine);
+				if (EG(exception) != NULL
+					&& instanceof_function(EG(exception)->ce, ZEND_ASYNC_GET_EXCEPTION_CE(ZEND_ASYNC_EXCEPTION_TIMEOUT))) {
+					/* Clear the timeout exception, as we will handle it via return value. */
+					zend_clear_exception();
+
+					if (!req->completed) {
+						data->timeout_event = true;
+						req->dispose(req);
+						return -1;
+					}
+				}
+			}
+
 			zend_async_waker_clean(coroutine);
 		}
 
@@ -1230,18 +1262,19 @@ static int php_stdiop_set_option(php_stream *stream, int option, int value, void
 			return PHP_STREAM_OPTION_RETURN_OK;
 #endif
 		case PHP_STREAM_OPTION_META_DATA_API:
-			if (fd == -1)
+			if (fd == -1) {
 				return -1;
+			}
+
+			add_assoc_bool((zval*)ptrparam, "timed_out", data->timeout_event);
 #ifdef O_NONBLOCK
 			flags = fcntl(fd, F_GETFL, 0);
-
-			add_assoc_bool((zval*)ptrparam, "timed_out", 0);
 			add_assoc_bool((zval*)ptrparam, "blocked", (flags & O_NONBLOCK)? 0 : 1);
-			add_assoc_bool((zval*)ptrparam, "eof", stream->eof);
-
-			return PHP_STREAM_OPTION_RETURN_OK;
+#else
+			add_assoc_bool((zval*)ptrparam, "blocked", 1);
 #endif
-			return -1;
+			add_assoc_bool((zval*)ptrparam, "eof", stream->eof);
+			return PHP_STREAM_OPTION_RETURN_OK;
 		case PHP_STREAM_OPTION_ASYNC_EVENT_HANDLE:
 			if (fd == -1) {
 				return PHP_STREAM_OPTION_RETURN_NOTIMPL;
@@ -1284,6 +1317,11 @@ static int php_stdiop_set_option(php_stream *stream, int option, int value, void
 				return PHP_STREAM_OPTION_RETURN_OK;
 			}
 			return PHP_STREAM_OPTION_RETURN_NOTIMPL;
+
+		case PHP_STREAM_OPTION_READ_TIMEOUT:
+			data->timeout = *(struct timeval *)ptrparam;
+			data->timeout_event = false;
+			return PHP_STREAM_OPTION_RETURN_OK;
 
 		default:
 			return PHP_STREAM_OPTION_RETURN_NOTIMPL;
