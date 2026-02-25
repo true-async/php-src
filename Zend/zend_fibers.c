@@ -1025,7 +1025,7 @@ static void zend_fiber_resume_coroutine(zend_fiber *fiber, zval *value, zval *ex
 	}
 
 	if (UNEXPECTED(fiber->resume_event == NULL)) {
-		zend_throw_error(zend_ce_fiber_error, "Cannot resume a fiber that has not been started");
+		zend_throw_error(zend_ce_fiber_error, "Cannot resume a fiber that is not suspended");
 		return;
 	}
 
@@ -1335,6 +1335,31 @@ static void zend_fiber_object_destroy(zend_object *object)
 		fiber->yield_event = NULL;
 	}
 
+	/*
+	 * Free fcall if still owned by fiber (coroutine never started or was
+	 * already destroyed). This must happen before the coroutine check
+	 * because coroutine_object_destroy may have set fiber->coroutine = NULL.
+	 */
+	if (fiber->fcall != NULL) {
+		zend_fcall_t *fcall = fiber->fcall;
+		fiber->fcall = NULL;
+
+		if (fcall->fci.param_count) {
+			for (uint32_t i = 0; i < fcall->fci.param_count; i++) {
+				zval_ptr_dtor(&fcall->fci.params[i]);
+			}
+			efree(fcall->fci.params);
+		}
+
+		if (fcall->fci.named_params) {
+			GC_DELREF(fcall->fci.named_params);
+			fcall->fci.named_params = NULL;
+		}
+
+		zval_ptr_dtor(&fcall->fci.function_name);
+		efree(fcall);
+	}
+
 	if (fiber->coroutine != NULL) {
 
 		//
@@ -1346,31 +1371,6 @@ static void zend_fiber_object_destroy(zend_object *object)
 		fiber->coroutine = NULL;
 
 		if (ZEND_COROUTINE_IS_FINISHED(coroutine) || false == ZEND_COROUTINE_IS_STARTED(coroutine)) {
-			/*
-			 * If fcall is not NULL, ownership was NOT taken by
-			 * coroutine_entry_point (coroutine did not start execution).
-			 * In this case fiber must free fcall.
-			 */
-			if (fiber->fcall != NULL) {
-				zend_fcall_t *fcall = fiber->fcall;
-				fiber->fcall = NULL;
-
-				if (fcall->fci.param_count) {
-					for (uint32_t i = 0; i < fcall->fci.param_count; i++) {
-						zval_ptr_dtor(&fcall->fci.params[i]);
-					}
-					efree(fcall->fci.params);
-				}
-
-				if (fcall->fci.named_params) {
-					GC_DELREF(fcall->fci.named_params);
-					fcall->fci.named_params = NULL;
-				}
-
-				zval_ptr_dtor(&fcall->fci.function_name);
-				efree(fcall);
-			}
-
 			ZEND_ASYNC_EVENT_RELEASE(&coroutine->event);
 			return;
 		}
