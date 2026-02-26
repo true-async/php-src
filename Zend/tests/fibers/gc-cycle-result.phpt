@@ -7,11 +7,11 @@ $fiber = null;
 $fiber = new Fiber(function () use (&$fiber) {
     return new class($fiber) {
         private $fiber;
-        
+
         public function __construct($fiber) {
             $this->fiber = $fiber;
         }
-        
+
         public function __destruct() {
             var_dump('DTOR');
         }
@@ -30,6 +30,12 @@ unset($fiber);
 
 var_dump('COLLECT CYCLES');
 gc_collect_cycles();
+
+// In TrueAsync, destructors from GC run in a separate coroutine.
+Async\spawn(function () {
+    echo "2\n";
+});
+
 var_dump('DONE');
 
 ?>
@@ -38,5 +44,6 @@ string(14) "COLLECT CYCLES"
 string(4) "DONE"
 bool(true)
 string(14) "COLLECT CYCLES"
-string(4) "DTOR"
 string(4) "DONE"
+2
+string(4) "DTOR"

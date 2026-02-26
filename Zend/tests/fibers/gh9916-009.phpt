@@ -1,5 +1,7 @@
 --TEST--
 Bug GH-9916 009 (Entering shutdown sequence with a fiber suspended in a Generator emits an unavoidable fatal error or crashes)
+--SKIPIF--
+<?php if (extension_loaded("true_async")) die("skip TrueAsync has different generator close behavior during shutdown"); ?>
 --FILE--
 <?php
 $gen = (function() {

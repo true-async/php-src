@@ -1,5 +1,7 @@
 --TEST--
 Fatal error in a fiber with other active fibers
+--SKIPIF--
+<?php if (extension_loaded("true_async")) die("skip TrueAsync has different shutdown behavior for fatal errors"); ?>
 --FILE--
 <?php
 

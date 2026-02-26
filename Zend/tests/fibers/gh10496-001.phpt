@@ -24,10 +24,17 @@ $f = new Fiber(function() use (&$f) {
 $f->start();
 unset($f);
 gc_collect_cycles();
+
+// In TrueAsync, destructors from GC run in a separate coroutine.
+Async\spawn(function () {
+    echo "2\n";
+});
+
 print "Collected\n";
 
 ?>
 --EXPECT--
-Cleaned
-Dtor x()
 Collected
+Dtor x()
+2
+Cleaned

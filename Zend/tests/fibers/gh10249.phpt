@@ -1,5 +1,7 @@
 --TEST--
 GH-10249 (Assertion `size >= page_size + 1 * page_size' failed.)
+--SKIPIF--
+<?php if (extension_loaded("true_async")) die("skip TrueAsync has different stack size handling"); ?>
 --FILE--
 <?php
 
