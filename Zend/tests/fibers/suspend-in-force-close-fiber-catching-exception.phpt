@@ -22,6 +22,12 @@ try {
 echo "done\n";
 
 ?>
---EXPECT--
-Cannot suspend in a force-closed fiber
+--EXPECTF--
 done
+
+Fatal error: Uncaught FiberError: Cannot suspend in a force-closed fiber in %s:%d
+Stack trace:
+#0 %s(%d): Fiber::suspend()
+#1 [internal function]: {closure:%s:%d}()
+#2 {main}
+  thrown in %s on line %d

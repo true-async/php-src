@@ -999,6 +999,11 @@ static zend_result zend_fiber_yield(zend_fiber *fiber, zval *value, zval *return
 
 	if (!UNEXPECTED(ZEND_ASYNC_SUSPEND())) {
 		zend_async_waker_clean(coroutine);
+
+		if (EG(exception) && (zend_is_graceful_exit(EG(exception)) || zend_is_unwind_exit(EG(exception)))) {
+			fiber->flags |= ZEND_FIBER_FLAG_DESTROYED;
+		}
+
 		return FAILURE;
 	}
 
@@ -1697,9 +1702,10 @@ ZEND_METHOD(Fiber, suspend)
 			RETURN_THROWS();
 		}
 
-		// If fiber was destroyed
-		if (coroutine->extended_data == NULL) {
-			RETURN_NULL();
+		// If fiber was destroyed (coroutine cancelled due to fiber object destruction)
+		if (UNEXPECTED(coroutine->extended_data == NULL || ZEND_COROUTINE_IS_CANCELLED(coroutine))) {
+			zend_throw_error(zend_ce_fiber_error, "Cannot suspend in a force-closed fiber");
+			RETURN_THROWS();
 		}
 
 		zend_fiber_yield(coroutine->extended_data, value, return_value);
