@@ -1,5 +1,7 @@
 --TEST--
 Throw in multiple destroyed fibers after shutdown
+--SKIPIF--
+<?php if (extension_loaded("true_async")) die("skip TrueAsync has different async destructor exception propagation"); ?>
 --FILE--
 <?php
 

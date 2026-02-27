@@ -1102,6 +1102,7 @@ static void coroutine_entry_point(void)
 	zend_catch
 	{
 		is_bailout = true;
+		ZEND_ASYNC_WAKER_DESTROY(coroutine);
 	}
 	zend_end_try();
 
@@ -1167,6 +1168,7 @@ static void coroutine_entry_point(void)
 	zend_catch
 	{
 		is_bailout = true;
+		ZEND_ASYNC_WAKER_DESTROY(coroutine);
 	}
 	zend_end_try();
 

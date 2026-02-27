@@ -290,7 +290,7 @@ typedef zend_async_scope_t *(*zend_async_new_scope_t)(
 		zend_async_scope_t *parent_scope, bool with_zend_object);
 typedef zend_coroutine_t *(*zend_async_spawn_t)(
 		zend_async_scope_t *scope, zend_object *scope_provider, int32_t priority);
-typedef bool (*zend_async_suspend_t)(bool from_main);
+typedef bool (*zend_async_suspend_t)(bool from_main, bool is_bailout);
 typedef bool (*zend_async_enqueue_coroutine_t)(zend_coroutine_t *coroutine);
 typedef bool (*zend_async_resume_t)(
 		zend_coroutine_t *coroutine, zend_object *error, const bool transfer_error);
@@ -707,6 +707,7 @@ typedef struct {
  * Use ZEND_ASYNC_EVENT_SET_HIDDEN(ev) to mark an event as hidden.
  */
 #define ZEND_ASYNC_EVENT_F_HIDDEN (1u << 10)
+#define ZEND_ASYNC_EVENT_F_BAILOUT (1u << 11) /* event is in bailout — skip PHP handlers */
 
 #define ZEND_ASYNC_EVENT_REFERENCE_PREFIX ((uint32_t) 0x80) /* prefix for reference structures */
 
@@ -760,6 +761,9 @@ typedef struct {
 #define ZEND_ASYNC_EVENT_SET_HIDDEN(ev) ((ev)->flags |= ZEND_ASYNC_EVENT_F_HIDDEN)
 #define ZEND_ASYNC_EVENT_CLR_HIDDEN(ev) ((ev)->flags &= ~ZEND_ASYNC_EVENT_F_HIDDEN)
 #define ZEND_ASYNC_EVENT_IS_HIDDEN(ev) (((ev)->flags & ZEND_ASYNC_EVENT_F_HIDDEN) != 0)
+
+#define ZEND_ASYNC_EVENT_SET_BAILOUT(ev) ((ev)->flags |= ZEND_ASYNC_EVENT_F_BAILOUT)
+#define ZEND_ASYNC_EVENT_IS_BAILOUT(ev) (((ev)->flags & ZEND_ASYNC_EVENT_F_BAILOUT) != 0)
 
 // Convert awaitable Zend object to zend_async_event_t pointer
 #define ZEND_ASYNC_EVENT_IS_REFERENCE(ptr) \
@@ -1069,6 +1073,10 @@ struct _zend_async_scope_s {
 	(((scope)->event.flags & ZEND_ASYNC_SCOPE_F_CANCELLED) != 0)
 #define ZEND_ASYNC_SCOPE_IS_DISPOSING(scope) \
 	(((scope)->event.flags & ZEND_ASYNC_SCOPE_F_DISPOSING) != 0)
+#define ZEND_ASYNC_SCOPE_IS_BAILOUT(scope) \
+	ZEND_ASYNC_EVENT_IS_BAILOUT(&(scope)->event)
+#define ZEND_ASYNC_SCOPE_SET_BAILOUT(scope) \
+	ZEND_ASYNC_EVENT_SET_BAILOUT(&(scope)->event)
 
 #define ZEND_ASYNC_SCOPE_SET_CLOSED(scope) ((scope)->event.flags |= ZEND_ASYNC_SCOPE_F_CLOSED)
 #define ZEND_ASYNC_SCOPE_CLR_CLOSED(scope) ((scope)->event.flags &= ~ZEND_ASYNC_SCOPE_F_CLOSED)
@@ -1253,7 +1261,7 @@ struct _zend_coroutine_s {
 #define ZEND_COROUTINE_SUSPENDED(coroutine) \
 	((coroutine)->waker != NULL && ZEND_ASYNC_WAKER_WAITING((coroutine)->waker))
 
-/* Coroutine flags (bits 13-19, bits 10-12 reserved for event flags) */
+/* Coroutine flags (bits 13-19, bits 0-12 reserved for event flags) */
 #define ZEND_COROUTINE_F_STARTED (1u << 13) /* coroutine is started */
 #define ZEND_COROUTINE_F_CANCELLED (1u << 14) /* coroutine is cancelled */
 #define ZEND_COROUTINE_F_ZOMBIE (1u << 15) /* coroutine is a zombie */
@@ -1300,6 +1308,10 @@ struct _zend_coroutine_s {
 	((coroutine)->event.flags |= ZEND_COROUTINE_F_YIELD)
 #define ZEND_COROUTINE_CLR_YIELD(coroutine) \
 	((coroutine)->event.flags &= ~ZEND_COROUTINE_F_YIELD)
+#define ZEND_COROUTINE_IS_BAILOUT(coroutine) \
+	ZEND_ASYNC_EVENT_IS_BAILOUT(&(coroutine)->event)
+#define ZEND_COROUTINE_SET_BAILOUT(coroutine) \
+	ZEND_ASYNC_EVENT_SET_BAILOUT(&(coroutine)->event)
 
 static zend_always_inline zend_string *zend_coroutine_callable_name(
 		const zend_coroutine_t *coroutine)
@@ -1972,8 +1984,8 @@ END_EXTERN_C()
 #define ZEND_ASYNC_NEW_COROUTINE(scope) zend_async_new_coroutine_fn(scope)
 #define ZEND_ASYNC_NEW_SCOPE(parent) zend_async_new_scope_fn(parent, false)
 #define ZEND_ASYNC_NEW_SCOPE_WITH_OBJECT(parent) zend_async_new_scope_fn(parent, true)
-#define ZEND_ASYNC_SUSPEND() zend_async_suspend_fn(false)
-#define ZEND_ASYNC_RUN_SCHEDULER_AFTER_MAIN() zend_async_suspend_fn(true)
+#define ZEND_ASYNC_SUSPEND() zend_async_suspend_fn(false, false)
+#define ZEND_ASYNC_RUN_SCHEDULER_AFTER_MAIN(is_bailout) zend_async_suspend_fn(true, is_bailout)
 #define ZEND_ASYNC_ENQUEUE_COROUTINE(coroutine) zend_async_enqueue_coroutine_fn(coroutine)
 #define ZEND_ASYNC_RESUME(coroutine) zend_async_resume_fn(coroutine, NULL, false)
 #define ZEND_ASYNC_RESUME_WITH_ERROR(coroutine, error, transfer_error) \

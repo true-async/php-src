@@ -1988,7 +1988,7 @@ void php_request_shutdown(void *dummy)
 
 	// Before PHP shuts down completely,
 	// control is passed to the coroutines one last time (if any remain).
-	ZEND_ASYNC_RUN_SCHEDULER_AFTER_MAIN();
+	ZEND_ASYNC_RUN_SCHEDULER_AFTER_MAIN(false);
 
 	/* 3. Flush all output buffers */
 	zend_try {
@@ -2660,9 +2660,11 @@ PHPAPI bool php_execute_script_ex(zend_file_handle *primary_file, zval *retval)
 			result = zend_execute_script(ZEND_REQUIRE, NULL, append_file_p) == SUCCESS;
 		}
 
-		ZEND_ASYNC_RUN_SCHEDULER_AFTER_MAIN();
+		ZEND_ASYNC_RUN_SCHEDULER_AFTER_MAIN(false);
 		ZEND_ASYNC_INITIALIZE;
 	} zend_catch {
+		// We provide the ability to correctly handle a bailout in the main coroutine.
+		ZEND_ASYNC_RUN_SCHEDULER_AFTER_MAIN(true);
 		result = false;
 	} zend_end_try();
 

@@ -42,7 +42,7 @@ static zend_coroutine_t *spawn(
 	return NULL;
 }
 
-static bool suspend(bool from_main)
+static bool suspend(bool from_main, bool is_bailout)
 {
 	return false;
 }
