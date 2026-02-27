@@ -27,6 +27,7 @@
 #include "zend_generators_arginfo.h"
 #include "zend_observer.h"
 #include "zend_vm_opcodes.h"
+#include "zend_async_API.h"
 
 ZEND_API zend_class_entry *zend_ce_generator;
 ZEND_API zend_class_entry *zend_ce_ClosedGeneratorException;
@@ -781,7 +782,7 @@ try_again:
 		return;
 	}
 
-	if (EG(active_fiber)) {
+	if (EG(active_fiber) || (ZEND_ASYNC_CURRENT_COROUTINE && ZEND_COROUTINE_IS_FIBER(ZEND_ASYNC_CURRENT_COROUTINE))) {
 		orig_generator->flags |= ZEND_GENERATOR_IN_FIBER;
 		generator->flags |= ZEND_GENERATOR_IN_FIBER;
 	}
