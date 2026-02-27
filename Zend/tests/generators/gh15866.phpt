@@ -47,7 +47,7 @@ gc_collect_cycles();
 ==DONE==
 --EXPECT--
 Collect cycles
+==DONE==
 Canary::__destruct
 Generator finally
 Fiber finally
-==DONE==

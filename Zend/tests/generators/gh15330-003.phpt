@@ -53,5 +53,5 @@ object(Canary)#%d (1) {
   }
 }
 string(3) "foo"
-string(18) "Canary::__destruct"
 ==DONE==
+string(18) "Canary::__destruct"
