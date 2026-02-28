@@ -25,6 +25,10 @@
 #endif
 
 #include "php.h"
+#ifndef PHP_WIN32
+# include <fcntl.h>
+# include <unistd.h>
+#endif
 #include "ext/standard/head.h"
 #include "ext/standard/url_scanner_ex.h"
 #include "SAPI.h"
@@ -52,6 +56,7 @@ static HashTable php_output_handler_reverse_conflicts;
 /* }}} */
 
 /* {{{ forward declarations */
+static inline void php_output_write_blocking(int fd, FILE *fp, const char *str, size_t str_len);
 static inline bool php_output_lock_error(int op);
 static inline void php_output_op(int op, const char *str, size_t len);
 
@@ -87,14 +92,36 @@ static inline void php_output_init_globals(zend_output_globals *G)
 /* }}} */
 
 /* {{{ stderr/stdout writer if not PHP_OUTPUT_ACTIVATED */
+
+/* When the async extension is active, reactor may set O_NONBLOCK on stdout/stderr
+ * fwrite() on a non-blocking fd can silently lose data when
+ * write() returns EAGAIN.
+ * Temporarily restore blocking mode.
+ */
+static inline void php_output_write_blocking(const int fd, FILE *fp, const char *str, const size_t str_len)
+{
+#ifndef PHP_WIN32
+	const int flags = fcntl(fd, F_GETFL);
+
+	if (flags != -1 && (flags & O_NONBLOCK)) {
+		fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+		fwrite(str, 1, str_len, fp);
+		fflush(fp);
+		fcntl(fd, F_SETFL, flags);
+		return;
+	}
+#endif
+	fwrite(str, 1, str_len, fp);
+}
+
 static size_t php_output_stdout(const char *str, size_t str_len)
 {
-	fwrite(str, 1, str_len, stdout);
+	php_output_write_blocking(STDOUT_FILENO, stdout, str, str_len);
 	return str_len;
 }
 static size_t php_output_stderr(const char *str, size_t str_len)
 {
-	fwrite(str, 1, str_len, stderr);
+	php_output_write_blocking(STDERR_FILENO, stderr, str, str_len);
 /* See http://support.microsoft.com/kb/190351 */
 #ifdef PHP_WIN32
 	fflush(stderr);
