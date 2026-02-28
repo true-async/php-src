@@ -124,22 +124,24 @@ PHPAPI int php_exec(int type, const char *cmd, zval *array, zval *return_value)
 #endif
 
 #ifdef PHP_WIN32
-	if (ZEND_ASYNC_IS_ACTIVE) {
-	        return ZEND_ASYNC_EXEC(type, cmd, array, return_value, NULL, NULL, NULL, 0);
-	    } else {
-		    fp = VCWD_POPEN(cmd, "rb");
-	    }
+	if (ZEND_ASYNC_ON) {
+		ZEND_ASYNC_SCHEDULER_INIT();
+		return ZEND_ASYNC_EXEC(type, cmd, array, return_value, NULL, NULL, NULL, 0);
+	} else {
+		fp = VCWD_POPEN(cmd, "rb");
+	}
 #else
-	if (ZEND_ASYNC_IS_ACTIVE) {
-			#if PHP_SIGCHILD
-			if (sig_handler) {
-				signal(SIGCHLD, sig_handler);
-			}
-			#endif
-			return ZEND_ASYNC_EXEC(type, cmd, array, return_value, NULL, NULL, NULL, 0);
-		} else {
-			fp = VCWD_POPEN(cmd, "r");
+	if (ZEND_ASYNC_ON) {
+#if PHP_SIGCHILD
+		if (sig_handler) {
+			signal(SIGCHLD, sig_handler);
 		}
+#endif
+		ZEND_ASYNC_SCHEDULER_INIT();
+		return ZEND_ASYNC_EXEC(type, cmd, array, return_value, NULL, NULL, NULL, 0);
+	} else {
+		fp = VCWD_POPEN(cmd, "r");
+	}
 #endif
 	if (!fp) {
 		php_error_docref(NULL, E_WARNING, "Unable to fork [%s]", cmd);
@@ -527,7 +529,8 @@ PHP_FUNCTION(shell_exec)
 		RETURN_THROWS();
 	}
 
-	if (ZEND_ASYNC_IS_ACTIVE) {
+	if (ZEND_ASYNC_ON) {
+		ZEND_ASYNC_SCHEDULER_INIT();
 		ZEND_ASYNC_EXEC(
 			ZEND_ASYNC_EXEC_MODE_SHELL_EXEC,
 			command,
