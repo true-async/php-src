@@ -17,6 +17,7 @@
 #include "Zend/zend_types.h"
 #include <zend_exceptions.h>
 #include <Zend/zend_async_API.h>
+#include <fcntl.h>
 
 /********************************************************************************************************************
  * This module provides asynchronous versions of PHP cURL functions using the TrueAsync API.
@@ -891,4 +892,158 @@ finally:
 	zend_async_waker_clean(coroutine);
 
 	return result;
+}
+
+///////////////////////////////////////////////////////////////
+/// ASYNC FILE READ FOR CURLFile UPLOADS
+///////////////////////////////////////////////////////////////
+
+/**
+ * Custom callback struct that carries a back-reference to mime_data_cb_arg.
+ * Used as IO event completion callback.
+ */
+typedef struct {
+	zend_async_event_callback_t base;
+	mime_data_cb_arg_t *cb_arg;
+} curl_async_io_callback_t;
+
+/**
+ * IO completion callback — called when uv_fs_read finishes.
+ * Unpauses the curl transfer so libcurl re-calls read_cb to get the data.
+ */
+static void curl_async_file_read_complete(
+	zend_async_event_t *event, zend_async_event_callback_t *callback,
+	void *result, zend_object *exception)
+{
+	const curl_async_io_callback_t *io_cb = (const curl_async_io_callback_t *) callback;
+	const mime_data_cb_arg_t *cb_arg = io_cb->cb_arg;
+	const curl_async_io_state_t *state = cb_arg->async_state;
+
+	if (state == NULL || state->curl == NULL) {
+		return;
+	}
+
+	/* Unpause the transfer — libcurl will re-call our read_cb */
+	curl_easy_pause(state->curl, CURLPAUSE_CONT);
+
+	/* Trigger socket action so curl processes the unpause */
+	int running;
+	curl_multi_socket_action(curl_multi_handle, CURL_SOCKET_TIMEOUT, 0, &running);
+	process_curl_completed_handles();
+}
+
+size_t curl_async_read_cb(char *buffer, const size_t size, const size_t nitems, void *arg)
+{
+	mime_data_cb_arg_t *cb_arg = (mime_data_cb_arg_t *) arg;
+	const size_t requested = size * nitems;
+
+	/* If we have a completed async read request, copy data to curl */
+	if (cb_arg->async_state != NULL && cb_arg->async_state->req != NULL
+		&& cb_arg->async_state->req->completed) {
+
+		zend_async_io_req_t *req = cb_arg->async_state->req;
+		cb_arg->async_state->req = NULL;
+
+		if (req->transferred <= 0) {
+			/* EOF or error */
+			cb_arg->async_state->eof = true;
+			req->dispose(req);
+			return 0;
+		}
+
+		const size_t to_copy = (size_t) req->transferred < requested
+			? (size_t) req->transferred : requested;
+		memcpy(buffer, req->buf, to_copy);
+		req->dispose(req);
+		return to_copy;
+	}
+
+	/* First call — open file and create async IO handle */
+	if (cb_arg->async_state == NULL) {
+		const int fd = VCWD_OPEN(ZSTR_VAL(cb_arg->filename), O_RDONLY);
+		if (fd < 0) {
+			return CURL_READFUNC_ABORT;
+		}
+
+		zend_async_io_t *io = ZEND_ASYNC_IO_CREATE(
+			fd, ZEND_ASYNC_IO_TYPE_FILE, ZEND_ASYNC_IO_READABLE);
+
+		if (io == NULL) {
+			close(fd);
+			return CURL_READFUNC_ABORT;
+		}
+
+		cb_arg->async_state = ecalloc(1, sizeof(curl_async_io_state_t));
+		cb_arg->async_state->curl = cb_arg->curl;
+		cb_arg->async_state->fd = fd;
+		cb_arg->async_state->io = io;
+		cb_arg->async_state->eof = false;
+	}
+
+	if (cb_arg->async_state->eof) {
+		return 0;
+	}
+
+	/* Start async read */
+	zend_async_io_req_t *req = ZEND_ASYNC_IO_READ(
+		cb_arg->async_state->io, requested);
+
+	if (req == NULL) {
+		return CURL_READFUNC_ABORT;
+	}
+
+	/* Sync fast path — data already available (e.g. single coroutine, pread) */
+	if (req->completed) {
+		if (req->transferred <= 0) {
+			cb_arg->async_state->eof = true;
+			req->dispose(req);
+			return 0;
+		}
+		const size_t to_copy = (size_t) req->transferred < requested
+			? (size_t) req->transferred : requested;
+		memcpy(buffer, req->buf, to_copy);
+		req->dispose(req);
+		return to_copy;
+	}
+
+	/* Async path — data will arrive later via IO event */
+	cb_arg->async_state->req = req;
+
+	/* Subscribe to IO completion event */
+	curl_async_io_callback_t *io_cb = (curl_async_io_callback_t *)
+		ZEND_ASYNC_EVENT_CALLBACK_EX(curl_async_file_read_complete, sizeof(curl_async_io_callback_t));
+	io_cb->cb_arg = cb_arg;
+
+	cb_arg->async_state->io->event.add_callback(
+		&cb_arg->async_state->io->event, &io_cb->base);
+
+	return CURL_READFUNC_PAUSE;
+}
+
+void curl_async_free_cb(void *arg)
+{
+	mime_data_cb_arg_t *cb_arg = (mime_data_cb_arg_t *) arg;
+
+	if (cb_arg->async_state != NULL) {
+		curl_async_io_state_t *state = cb_arg->async_state;
+		cb_arg->async_state = NULL;
+
+		/* Close IO first to prevent completion callbacks from firing */
+		if (state->io != NULL) {
+			ZEND_ASYNC_IO_CLOSE(state->io);
+			state->io = NULL;
+		}
+
+		if (state->req != NULL) {
+			state->req->dispose(state->req);
+			state->req = NULL;
+		}
+
+		if (state->fd >= 0) {
+			close(state->fd);
+			state->fd = -1;
+		}
+
+		efree(state);
+	}
 }

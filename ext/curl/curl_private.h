@@ -146,6 +146,16 @@ typedef struct _php_curlsh {
 	zend_object std;
 } php_curlsh;
 
+/* Forward declaration for async IO state */
+typedef struct curl_async_io_state_s curl_async_io_state_t;
+
+typedef struct {
+	zend_string *filename;
+	php_stream *stream;
+	CURL *curl;                                  /* back-ref for async pause/unpause */
+	curl_async_io_state_t *async_state;          /* async IO state, NULL when sync */
+} mime_data_cb_arg_t;
+
 php_curl *init_curl_handle_into_zval(zval *curl);
 void init_curl_handle(php_curl *ch);
 void _php_curl_cleanup_handle(php_curl *);
