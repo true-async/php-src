@@ -91,7 +91,7 @@ static int multi_timer_cb(CURLM *multi, const long timeout_ms, void *user_p);
  * but the completion callback has not yet fired.
  * Works for both FILE and USER write modes.
  */
-static bool curl_has_pending_async_write(const curl_async_event_t *curl_event)
+static inline bool curl_has_pending_async_write(const curl_async_event_t *curl_event)
 {
 	return curl_event->write_state != NULL && curl_event->write_state->pending;
 }
@@ -488,7 +488,7 @@ CURLcode curl_async_perform(php_curl *ch)
 	curl_async_event_t *curl_event = curl_async_event_ctor(ch);
 
 	if (UNEXPECTED(curl_event == NULL)) {
-		zend_async_waker_clean(coroutine);
+		ZEND_ASYNC_WAKER_DESTROY(coroutine);
 		return CURLE_FAILED_INIT;
 	}
 
@@ -499,13 +499,13 @@ CURLcode curl_async_perform(php_curl *ch)
 		zend_async_waker_callback_resolve,
 		NULL
 	)) {
-		zend_async_waker_clean(coroutine);
+		ZEND_ASYNC_WAKER_DESTROY(coroutine);
 		return CURLE_FAILED_INIT;
 	}
 
 	// Suspend coroutine until curl completes
-	if (!ZEND_ASYNC_SUSPEND()) {
-		zend_async_waker_clean(coroutine);
+	if (UNEXPECTED(false == ZEND_ASYNC_SUSPEND())) {
+		ZEND_ASYNC_WAKER_DESTROY(coroutine);
 		return CURLE_ABORTED_BY_CALLBACK;
 	}
 
@@ -515,7 +515,7 @@ CURLcode curl_async_perform(php_curl *ch)
 		result = (CURLcode) Z_LVAL(coroutine->waker->result);
 	}
 
-	zend_async_waker_clean(coroutine);
+	ZEND_ASYNC_WAKER_DESTROY(coroutine);
 	return result;
 }
 
@@ -972,8 +972,8 @@ static void curl_async_file_read_complete(
 	zend_async_event_t *event, zend_async_event_callback_t *callback,
 	void *result, zend_object *exception)
 {
-	curl_async_io_callback_t *io_cb = (curl_async_io_callback_t *) callback;
-	mime_data_cb_arg_t *cb_arg = io_cb->cb_arg;
+	const curl_async_io_callback_t *io_cb = (curl_async_io_callback_t *) callback;
+	const mime_data_cb_arg_t *cb_arg = io_cb->cb_arg;
 	curl_async_read_state_t *state = cb_arg->async_state;
 
 	if (state == NULL || state->curl == NULL) {
@@ -1047,8 +1047,7 @@ size_t curl_async_read_cb(char *buffer, const size_t size, const size_t nitems, 
 	}
 
 	/* Start async read */
-	zend_async_io_req_t *req = ZEND_ASYNC_IO_READ(
-		cb_arg->async_state->io, requested);
+	zend_async_io_req_t *req = ZEND_ASYNC_IO_READ(cb_arg->async_state->io, requested);
 
 	if (req == NULL) {
 		return CURL_READFUNC_ABORT;
@@ -1061,8 +1060,9 @@ size_t curl_async_read_cb(char *buffer, const size_t size, const size_t nitems, 
 			req->dispose(req);
 			return 0;
 		}
-		const size_t to_copy = (size_t) req->transferred < requested
-			? (size_t) req->transferred : requested;
+
+		const size_t to_copy = (size_t) req->transferred < requested ? (size_t) req->transferred : requested;
+
 		memcpy(buffer, req->buf, to_copy);
 		req->dispose(req);
 		return to_copy;
