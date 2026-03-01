@@ -76,6 +76,9 @@ typedef struct {
 
 	/* USER mode: data for coroutine (single copy from curl buffer) */
 	zend_string *write_data;
+
+	/* true when this state is used for header writes (selects write_header handler) */
+	bool is_header;
 } curl_async_write_state_t;
 
 void curl_async_register_ce(void);
@@ -146,12 +149,14 @@ size_t curl_async_read_cb(char *buffer, size_t size, size_t nitems, void *arg);
 void curl_async_free_cb(void *arg);
 
 /**
- * @brief Async write callback for PHP_CURL_FILE mode.
+ * @brief Async write callback for PHP_CURL_FILE mode (body and headers).
  *
  * Uses the stream's async IO handle to write data asynchronously.
  * Flow: get IO from stream → ZEND_ASYNC_IO_WRITE → if pending, PAUSE → completion unpause.
+ *
+ * @param is_header  true for header writes, false for body writes
  */
-size_t curl_async_write_file(char *data, const size_t size, const size_t nmemb, php_curl *ch);
+size_t curl_async_write_file(char *data, const size_t size, const size_t nmemb, php_curl *ch, const bool is_header);
 
 /**
  * @brief Async write callback for PHP_CURL_USER mode.
@@ -159,6 +164,6 @@ size_t curl_async_write_file(char *data, const size_t size, const size_t nmemb, 
  * Spawns a high-priority coroutine to execute the PHP callback.
  * Flow: copy data → spawn coroutine → PAUSE → coroutine runs callback → completion unpause.
  */
-size_t curl_async_write_user(char *data, const size_t size, const size_t nmemb, php_curl *ch);
+size_t curl_async_write_user(char *data, const size_t size, const size_t nmemb, php_curl *ch, const bool is_header);
 
 #endif //CURL_ASYNC_H

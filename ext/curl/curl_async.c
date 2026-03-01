@@ -65,7 +65,8 @@ struct curl_async_event_s {
 	php_curl *ch;
 	bool done_deferred;                    /* CURLMSG_DONE received while async write pending */
 	CURLcode done_result;                  /* saved CURLcode for deferred completion */
-	curl_async_write_state_t *write_state; /* heap-allocated, NULL until first async write */
+	curl_async_write_state_t *write_state;        /* heap-allocated, NULL until first async write */
+	curl_async_write_state_t *header_write_state; /* same, for header writes */
 };
 
 struct curl_async_multi_event_s {
@@ -93,7 +94,8 @@ static int multi_timer_cb(CURLM *multi, const long timeout_ms, void *user_p);
  */
 static inline bool curl_has_pending_async_write(const curl_async_event_t *curl_event)
 {
-	return curl_event->write_state != NULL && curl_event->write_state->pending;
+	return (curl_event->write_state != NULL && curl_event->write_state->pending)
+		|| (curl_event->header_write_state != NULL && curl_event->header_write_state->pending);
 }
 
 static void process_curl_completed_handles(void)
@@ -244,20 +246,25 @@ static bool curl_async_event_stop(zend_async_event_t *event)
 	curl_async_event_t *curl_event = (curl_async_event_t *) event;
 	ZEND_ASYNC_EVENT_SET_CLOSED(event);
 
-	/* Cancel any pending async write */
-	if (curl_event->write_state != NULL) {
-		curl_event->write_state->event = NULL; /* sever back-link so completion becomes no-op */
+	/* Cancel any pending async writes (body + header) */
+	curl_async_write_state_t *ws_list[] = { curl_event->write_state, curl_event->header_write_state };
+	for (int i = 0; i < 2; i++) {
+		curl_async_write_state_t *ws = ws_list[i];
+		if (ws == NULL) continue;
 
-		if (!curl_event->write_state->pending) {
+		ws->event = NULL; /* sever back-link so completion becomes no-op */
+
+		if (!ws->pending) {
 			/* Safe to free immediately — no completion callback pending */
-			if (curl_event->write_state->write_data != NULL) {
-				zend_string_release(curl_event->write_state->write_data);
+			if (ws->write_data != NULL) {
+				zend_string_release(ws->write_data);
 			}
-			efree(curl_event->write_state);
+			efree(ws);
 		}
 		/* If pending: the completion callback will see event==NULL and free state */
-		curl_event->write_state = NULL;
 	}
+	curl_event->write_state = NULL;
+	curl_event->header_write_state = NULL;
 
 	if (curl_event->curl != NULL) {
 		zend_hash_index_del(curl_multi_event_list, (zend_ulong) curl_event->curl);
@@ -1307,15 +1314,17 @@ finish:
 }
 
 /**
- * @brief Async write callback for PHP_CURL_FILE mode.
+ * @brief Async write callback for PHP_CURL_FILE mode (body and headers).
  *
  * Writes received data to the output file stream asynchronously using
  * the stream's async IO handle. Uses the PAUSE/unpause pattern.
  * Falls back to sync fwrite() if the stream has no async IO.
+ *
+ * @param is_header  true for CURLOPT_HEADERFUNCTION, false for CURLOPT_WRITEFUNCTION
  */
-size_t curl_async_write_file(char *data, const size_t size, const size_t nmemb, php_curl *ch)
+size_t curl_async_write_file(char *data, const size_t size, const size_t nmemb, php_curl *ch, const bool is_header)
 {
-	php_curl_write * const write_handler = ch->handlers.write;
+	php_curl_write * const write_handler = is_header ? ch->handlers.write_header : ch->handlers.write;
 	const size_t length = size * nmemb;
 
 	curl_async_event_t *curl_event = (curl_async_event_t *) ch->async_event;
@@ -1323,7 +1332,7 @@ size_t curl_async_write_file(char *data, const size_t size, const size_t nmemb, 
 		return fwrite(data, size, nmemb, write_handler->fp);
 	}
 
-	curl_async_write_state_t *state = curl_event->write_state;
+	curl_async_write_state_t *state = is_header ? curl_event->header_write_state : curl_event->write_state;
 
 	/* Re-call after async completion — return stored result */
 	if (state != NULL && state->has_pending_result) {
@@ -1336,7 +1345,11 @@ size_t curl_async_write_file(char *data, const size_t size, const size_t nmemb, 
 	if (state == NULL) {
 		state = ecalloc(1, sizeof(curl_async_write_state_t));
 		state->event = curl_event;
-		curl_event->write_state = state;
+		if (is_header) {
+			curl_event->header_write_state = state;
+		} else {
+			curl_event->write_state = state;
+		}
 	}
 
 	/* Lazy get async IO from stream */
@@ -1493,7 +1506,7 @@ static void curl_async_write_user_entry(void)
 	}
 
 	php_curl * const ch = state->event->ch;
-	php_curl_write * const write_handler = ch->handlers.write;
+	php_curl_write * const write_handler = state->is_header ? ch->handlers.write_header : ch->handlers.write;
 
 	zval argv[2];
 	zval retval;
@@ -1515,12 +1528,14 @@ static void curl_async_write_user_entry(void)
 }
 
 /**
- * @brief Async write callback for PHP_CURL_USER mode.
+ * @brief Async write callback for PHP_CURL_USER mode (body and headers).
  *
  * Spawns a high-priority coroutine that executes the PHP write callback
- * (CURLOPT_WRITEFUNCTION). Uses the PAUSE/unpause pattern.
+ * (CURLOPT_WRITEFUNCTION / CURLOPT_HEADERFUNCTION). Uses the PAUSE/unpause pattern.
+ *
+ * @param is_header  true for CURLOPT_HEADERFUNCTION, false for CURLOPT_WRITEFUNCTION
  */
-size_t curl_async_write_user(char *data, const size_t size, const size_t nmemb, php_curl *ch)
+size_t curl_async_write_user(char *data, const size_t size, const size_t nmemb, php_curl *ch, const bool is_header)
 {
 	const size_t length = size * nmemb;
 
@@ -1529,7 +1544,7 @@ size_t curl_async_write_user(char *data, const size_t size, const size_t nmemb, 
 		return (size_t) -1;
 	}
 
-	curl_async_write_state_t *state = curl_event->write_state;
+	curl_async_write_state_t *state = is_header ? curl_event->header_write_state : curl_event->write_state;
 
 	/* Re-call after async completion — return stored result */
 	if (state != NULL && state->has_pending_result) {
@@ -1542,7 +1557,12 @@ size_t curl_async_write_user(char *data, const size_t size, const size_t nmemb, 
 	if (state == NULL) {
 		state = ecalloc(1, sizeof(curl_async_write_state_t));
 		state->event = curl_event;
-		curl_event->write_state = state;
+		state->is_header = is_header;
+		if (is_header) {
+			curl_event->header_write_state = state;
+		} else {
+			curl_event->write_state = state;
+		}
 	}
 
 	/* Copy data into zend_string (single copy — coroutine uses it directly) */

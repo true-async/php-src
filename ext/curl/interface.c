@@ -545,7 +545,7 @@ static size_t curl_write(char *data, size_t size, size_t nmemb, void *ctx)
 			break;
 		case PHP_CURL_FILE:
 			if (ch->async_event != NULL) {
-				return curl_async_write_file(data, size, nmemb, ch);
+				return curl_async_write_file(data, size, nmemb, ch, false);
 			}
 			return fwrite(data, size, nmemb, write_handler->fp);
 		case PHP_CURL_RETURN:
@@ -555,7 +555,7 @@ static size_t curl_write(char *data, size_t size, size_t nmemb, void *ctx)
 			break;
 		case PHP_CURL_USER: {
 			if (ch->async_event != NULL) {
-				return curl_async_write_user(data, size, nmemb, ch);
+				return curl_async_write_user(data, size, nmemb, ch, false);
 			}
 			zval argv[2];
 			zval retval;
@@ -867,8 +867,14 @@ static size_t curl_write_header(char *data, size_t size, size_t nmemb, void *ctx
 			}
 			break;
 		case PHP_CURL_FILE:
+			if (ch->async_event != NULL) {
+				return curl_async_write_file(data, size, nmemb, ch, true);
+			}
 			return fwrite(data, size, nmemb, write_handler->fp);
 		case PHP_CURL_USER: {
+			if (ch->async_event != NULL) {
+				return curl_async_write_user(data, size, nmemb, ch, true);
+			}
 			zval argv[2];
 			zval retval;
 
