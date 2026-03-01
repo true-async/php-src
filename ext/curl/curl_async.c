@@ -952,6 +952,30 @@ finally:
 ///////////////////////////////////////////////////////////////
 
 /**
+ * @brief Unpause a curl transfer and ensure it gets processed.
+ *
+ * After an async I/O operation completes (file read for upload, file/user write
+ * for download), we need to unpause the curl transfer and make curl process it.
+ *
+ * curl_easy_pause(CURLPAUSE_CONT) triggers Curl_expire(0) internally, which
+ * schedules the transfer for immediate processing. We then drive it via
+ * curl_multi_socket_action(CURL_SOCKET_TIMEOUT).
+ *
+ * Note: libcurl < 8.11.1 has multiple bugs in the pause/unpause path
+ * (missing timer callbacks, tempcount guard on cselect_bits, etc.) that
+ * cause intermittent hangs. Requires curl >= 8.11.1 for reliable operation.
+ * See: https://github.com/curl/curl/pull/15627
+ */
+static void curl_async_unpause_transfer(curl_async_event_t *curl_event)
+{
+	curl_easy_pause(curl_event->curl, CURLPAUSE_CONT);
+
+	int running;
+	curl_multi_socket_action(curl_multi_handle, CURL_SOCKET_TIMEOUT, 0, &running);
+	process_curl_completed_handles();
+}
+
+/**
  * Custom callback struct that carries a back-reference to mime_data_cb_arg.
  * Registered ONCE per file open, persists for all reads on that file.
  */
@@ -980,22 +1004,55 @@ static void curl_async_file_read_complete(
 		return;
 	}
 
+	zend_async_io_req_t *req = (zend_async_io_req_t *) result;
+
 	/* result is the completed req — save it for curl_async_read_cb */
-	state->req = (zend_async_io_req_t *) result;
+	state->req = req;
 
-	/* Unpause the transfer — libcurl will re-call our read_cb */
-	curl_easy_pause(state->curl, CURLPAUSE_CONT);
-
-	/* Drive curl so it picks up the data now */
-	int running;
-	curl_multi_socket_action(curl_multi_handle, CURL_SOCKET_TIMEOUT, 0, &running);
-	process_curl_completed_handles();
+	curl_async_event_t *curl_event = zend_hash_index_find_ptr(curl_multi_event_list, (zend_ulong) state->curl);
+	if (curl_event != NULL) {
+		curl_async_unpause_transfer(curl_event);
+	}
 }
 
 size_t curl_async_read_cb(char *buffer, const size_t size, const size_t nitems, void *arg)
 {
 	mime_data_cb_arg_t *cb_arg = (mime_data_cb_arg_t *) arg;
 	const size_t requested = size * nitems;
+
+#if LIBCURL_VERSION_NUM < 0x080B01
+	/*
+	 * curl < 8.11.1: the PAUSE/unpause mechanism is unreliable due to multiple
+	 * internal bugs (tempcount guard on cselect_bits, timer_lastcall issues).
+	 * Use synchronous read instead — safe here because file I/O on local disk
+	 * is fast and won't block the event loop for long.
+	 * See: https://github.com/curl/curl/pull/15627
+	 */
+	if (cb_arg->async_state == NULL) {
+		const int fd = VCWD_OPEN(ZSTR_VAL(cb_arg->filename), O_RDONLY);
+		if (fd < 0) {
+			return CURL_READFUNC_ABORT;
+		}
+
+		cb_arg->async_state = ecalloc(1, sizeof(curl_async_read_state_t));
+		cb_arg->async_state->curl = cb_arg->curl;
+		cb_arg->async_state->fd = fd;
+		cb_arg->async_state->eof = false;
+	}
+
+	if (cb_arg->async_state->eof) {
+		return 0;
+	}
+
+	const ssize_t n = read(cb_arg->async_state->fd, buffer, requested);
+	if (n <= 0) {
+		cb_arg->async_state->eof = true;
+		return 0;
+	}
+	return (size_t) n;
+
+#else
+	/* curl >= 8.11.1: use async PAUSE/unpause pattern */
 
 	/* Completed async read — copy data to curl's buffer */
 	if (cb_arg->async_state != NULL && cb_arg->async_state->req != NULL) {
@@ -1062,7 +1119,6 @@ size_t curl_async_read_cb(char *buffer, const size_t size, const size_t nitems, 
 		}
 
 		const size_t to_copy = (size_t) req->transferred < requested ? (size_t) req->transferred : requested;
-
 		memcpy(buffer, req->buf, to_copy);
 		req->dispose(req);
 		return to_copy;
@@ -1070,6 +1126,7 @@ size_t curl_async_read_cb(char *buffer, const size_t size, const size_t nitems, 
 
 	/* Async path — callback will receive the completed req and unpause */
 	return CURL_READFUNC_PAUSE;
+#endif
 }
 
 void curl_async_free_cb(void *arg)
@@ -1214,11 +1271,7 @@ static void curl_async_write_file_complete(
 
 	/* Curl is still alive — unpause and drive */
 	if (curl_event->curl != NULL) {
-		curl_easy_pause(curl_event->curl, CURLPAUSE_CONT);
-
-		int running;
-		curl_multi_socket_action(curl_multi_handle, CURL_SOCKET_TIMEOUT, 0, &running);
-		process_curl_completed_handles();
+		curl_async_unpause_transfer(curl_event);
 	}
 }
 
@@ -1388,11 +1441,7 @@ static void curl_async_write_user_complete(
 
 	/* Curl is still alive — unpause and drive */
 	if (curl_event->curl != NULL) {
-		curl_easy_pause(curl_event->curl, CURLPAUSE_CONT);
-
-		int running;
-		curl_multi_socket_action(curl_multi_handle, CURL_SOCKET_TIMEOUT, 0, &running);
-		process_curl_completed_handles();
+		curl_async_unpause_transfer(curl_event);
 	}
 }
 
