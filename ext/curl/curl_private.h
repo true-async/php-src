@@ -60,7 +60,7 @@ typedef struct {
 	FILE                 *fp;
 	smart_str             buf;
 	int                   method;
-	zval					stream;
+	zval                  stream;
 } php_curl_write;
 
 typedef struct {
@@ -116,6 +116,7 @@ typedef struct {
 	zval private_data;
 	/* CurlShareHandle object set using CURLOPT_SHARE. */
 	struct _php_curlsh *share;
+	void                         *async_event;   /* curl_async_event_t* during async transfer, NULL otherwise */
 	zend_object                   std;
 } php_curl;
 
@@ -147,13 +148,13 @@ typedef struct _php_curlsh {
 } php_curlsh;
 
 /* Forward declaration for async IO state */
-typedef struct curl_async_io_state_s curl_async_io_state_t;
+typedef struct curl_async_read_state_s curl_async_read_state_t;
 
 typedef struct {
 	zend_string *filename;
 	php_stream *stream;
 	CURL *curl;                                  /* back-ref for async pause/unpause */
-	curl_async_io_state_t *async_state;          /* async IO state, NULL when sync */
+	curl_async_read_state_t *async_state;        /* async IO state, NULL when sync */
 } mime_data_cb_arg_t;
 
 php_curl *init_curl_handle_into_zval(zval *curl);

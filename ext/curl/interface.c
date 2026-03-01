@@ -544,6 +544,9 @@ static size_t curl_write(char *data, size_t size, size_t nmemb, void *ctx)
 			PHPWRITE(data, length);
 			break;
 		case PHP_CURL_FILE:
+			if (ch->async_event != NULL) {
+				return curl_async_write_file(data, size, nmemb, ch);
+			}
 			return fwrite(data, size, nmemb, write_handler->fp);
 		case PHP_CURL_RETURN:
 			if (length > 0) {
@@ -551,6 +554,9 @@ static size_t curl_write(char *data, size_t size, size_t nmemb, void *ctx)
 			}
 			break;
 		case PHP_CURL_USER: {
+			if (ch->async_event != NULL) {
+				return curl_async_write_user(data, size, nmemb, ch);
+			}
 			zval argv[2];
 			zval retval;
 
@@ -2302,7 +2308,7 @@ PHP_FUNCTION(curl_exec)
 	_php_curl_cleanup_handle(ch);
 
 	if (ZEND_ASYNC_IS_ACTIVE) {
-		error = curl_async_perform(ch->cp);
+		error = curl_async_perform(ch);
 	} else {
 		error = curl_easy_perform(ch->cp);
 	}

@@ -39,13 +39,43 @@ typedef struct {
  * we cannot do synchronous file I/O. Instead, we use CURL_READFUNC_PAUSE / CURL_WRITEFUNC_PAUSE,
  * start an async I/O operation via ZEND_ASYNC_IO_*, and unpause when the operation completes.
  */
-struct curl_async_io_state_s {
+struct curl_async_read_state_s {
 	CURL *curl;                     /* back-ref for curl_easy_pause */
 	zend_async_io_t *io;            /* async IO handle */
 	zend_async_io_req_t *req;       /* pending IO request (NULL when no pending) */
 	int fd;                         /* file descriptor (owned, needs close) */
 	bool eof;                       /* EOF reached / done */
 };
+
+/* Forward declaration — full definition is private in curl_async.c */
+typedef struct curl_async_event_s curl_async_event_t;
+
+/**
+ * @brief Async write state for curl_write callback (PAUSE/unpause pattern).
+ *
+ * Shared between PHP_CURL_FILE and PHP_CURL_USER write modes.
+ * Owned by curl_async_event_t (heap-allocated, lazy-init on first write).
+ * References the event, not the raw CURL handle.
+ */
+typedef struct {
+	curl_async_event_t *event;      /* owning event (access curl/ch via event->) */
+
+	/* FILE mode: cached async IO handle from stream */
+	zend_async_io_t *io;
+
+	/* FILE mode: owned copy of data buffer for async write (curl may reuse original) */
+	char *write_buf;
+
+	/* Pending result from async operation */
+	bool has_pending_result;
+	size_t pending_result;
+
+	/* True between returning CURL_WRITEFUNC_PAUSE and completion callback */
+	bool pending;
+
+	/* USER mode: data for coroutine (single copy from curl buffer) */
+	zend_string *write_data;
+} curl_async_write_state_t;
 
 void curl_async_register_ce(void);
 void curl_async_setup(void);
@@ -69,7 +99,7 @@ void curl_async_shutdown(void);
  * - Awaiting the completion of the request using an async resume object.
  * - Cleaning up the resumption object and removing the handle from the resume list.
  */
-CURLcode curl_async_perform(CURL* curl);
+CURLcode curl_async_perform(php_curl *ch);
 
 void curl_async_dtor(php_curlm *multi_handle);
 
@@ -113,5 +143,21 @@ size_t curl_async_read_cb(char *buffer, size_t size, size_t nitems, void *arg);
  * handle, pending request, and file descriptor.
  */
 void curl_async_free_cb(void *arg);
+
+/**
+ * @brief Async write callback for PHP_CURL_FILE mode.
+ *
+ * Uses the stream's async IO handle to write data asynchronously.
+ * Flow: get IO from stream → ZEND_ASYNC_IO_WRITE → if pending, PAUSE → completion unpause.
+ */
+size_t curl_async_write_file(char *data, const size_t size, const size_t nmemb, php_curl *ch);
+
+/**
+ * @brief Async write callback for PHP_CURL_USER mode.
+ *
+ * Spawns a high-priority coroutine to execute the PHP callback.
+ * Flow: copy data → spawn coroutine → PAUSE → coroutine runs callback → completion unpause.
+ */
+size_t curl_async_write_user(char *data, const size_t size, const size_t nmemb, php_curl *ch);
 
 #endif //CURL_ASYNC_H

@@ -1310,6 +1310,13 @@ static int php_stdiop_set_option(php_stream *stream, int option, int value, void
 			}
 #endif
 
+		case PHP_STREAM_OPTION_ASYNC_IO:
+			if (data->async_io != NULL && ptrparam != NULL) {
+				*(zend_async_io_t **)ptrparam = data->async_io;
+				return PHP_STREAM_OPTION_RETURN_OK;
+			}
+			return PHP_STREAM_OPTION_RETURN_NOTIMPL;
+
 		case PHP_STREAM_OPTION_ALIGN_POSITION:
 			if (data->async_io != NULL && ptrparam != NULL && zend_async_io_seek_fn != NULL) {
 				zend_off_t *pos = (zend_off_t *)ptrparam;
