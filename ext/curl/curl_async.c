@@ -975,6 +975,7 @@ static void curl_async_unpause_transfer(curl_async_event_t *curl_event)
 	process_curl_completed_handles();
 }
 
+#if LIBCURL_VERSION_NUM >= 0x080B01
 /**
  * Custom callback struct that carries a back-reference to mime_data_cb_arg.
  * Registered ONCE per file open, persists for all reads on that file.
@@ -1004,16 +1005,32 @@ static void curl_async_file_read_complete(
 		return;
 	}
 
+	/* Handle error from async event layer */
+	if (exception != NULL || result == NULL) {
+		state->error = true;
+		goto unpause;
+	}
+
 	zend_async_io_req_t *req = (zend_async_io_req_t *) result;
 
-	/* result is the completed req — save it for curl_async_read_cb */
+	/* Handle IO error reported through the request */
+	if (req->exception != NULL || req->transferred < 0) {
+		state->error = true;
+		req->dispose(req);
+		goto unpause;
+	}
+
+	/* Success — save completed req for curl_async_read_cb to pick up */
 	state->req = req;
 
+unpause:
+	;
 	curl_async_event_t *curl_event = zend_hash_index_find_ptr(curl_multi_event_list, (zend_ulong) state->curl);
 	if (curl_event != NULL) {
 		curl_async_unpause_transfer(curl_event);
 	}
 }
+#endif
 
 size_t curl_async_read_cb(char *buffer, const size_t size, const size_t nitems, void *arg)
 {
@@ -1053,6 +1070,11 @@ size_t curl_async_read_cb(char *buffer, const size_t size, const size_t nitems, 
 
 #else
 	/* curl >= 8.11.1: use async PAUSE/unpause pattern */
+
+	/* Check for async IO error (set by curl_async_file_read_complete) */
+	if (cb_arg->async_state != NULL && cb_arg->async_state->error) {
+		return CURL_READFUNC_ABORT;
+	}
 
 	/* Completed async read — copy data to curl's buffer */
 	if (cb_arg->async_state != NULL && cb_arg->async_state->req != NULL) {
@@ -1249,6 +1271,13 @@ static void curl_async_write_file_complete(
 
 	curl_async_event_t *curl_event = state->event;
 
+	/* Handle error from async event layer */
+	if (exception != NULL) {
+		state->has_pending_result = true;
+		state->pending_result = (size_t) -1;
+		goto finish;
+	}
+
 	zend_async_io_req_t *req = (zend_async_io_req_t *) result;
 
 	if (req == NULL || req->exception != NULL || req->transferred < 0) {
@@ -1262,6 +1291,8 @@ static void curl_async_write_file_complete(
 	if (req != NULL) {
 		req->dispose(req);
 	}
+
+finish:
 
 	/* If curl already finished (deferred), complete now — skip unpause */
 	if (curl_event->done_deferred) {

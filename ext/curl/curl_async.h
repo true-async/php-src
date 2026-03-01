@@ -45,6 +45,7 @@ struct curl_async_read_state_s {
 	zend_async_io_req_t *req;       /* pending IO request (NULL when no pending) */
 	int fd;                         /* file descriptor (owned, needs close) */
 	bool eof;                       /* EOF reached / done */
+	bool error;                     /* async IO error — read_cb should return ABORT */
 };
 
 /* Forward declaration — full definition is private in curl_async.c */
