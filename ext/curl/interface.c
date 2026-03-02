@@ -802,6 +802,13 @@ static size_t curl_read(char *data, size_t size, size_t nmemb, void *ctx)
 {
 	php_curl *ch = (php_curl *)ctx;
 	php_curl_read *read_handler = ch->handlers.read;
+	const size_t requested = size * nmemb;
+
+	if (ch->async_event != NULL) {
+		return curl_async_read_dispatch(ch, data, requested);
+	}
+
+	/* Sync path */
 	size_t length = 0;
 
 	switch (read_handler->method) {
@@ -2756,6 +2763,12 @@ static void curl_free_obj(zend_object *object)
 	efree(ch->handlers.write);
 	efree(ch->handlers.write_header);
 	efree(ch->handlers.read);
+
+	/* Safety net: normally freed by curl_async_event_stop */
+	if (ch->async_read_state != NULL) {
+		curl_async_read_state_free(ch->async_read_state);
+		ch->async_read_state = NULL;
+	}
 
 	if (ZEND_FCC_INITIALIZED(ch->handlers.progress)) {
 		zend_fcc_dtor(&ch->handlers.progress);

@@ -55,6 +55,9 @@ PHP_MINFO_FUNCTION(curl);
 PHP_GINIT_FUNCTION(curl);
 PHP_GSHUTDOWN_FUNCTION(curl);
 
+/* Forward declaration for async IO state */
+typedef struct curl_async_read_state_s curl_async_read_state_t;
+
 typedef struct {
 	zend_fcall_info_cache fcc;
 	FILE                 *fp;
@@ -117,6 +120,7 @@ typedef struct {
 	/* CurlShareHandle object set using CURLOPT_SHARE. */
 	struct _php_curlsh *share;
 	void                         *async_event;   /* curl_async_event_t* during async transfer, NULL otherwise */
+	curl_async_read_state_t      *async_read_state; /* async read state for CURLOPT_INFILE / PHP_CURL_USER */
 	zend_object                   std;
 } php_curl;
 
@@ -146,9 +150,6 @@ typedef struct _php_curlsh {
 	} err;
 	zend_object std;
 } php_curlsh;
-
-/* Forward declaration for async IO state */
-typedef struct curl_async_read_state_s curl_async_read_state_t;
 
 typedef struct {
 	zend_string *filename;

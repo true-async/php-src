@@ -39,17 +39,36 @@ typedef struct {
  * we cannot do synchronous file I/O. Instead, we use CURL_READFUNC_PAUSE / CURL_WRITEFUNC_PAUSE,
  * start an async I/O operation via ZEND_ASYNC_IO_*, and unpause when the operation completes.
  */
-struct curl_async_read_state_s {
-	CURL *curl;                     /* back-ref for curl_easy_pause */
-	zend_async_io_t *io;            /* async IO handle */
-	zend_async_io_req_t *req;       /* pending IO request (NULL when no pending) */
-	int fd;                         /* file descriptor (owned, needs close) */
-	bool eof;                       /* EOF reached / done */
-	bool error;                     /* async IO error — read_cb should return ABORT */
-};
-
 /* Forward declaration — full definition is private in curl_async.c */
 typedef struct curl_async_event_s curl_async_event_t;
+
+/* Read source type */
+#define CURL_READ_FILE     0   /* CURLFile or CURLOPT_INFILE — async IO read */
+#define CURL_READ_CALLBACK 1   /* PHP_CURL_USER — spawn coroutine */
+
+/* Read state flags */
+#define CURL_READ_EOF      0x01
+#define CURL_READ_ERROR    0x02
+#define CURL_READ_PENDING  0x04
+#define CURL_READ_OWNS_FD  0x08   /* fd was opened by us and must be closed */
+
+struct curl_async_read_state_s {
+	CURL *curl;                     /* back-ref for curl_easy_pause */
+	curl_async_event_t *event;      /* owning event */
+	uint8_t source;                 /* CURL_READ_FILE / CURL_READ_CALLBACK */
+	uint8_t flags;                  /* CURL_READ_EOF | CURL_READ_ERROR | CURL_READ_PENDING */
+
+	union {
+		struct {
+			zend_async_io_t *io;        /* async IO handle */
+			zend_async_io_req_t *req;   /* completed request with data */
+			int fd;                     /* >= 0: owned (CURLFile), -1: stream owns */
+		} file;
+		struct {
+			zend_string *result;        /* string returned by PHP callback */
+		} callback;
+	};
+};
 
 /**
  * @brief Async write state for curl_write callback (PAUSE/unpause pattern).
@@ -165,5 +184,29 @@ size_t curl_async_write_file(char *data, const size_t size, const size_t nmemb, 
  * Flow: copy data → spawn coroutine → PAUSE → coroutine runs callback → completion unpause.
  */
 size_t curl_async_write_user(char *data, const size_t size, const size_t nmemb, php_curl *ch, const bool is_header);
+
+/**
+ * @brief Shared async read core — handles the PAUSE/unpause state machine.
+ *
+ * Called by both curl_async_read_cb (CURLFile) and curl_read (CURLOPT_INFILE / USER)
+ * after the caller has initialized state->source and the source-specific fields.
+ *
+ * For curl < 8.11.1: performs sync read (file: read(fd), callback: zend_call_known_fcc).
+ * For curl >= 8.11.1: async PAUSE/unpause pattern.
+ */
+size_t curl_async_read(curl_async_read_state_t *state, char *buffer, size_t requested);
+
+/**
+ * @brief Async read dispatch for curl_read (CURLOPT_INFILE / PHP_CURL_USER).
+ *
+ * Initializes state on ch->async_read_state if needed, then calls
+ * curl_async_read.
+ */
+size_t curl_async_read_dispatch(php_curl *ch, char *buffer, size_t requested);
+
+/**
+ * @brief Free a read state — cleanup IO, req, fd, callback result.
+ */
+void curl_async_read_state_free(curl_async_read_state_t *state);
 
 #endif //CURL_ASYNC_H
