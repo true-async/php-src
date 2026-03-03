@@ -1027,13 +1027,13 @@ static void curl_async_write_finish_deferred(curl_async_event_t *curl_event);
 /// ASYNC READ SECTION (unified: CURLFile + CURLOPT_INFILE + USER)
 ///////////////////////////////////////////////////////////////
 
-#if LIBCURL_VERSION_NUM >= 0x080B01
-
 /** @brief Extended callback carrying a reference to the read state. */
 typedef struct {
 	zend_async_event_callback_t base;
 	curl_async_read_state_t *state;
 } curl_async_read_io_callback_t;
+
+#if LIBCURL_VERSION_NUM >= 0x080B01
 
 /**
  * @brief Unified IO completion callback for async file reads.
@@ -1415,50 +1415,58 @@ size_t curl_async_read_cb(char *buffer, const size_t size, const size_t nitems, 
 	mime_data_cb_arg_t *cb_arg = (mime_data_cb_arg_t *) arg;
 	const size_t requested = size * nitems;
 
-	/* Lazy init state */
-	if (cb_arg->async_state == NULL) {
-		const int fd = VCWD_OPEN(ZSTR_VAL(cb_arg->filename), O_RDONLY);
-		if (fd < 0) {
+	/* Lazy init: open stream on first call */
+	if (cb_arg->stream == NULL) {
+		cb_arg->stream = php_stream_open_wrapper(
+			ZSTR_VAL(cb_arg->filename), "rb", 0, NULL);
+		if (cb_arg->stream == NULL) {
 			return CURL_READFUNC_ABORT;
 		}
 
-		cb_arg->async_state = ecalloc(1, sizeof(curl_async_read_state_t));
-		cb_arg->async_state->source = CURL_READ_FILE;
-		cb_arg->async_state->flags = CURL_READ_OWNS_FD;
-		cb_arg->async_state->curl = cb_arg->curl;
-		cb_arg->async_state->file.fd = fd;
+		/* Try to get async IO from stream */
+		zend_async_io_t *io = NULL;
+		php_stream_set_option(cb_arg->stream, PHP_STREAM_OPTION_ASYNC_IO, 0, &io);
 
-		/* Find the event for this CURL handle (NULL when not running under async) */
-		curl_async_event_t *curl_event = NULL;
-		if (curl_multi_event_list != NULL) {
-			curl_event = zend_hash_index_find_ptr(
-				curl_multi_event_list, (zend_ulong) cb_arg->curl);
-		}
-		cb_arg->async_state->event = curl_event;
+		if (io != NULL) {
+			cb_arg->async_state = ecalloc(1, sizeof(curl_async_read_state_t));
+			cb_arg->async_state->source = CURL_READ_FILE;
+			cb_arg->async_state->curl = cb_arg->curl;
+			cb_arg->async_state->file.io = io;
+			cb_arg->async_state->file.fd = -1;
+
+			int fd;
+			if (php_stream_cast(cb_arg->stream, PHP_STREAM_AS_FD | PHP_STREAM_CAST_INTERNAL,
+					(void **) &fd, 0) == SUCCESS) {
+				cb_arg->async_state->file.fd = fd;
+			}
+
+			curl_async_event_t *curl_event = NULL;
+			if (curl_multi_event_list != NULL) {
+				curl_event = zend_hash_index_find_ptr(
+					curl_multi_event_list, (zend_ulong) cb_arg->curl);
+			}
+			cb_arg->async_state->event = curl_event;
 
 #if LIBCURL_VERSION_NUM >= 0x080B01
-		zend_async_io_t *io = ZEND_ASYNC_IO_CREATE(
-			fd, ZEND_ASYNC_IO_TYPE_FILE, ZEND_ASYNC_IO_READABLE);
-
-		if (io == NULL) {
-			close(fd);
-			efree(cb_arg->async_state);
-			cb_arg->async_state = NULL;
-			return CURL_READFUNC_ABORT;
-		}
-
-		cb_arg->async_state->file.io = io;
-
-		/* Register completion callback on the IO event */
-		curl_async_read_io_callback_t *io_cb = (curl_async_read_io_callback_t *)
-			ZEND_ASYNC_EVENT_CALLBACK_EX(curl_async_read_complete,
-				sizeof(curl_async_read_io_callback_t));
-		io_cb->state = cb_arg->async_state;
-		io->event.add_callback(&io->event, &io_cb->base);
+			curl_async_read_io_callback_t *io_cb = (curl_async_read_io_callback_t *)
+				ZEND_ASYNC_EVENT_CALLBACK_EX(curl_async_read_complete,
+					sizeof(curl_async_read_io_callback_t));
+			io_cb->state = cb_arg->async_state;
+			io->event.add_callback(&io->event, &io_cb->base);
 #endif
+		}
 	}
 
-	return curl_async_read(cb_arg->async_state, buffer, requested);
+	/* Async-able stream: delegate to async read state machine */
+	if (cb_arg->async_state != NULL) {
+		return curl_async_read(cb_arg->async_state, buffer, requested);
+	}
+
+	/* Non-async-able stream (data://, php://, etc.): sync php_stream_read.
+	 * TODO: userspace stream wrappers (stream->ops == PHP_STREAM_IS_USERSPACE)
+	 *       execute PHP code — unsafe from scheduler context. */
+	const ssize_t n = php_stream_read(cb_arg->stream, buffer, requested);
+	return n > 0 ? (size_t) n : 0;
 }
 
 /**
@@ -1474,6 +1482,11 @@ void curl_async_free_cb(void *arg)
 	if (cb_arg->async_state != NULL) {
 		curl_async_read_state_free(cb_arg->async_state);
 		cb_arg->async_state = NULL;
+	}
+
+	if (cb_arg->stream != NULL) {
+		php_stream_close(cb_arg->stream);
+		cb_arg->stream = NULL;
 	}
 }
 
