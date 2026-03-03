@@ -142,7 +142,8 @@ typedef struct {
 	unsigned is_pipe_blocking:1; /* allow blocking read() on pipes, currently Windows only */
 	unsigned no_forced_fstat:1;  /* Use fstat cache even if forced */
 	unsigned is_seekable:1;		/* don't try and seek, if not set */
-	unsigned _reserved:26;
+	unsigned is_blocked:1;		/* true (default) = blocking mode; false = non-blocking */
+	unsigned _reserved:25;
 
 	zend_async_io_t *async_io;
 	zend_async_poll_event_t *poll_event;
@@ -229,7 +230,7 @@ static void php_stdiop_init_async_io(php_stdio_stream_data *self, const char *mo
 		type = ZEND_ASYNC_IO_TYPE_FILE;
 	}
 
-	zend_file_descriptor_t fd = self->fd;
+	const zend_file_descriptor_t fd = self->fd;
 #endif
 	const uint32_t state = php_stdiop_mode_to_io_state(mode);
 
@@ -260,6 +261,7 @@ static php_stream *_php_stream_fopen_from_fd_int(int fd, const char *mode, const
 	self->file = NULL;
 	self->is_seekable = 1;
 	self->is_pipe = 0;
+	self->is_blocked = 1;
 	self->lock_flag = LOCK_UN;
 	self->is_process_pipe = 0;
 	self->temp_name = NULL;
@@ -281,6 +283,7 @@ static php_stream *_php_stream_fopen_from_file_int(FILE *file, const char *mode 
 	self->file = file;
 	self->is_seekable = 1;
 	self->is_pipe = 0;
+	self->is_blocked = 1;
 	self->lock_flag = LOCK_UN;
 	self->is_process_pipe = 0;
 	self->temp_name = NULL;
@@ -436,6 +439,7 @@ PHPAPI php_stream *_php_stream_fopen_from_pipe(FILE *file, const char *mode STRE
 	self->file = file;
 	self->is_seekable = 0;
 	self->is_pipe = 1;
+	self->is_blocked = 1;
 	self->lock_flag = LOCK_UN;
 	self->is_process_pipe = 1;
 	self->fd = fileno(file);
@@ -460,7 +464,7 @@ static ssize_t php_stdiop_write(php_stream *stream, const char *buf, size_t coun
 
 	assert(data != NULL);
 
-	if (data->async_io != NULL) {
+	if (data->async_io != NULL && data->is_blocked) {
 		ZEND_ASYNC_SCHEDULER_INIT();
 		if (UNEXPECTED(EG(exception))) {
 			return -1;
@@ -553,7 +557,7 @@ static ssize_t php_stdiop_read(php_stream *stream, char *buf, size_t count)
 
 	assert(data != NULL);
 
-	if (data->async_io != NULL) {
+	if (data->async_io != NULL && data->is_blocked) {
 		ZEND_ASYNC_SCHEDULER_INIT();
 		if (UNEXPECTED(EG(exception))) {
 			return -1;
@@ -970,6 +974,7 @@ static int php_stdiop_set_option(php_stream *stream, int option, int value, void
 
 			if (-1 == fcntl(fd, F_SETFL, flags))
 				return -1;
+			data->is_blocked = value ? 1 : 0;
 			return oldval;
 #else
 			return -1; /* not yet implemented */
