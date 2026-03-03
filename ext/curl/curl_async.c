@@ -1672,15 +1672,16 @@ static void curl_async_write_file_complete(
 
 finish:
 
-	/* If curl already finished (deferred), complete now — skip unpause */
-	if (curl_event->done_deferred) {
-		curl_async_write_finish_deferred(curl_event);
-		return;
-	}
-
-	/* Curl is still alive — unpause and drive */
+	/* Unpause and drive — even when done_deferred, curl may still have
+	 * buffered headers/body that need to be delivered via callbacks. */
 	if (curl_event->curl != NULL) {
 		curl_async_unpause_transfer(curl_event);
+	}
+
+	/* If curl finished (deferred) and no more async IO is pending,
+	 * all callbacks have been delivered — finalize now. */
+	if (curl_event->done_deferred && !curl_has_pending_async_io(curl_event)) {
+		curl_async_write_finish_deferred(curl_event);
 	}
 }
 
@@ -1782,6 +1783,7 @@ size_t curl_async_write_file(char *data, const size_t size, const size_t nmemb, 
 	return CURL_WRITEFUNC_PAUSE;
 }
 
+#if LIBCURL_VERSION_NUM >= 0x080B01
 /**
  * @brief Coroutine completion callback for async user writes.
  *
@@ -1845,8 +1847,8 @@ static void curl_async_write_user_complete(
 		state->write_data = NULL;
 	}
 
-	/* If curl already finished (deferred) or user aborted — finish now, skip unpause */
-	if (curl_event->done_deferred || user_abort) {
+	/* User aborted — finish now, skip unpause */
+	if (user_abort) {
 		curl_event->done_deferred = false;
 		if (curl_event->curl != NULL) {
 			curl_multi_remove_handle(curl_multi_handle, curl_event->curl);
@@ -1859,11 +1861,19 @@ static void curl_async_write_user_complete(
 		return;
 	}
 
-	/* Curl is still alive — unpause and drive */
+	/* Unpause and drive — even when done_deferred, curl may still have
+	 * buffered headers/body that need to be delivered via callbacks. */
 	if (curl_event->curl != NULL) {
 		curl_async_unpause_transfer(curl_event);
 	}
+
+	/* If curl finished (deferred) and no more async IO is pending,
+	 * all callbacks have been delivered — finalize now. */
+	if (curl_event->done_deferred && !curl_has_pending_async_io(curl_event)) {
+		curl_async_write_finish_deferred(curl_event);
+	}
 }
+#endif /* LIBCURL_VERSION_NUM >= 0x080B01 */
 
 /**
  * @brief Async write callback for PHP_CURL_USER mode (body and headers).
@@ -1881,6 +1891,40 @@ size_t curl_async_write_user(char *data, const size_t size, const size_t nmemb, 
 	if (curl_event == NULL) {
 		return (size_t) -1;
 	}
+
+#if LIBCURL_VERSION_NUM < 0x080B01
+	/*
+	 * curl < 8.11.1: the PAUSE/unpause mechanism is unreliable due to multiple
+	 * internal bugs (tempcount guard on cselect_bits, timer_lastcall issues).
+	 * Call the PHP callback synchronously instead.
+	 * See: https://github.com/curl/curl/pull/15627
+	 */
+	{
+		php_curl_write * const write_handler = is_header ? ch->handlers.write_header : ch->handlers.write;
+		zval argv[2];
+		zval retval;
+
+		GC_ADDREF(&ch->std);
+		ZVAL_OBJ(&argv[0], &ch->std);
+		ZVAL_STRINGL(&argv[1], data, length);
+
+		ch->in_callback = true;
+		zend_call_known_fcc(&write_handler->fcc, &retval, 2, argv, NULL);
+		ch->in_callback = false;
+
+		size_t result = length;
+		if (!Z_ISUNDEF(retval)) {
+			_php_curl_verify_handlers(ch, true);
+			result = (size_t) zval_get_long(&retval);
+			zval_ptr_dtor(&retval);
+		}
+
+		zval_ptr_dtor(&argv[0]);
+		zval_ptr_dtor(&argv[1]);
+		return result;
+	}
+#else
+	/* curl >= 8.11.1: use async PAUSE/unpause pattern */
 
 	curl_async_write_state_t *state = is_header ? curl_event->header_write_state : curl_event->write_state;
 
@@ -1941,4 +1985,5 @@ size_t curl_async_write_user(char *data, const size_t size, const size_t nmemb, 
 	/* Mark in-flight and pause */
 	state->pending = true;
 	return CURL_WRITEFUNC_PAUSE;
+#endif
 }
