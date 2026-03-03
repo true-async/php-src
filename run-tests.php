@@ -1209,18 +1209,32 @@ function system_with_timeout(
         }
 
         if ($n > 0) {
-            if ($captureStdOut) {
-                $line = fread($pipes[1], 8192);
-            } elseif ($captureStdErr) {
-                $line = fread($pipes[2], 8192);
-            } else {
-                $line = '';
+            /* Read only from streams that stream_select() reported as ready.
+             * The old code always read from $pipes[1] regardless of which
+             * stream was actually ready.  When a child process spawns a
+             * long-lived grandchild that inherits the stdout pipe (e.g.
+             * php -S in async tests), the stdout pipe stays open after the
+             * child exits.  Meanwhile stderr (with 2>&1) reaches EOF
+             * immediately.  stream_select() returns 1 for stderr being
+             * ready, but reading from the non-ready stdout would block
+             * forever — especially with the async extension which routes
+             * fread() through libuv's event loop without a timeout. */
+            foreach ($r as $ready) {
+                $line = fread($ready, 8192);
+                if (strlen($line) == 0) {
+                    /* EOF on this pipe — stop monitoring it */
+                    $key = array_search($ready, $pipes, true);
+                    if ($key !== false) {
+                        fclose($pipes[$key]);
+                        unset($pipes[$key]);
+                    }
+                    continue;
+                }
+                $data .= $line;
             }
-            if (strlen($line) == 0) {
-                /* EOF */
+            if (empty($pipes)) {
                 break;
             }
-            $data .= $line;
         }
     }
 
