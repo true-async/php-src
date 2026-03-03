@@ -1740,6 +1740,17 @@ static void php_output_coroutine_cleanup_callback(
 	zval *ctx_zval = ZEND_ASYNC_INTERNAL_CONTEXT_FIND(coroutine, php_output_context_key);
 	if (ctx_zval && Z_TYPE_P(ctx_zval) == IS_PTR) {
 		php_output_context_t *ctx = (php_output_context_t*)Z_PTR_P(ctx_zval);
+		/* Flush all output buffers before freeing (mirrors php_output_end_all
+		 * which runs during normal request shutdown) */
+		zend_coroutine_t * previous_coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+		zend_try {
+			ZEND_ASYNC_CURRENT_COROUTINE = coroutine;
+			php_output_end_all();
+			ZEND_ASYNC_CURRENT_COROUTINE = previous_coroutine;
+		} zend_catch {
+			ZEND_ASYNC_CURRENT_COROUTINE = previous_coroutine;
+			zend_bailout();
+		} zend_end_try();
 		php_output_free_async_context(ctx);
 		efree(ctx);
 		ZEND_ASYNC_INTERNAL_CONTEXT_UNSET(coroutine, php_output_context_key);
