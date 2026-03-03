@@ -1307,6 +1307,21 @@ size_t curl_async_read(curl_async_read_state_t *state, char *buffer, const size_
 	zend_call_known_fcc(&read_handler->fcc, &retval, 3, argv, NULL);
 	ch->in_callback = false;
 
+	if (EG(exception)) {
+		curl_async_event_t *curl_event = state->event;
+		if (curl_event != NULL) {
+			zend_object *ex = EG(exception);
+			GC_ADDREF(ex);
+			curl_event->callback_exception = ex;
+			zend_clear_exception();
+		}
+		zval_ptr_dtor(&retval);
+		zval_ptr_dtor(&argv[0]);
+		zval_ptr_dtor(&argv[1]);
+		state->flags |= CURL_READ_ERROR;
+		return CURL_READFUNC_ABORT;
+	}
+
 	size_t length = 0;
 	if (!Z_ISUNDEF(retval)) {
 		if (Z_TYPE(retval) == IS_STRING) {
@@ -1846,44 +1861,6 @@ static void curl_async_write_user_complete(
 }
 
 /**
- * @brief Internal coroutine entry point for async user writes.
- *
- * Runs inside a high-priority coroutine spawned by curl_async_write_user().
- * Calls the PHP write callback (CURLOPT_WRITEFUNCTION) with the curl handle
- * and received data.
- */
-static void curl_async_write_user_entry(void)
-{
-	zend_coroutine_t * const coro = ZEND_ASYNC_CURRENT_COROUTINE;
-	curl_async_write_state_t * const state = (curl_async_write_state_t *) coro->extended_data;
-
-	if (state->event == NULL || state->event->ch == NULL) {
-		return;
-	}
-
-	php_curl * const ch = state->event->ch;
-	php_curl_write * const write_handler = state->is_header ? ch->handlers.write_header : ch->handlers.write;
-
-	zval argv[2];
-	zval retval;
-
-	GC_ADDREF(&ch->std);
-	ZVAL_OBJ(&argv[0], &ch->std);
-	ZVAL_STR_COPY(&argv[1], state->write_data);
-
-	zend_call_known_fcc(&write_handler->fcc, &retval, 2, argv, NULL);
-
-	if (!Z_ISUNDEF(retval)) {
-		_php_curl_verify_handlers(ch, true);
-		ZVAL_COPY(&coro->result, &retval);
-		zval_ptr_dtor(&retval);
-	}
-
-	zval_ptr_dtor(&argv[0]);
-	zval_ptr_dtor(&argv[1]);
-}
-
-/**
  * @brief Async write callback for PHP_CURL_USER mode (body and headers).
  *
  * Spawns a high-priority coroutine that executes the PHP write callback
@@ -1933,8 +1910,21 @@ size_t curl_async_write_user(char *data, const size_t size, const size_t nmemb, 
 		return (size_t) -1;
 	}
 
-	coro->internal_entry = curl_async_write_user_entry;
-	coro->extended_data = state;
+	/* Build fcall — scheduler calls the PHP function and frees it */
+	php_curl_write * const write_handler = state->is_header ? ch->handlers.write_header : ch->handlers.write;
+
+	zend_fcall_t *fcall = ecalloc(1, sizeof(zend_fcall_t));
+	fcall->fci.size = sizeof(zend_fcall_info);
+	fcall->fci_cache = write_handler->fcc;
+	ZVAL_UNDEF(&fcall->fci.function_name);
+
+	fcall->fci.param_count = 2;
+	fcall->fci.params = safe_emalloc(2, sizeof(zval), 0);
+	GC_ADDREF(&ch->std);
+	ZVAL_OBJ(&fcall->fci.params[0], &ch->std);
+	ZVAL_STR_COPY(&fcall->fci.params[1], state->write_data);
+
+	coro->fcall = fcall;
 
 	/* Subscribe to coroutine completion */
 	curl_async_write_coro_callback_t *coro_cb = (curl_async_write_coro_callback_t *)
