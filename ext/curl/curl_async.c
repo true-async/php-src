@@ -63,10 +63,12 @@ struct curl_async_event_s {
 	zend_async_event_t base;
 	CURL *curl;
 	php_curl *ch;
+	zend_async_scope_t *scope;             /* child scope for spawned callback coroutines */
 	bool done_deferred;                    /* CURLMSG_DONE received while async write pending */
 	CURLcode done_result;                  /* saved CURLcode for deferred completion */
 	curl_async_write_state_t *write_state;        /* heap-allocated, NULL until first async write */
 	curl_async_write_state_t *header_write_state; /* same, for header writes */
+	zend_object *callback_exception;       /* exception from user callback, forwarded on completion */
 };
 
 struct curl_async_multi_event_s {
@@ -131,7 +133,7 @@ static void process_curl_completed_handles(void)
 			ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(&curl_event->base);
 			/* Stop BEFORE notify — notify may trigger dispose/dtor */
 			curl_event->base.stop(&curl_event->base);
-			ZEND_ASYNC_CALLBACKS_NOTIFY(&curl_event->base, &result, NULL);
+			ZEND_ASYNC_CALLBACKS_NOTIFY(&curl_event->base, &result, curl_event->callback_exception);
 		}
 	}
 }
@@ -247,6 +249,11 @@ static bool curl_async_event_stop(zend_async_event_t *event)
 	curl_async_event_t *curl_event = (curl_async_event_t *) event;
 	ZEND_ASYNC_EVENT_SET_CLOSED(event);
 
+	/* Cancel the child scope — this cascades cancellation to all spawned callback coroutines */
+	if (curl_event->scope != NULL) {
+		ZEND_ASYNC_SCOPE_CLOSE(curl_event->scope, true);
+	}
+
 	/* Cancel any pending async writes (body + header) */
 	curl_async_write_state_t *ws_list[] = { curl_event->write_state, curl_event->header_write_state };
 	for (int i = 0; i < 2; i++) {
@@ -327,6 +334,22 @@ static bool curl_async_event_dtor(zend_async_event_t *event)
 	zend_async_callbacks_free(event);
 
 	curl_async_event_t *curl_event = (curl_async_event_t *) event;
+
+	/* Close the scope and release our reference.
+	 * The scope will auto-dispose via try_to_dispose when all its coroutines finish. */
+	if (curl_event->scope != NULL) {
+		if (!ZEND_ASYNC_SCOPE_IS_CLOSED(curl_event->scope)) {
+			ZEND_ASYNC_SCOPE_CLOSE(curl_event->scope, true);
+		}
+		ZEND_ASYNC_EVENT_RELEASE(&curl_event->scope->event);
+		curl_event->scope = NULL;
+	}
+
+	/* Release stored callback exception if not consumed */
+	if (curl_event->callback_exception != NULL) {
+		OBJ_RELEASE(curl_event->callback_exception);
+		curl_event->callback_exception = NULL;
+	}
 
 	/* Clear back-reference on php_curl */
 	if (curl_event->ch != NULL) {
@@ -511,6 +534,19 @@ CURLcode curl_async_perform(php_curl *ch)
 		ZEND_ASYNC_WAKER_DESTROY(coroutine);
 		return CURLE_FAILED_INIT;
 	}
+
+	/* Create a child scope owned by the calling coroutine's scope.
+	 * All callback coroutines (write/read/header) will be spawned into this scope.
+	 * If the curl operation is cancelled, the scope cascades cancellation to all children. */
+	curl_event->scope = ZEND_ASYNC_NEW_SCOPE(coroutine->scope);
+	if (UNEXPECTED(curl_event->scope == NULL)) {
+		curl_event->base.dispose(&curl_event->base);
+		ZEND_ASYNC_WAKER_DESTROY(coroutine);
+		return CURLE_FAILED_INIT;
+	}
+
+	/* Hold a reference so the scope stays alive while the curl event exists */
+	ZEND_ASYNC_EVENT_ADD_REF(&curl_event->scope->event);
 
 	if (!zend_async_resume_when(
 		coroutine,
@@ -1138,6 +1174,11 @@ static void curl_async_read_callback_complete(
 	curl_async_event_t *curl_event = state->event;
 
 	if (exception != NULL) {
+		/* Mark exception as handled so the framework doesn't propagate it as unhandled.
+		 * Store it on curl_event to forward to the waiting coroutine. */
+		ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(event);
+		GC_ADDREF(exception);
+		curl_event->callback_exception = exception;
 		state->flags |= CURL_READ_ERROR;
 	} else {
 		zend_coroutine_t * const coro = (zend_coroutine_t *) event;
@@ -1172,7 +1213,7 @@ static size_t curl_async_read_callback_spawn(curl_async_read_state_t *state, con
 	php_curl * const ch = state->event->ch;
 	php_curl_read * const read_handler = ch->handlers.read;
 
-	zend_coroutine_t *coro = ZEND_ASYNC_SPAWN_WITH_PRIORITY(ZEND_COROUTINE_HI_PRIORITY);
+	zend_coroutine_t *coro = ZEND_ASYNC_SPAWN_WITH_SCOPE_EX(state->event->scope, ZEND_COROUTINE_HI_PRIORITY);
 
 	if (coro == NULL) {
 		state->flags |= CURL_READ_ERROR;
@@ -1551,7 +1592,7 @@ static void curl_async_write_finish_deferred(curl_async_event_t *curl_event)
 	ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(&curl_event->base);
 	/* Stop BEFORE notify — notify may trigger dispose/dtor */
 	curl_event->base.stop(&curl_event->base);
-	ZEND_ASYNC_CALLBACKS_NOTIFY(&curl_event->base, &done_result, NULL);
+	ZEND_ASYNC_CALLBACKS_NOTIFY(&curl_event->base, &done_result, curl_event->callback_exception);
 }
 
 /**
@@ -1750,6 +1791,11 @@ static void curl_async_write_user_complete(
 	curl_async_event_t *curl_event = state->event;
 
 	if (exception != NULL) {
+		/* Mark exception as handled so the framework doesn't propagate it as unhandled.
+		 * Store it on curl_event to forward to the waiting coroutine. */
+		ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(event);
+		GC_ADDREF(exception);
+		curl_event->callback_exception = exception;
 		state->has_pending_result = true;
 		state->pending_result = (size_t) -1;
 	} else {
@@ -1789,7 +1835,7 @@ static void curl_async_write_user_complete(
 		ZVAL_LONG(&done_result, curl_event->done_result);
 		ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(&curl_event->base);
 		curl_event->base.stop(&curl_event->base);
-		ZEND_ASYNC_CALLBACKS_NOTIFY(&curl_event->base, &done_result, NULL);
+		ZEND_ASYNC_CALLBACKS_NOTIFY(&curl_event->base, &done_result, curl_event->callback_exception);
 		return;
 	}
 
@@ -1879,7 +1925,7 @@ size_t curl_async_write_user(char *data, const size_t size, const size_t nmemb, 
 	state->write_data = zend_string_init(data, length, 0);
 
 	/* Spawn high-priority coroutine to run the PHP callback */
-	zend_coroutine_t *coro = ZEND_ASYNC_SPAWN_WITH_PRIORITY(ZEND_COROUTINE_HI_PRIORITY);
+	zend_coroutine_t *coro = ZEND_ASYNC_SPAWN_WITH_SCOPE_EX(curl_event->scope, ZEND_COROUTINE_HI_PRIORITY);
 
 	if (coro == NULL) {
 		zend_string_release(state->write_data);
