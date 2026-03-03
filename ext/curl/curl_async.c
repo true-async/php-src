@@ -59,18 +59,6 @@ ZEND_TLS HashTable * curl_multi_event_list = NULL;
 ZEND_TLS zend_async_timer_event_t * timer = NULL;
 
 // Struct definitions
-struct curl_async_event_s {
-	zend_async_event_t base;
-	CURL *curl;
-	php_curl *ch;
-	zend_async_scope_t *scope;             /* child scope for spawned callback coroutines */
-	bool done_deferred;                    /* CURLMSG_DONE received while async write pending */
-	CURLcode done_result;                  /* saved CURLcode for deferred completion */
-	curl_async_write_state_t *write_state;        /* heap-allocated, NULL until first async write */
-	curl_async_write_state_t *header_write_state; /* same, for header writes */
-	zend_object *callback_exception;       /* exception from user callback, forwarded on completion */
-};
-
 struct curl_async_multi_event_s {
 	zend_async_event_t base;
 	HashTable poll_list;
@@ -78,7 +66,6 @@ struct curl_async_multi_event_s {
 	zend_async_timer_event_t *timer; // Timer for the multi event
 };
 
-typedef struct curl_async_event_s curl_async_event_t;
 typedef struct curl_async_multi_event_s curl_async_multi_event_t;
 
 static int curl_socket_cb(CURL *curl, const curl_socket_t socket_fd, const int what, void *user_p, void *socket_poll);
@@ -534,6 +521,8 @@ CURLcode curl_async_perform(php_curl *ch)
 		ZEND_ASYNC_WAKER_DESTROY(coroutine);
 		return CURLE_FAILED_INIT;
 	}
+
+	curl_event->coroutine = coroutine;
 
 	/* Create a child scope owned by the calling coroutine's scope.
 	 * All callback coroutines (write/read/header) will be spawned into this scope.

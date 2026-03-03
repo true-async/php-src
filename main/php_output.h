@@ -184,9 +184,12 @@ static inline php_output_context_t* php_output_get_async_context(void) {
 void php_output_init_async_context(php_output_context_t *ctx);
 void php_output_free_async_context(php_output_context_t *ctx);
 
+PHPAPI size_t php_output_write_with_coroutine(const char *str, size_t len, zend_coroutine_t *coro);
+
 /* convenience macros */
 #define PHPWRITE(str, str_len)		php_output_write((str), (str_len))
 #define PHPWRITE_H(str, str_len)	php_output_write_unbuffered((str), (str_len))
+#define PHPWRITE_CORO(str, str_len, coro)	php_output_write_with_coroutine((str), (str_len), (coro))
 
 #define PUTC(c)						php_output_write((const char *) &(c), 1)
 #define PUTC_H(c)					php_output_write_unbuffered((const char *) &(c), 1)

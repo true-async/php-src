@@ -287,6 +287,18 @@ PHPAPI size_t php_output_write(const char *str, size_t len)
 }
 /* }}} */
 
+/* {{{ size_t php_output_write_with_coroutine(const char *str, size_t len, zend_coroutine_t *coro)
+ * Buffered write in the output context of the given coroutine */
+PHPAPI size_t php_output_write_with_coroutine(const char *str, size_t len, zend_coroutine_t *coro)
+{
+	zend_coroutine_t *saved = ZEND_ASYNC_G(coroutine);
+	ZEND_ASYNC_G(coroutine) = coro;
+	const size_t result = php_output_write(str, len);
+	ZEND_ASYNC_G(coroutine) = saved;
+	return result;
+}
+/* }}} */
+
 /* {{{ SUCCESS|FAILURE php_output_flush(void)
  * Flush the most recent output handlers buffer */
 PHPAPI zend_result php_output_flush(void)

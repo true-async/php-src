@@ -39,8 +39,20 @@ typedef struct {
  * we cannot do synchronous file I/O. Instead, we use CURL_READFUNC_PAUSE / CURL_WRITEFUNC_PAUSE,
  * start an async I/O operation via ZEND_ASYNC_IO_*, and unpause when the operation completes.
  */
-/* Forward declaration — full definition is private in curl_async.c */
-typedef struct curl_async_event_s curl_async_event_t;
+typedef struct curl_async_write_state_s curl_async_write_state_t;
+
+typedef struct curl_async_event_s {
+	zend_async_event_t base;
+	CURL *curl;
+	php_curl *ch;
+	zend_coroutine_t *coroutine;           /* owning coroutine (for output context) */
+	zend_async_scope_t *scope;             /* child scope for spawned callback coroutines */
+	bool done_deferred;                    /* CURLMSG_DONE received while async write pending */
+	CURLcode done_result;                  /* saved CURLcode for deferred completion */
+	curl_async_write_state_t *write_state;        /* heap-allocated, NULL until first async write */
+	curl_async_write_state_t *header_write_state; /* same, for header writes */
+	zend_object *callback_exception;       /* exception from user callback, forwarded on completion */
+} curl_async_event_t;
 
 /* Read source type */
 #define CURL_READ_FILE     0   /* CURLFile or CURLOPT_INFILE — async IO read */
@@ -77,7 +89,7 @@ struct curl_async_read_state_s {
  * Owned by curl_async_event_t (heap-allocated, lazy-init on first write).
  * References the event, not the raw CURL handle.
  */
-typedef struct {
+struct curl_async_write_state_s {
 	curl_async_event_t *event;      /* owning event (access curl/ch via event->) */
 
 	/* FILE mode: cached async IO handle from stream */
@@ -98,7 +110,7 @@ typedef struct {
 
 	/* true when this state is used for header writes (selects write_header handler) */
 	bool is_header;
-} curl_async_write_state_t;
+};
 
 void curl_async_register_ce(void);
 void curl_async_setup(void);

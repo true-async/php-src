@@ -541,7 +541,12 @@ static size_t curl_write(char *data, size_t size, size_t nmemb, void *ctx)
 
 	switch (write_handler->method) {
 		case PHP_CURL_STDOUT:
-			PHPWRITE(data, length);
+			if (ch->async_event != NULL) {
+				PHPWRITE_CORO(data, length,
+					((curl_async_event_t *) ch->async_event)->coroutine);
+			} else {
+				PHPWRITE(data, length);
+			}
 			break;
 		case PHP_CURL_FILE:
 			if (ch->async_event != NULL) {
