@@ -579,6 +579,7 @@ static void curl_multi_free_obj(zend_object *object)
 		if (!(OBJ_FLAGS(Z_OBJ_P(pz_ch)) & IS_OBJ_FREE_CALLED)) {
 			ch = Z_CURL_P(pz_ch);
 			_php_curl_verify_handlers(ch, /* reporterror */ false);
+			curl_multi_remove_handle(mh->multi, ch->cp);
 		}
 	}
 
