@@ -1439,9 +1439,12 @@ size_t curl_async_read_cb(char *buffer, const size_t size, const size_t nitems, 
 		cb_arg->async_state->curl = cb_arg->curl;
 		cb_arg->async_state->file.fd = fd;
 
-		/* Find the event for this CURL handle */
-		curl_async_event_t *curl_event = zend_hash_index_find_ptr(
-			curl_multi_event_list, (zend_ulong) cb_arg->curl);
+		/* Find the event for this CURL handle (NULL when not running under async) */
+		curl_async_event_t *curl_event = NULL;
+		if (curl_multi_event_list != NULL) {
+			curl_event = zend_hash_index_find_ptr(
+				curl_multi_event_list, (zend_ulong) cb_arg->curl);
+		}
 		cb_arg->async_state->event = curl_event;
 
 #if LIBCURL_VERSION_NUM >= 0x080B01
