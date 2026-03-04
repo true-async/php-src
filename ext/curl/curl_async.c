@@ -1000,7 +1000,7 @@ CURLMcode curl_async_multi_perform(php_curlm * curl_m, int *running_handles)
 	for (const zval *handle_zv = (const zval *)zend_llist_get_first_ex(&curl_m->easyh, &list_pos);
 	     handle_zv;
 	     handle_zv = (const zval *)zend_llist_get_next_ex(&curl_m->easyh, &list_pos)) {
-		php_curl *const easy_handle = Z_CURL_P(handle_zv);
+		 const php_curl* easy_handle = Z_CURL_P(handle_zv);
 
 		if (easy_handle->async_event != NULL) {
 			curl_async_event_t *const event = (curl_async_event_t *) easy_handle->async_event;
