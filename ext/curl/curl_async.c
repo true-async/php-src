@@ -1000,7 +1000,7 @@ CURLMcode curl_async_multi_perform(php_curlm * curl_m, int *running_handles)
 	for (const zval *handle_zv = (const zval *)zend_llist_get_first_ex(&curl_m->easyh, &list_pos);
 	     handle_zv;
 	     handle_zv = (const zval *)zend_llist_get_next_ex(&curl_m->easyh, &list_pos)) {
-		 const php_curl* easy_handle = Z_CURL_P(handle_zv);
+		 php_curl *easy_handle = Z_CURL_P(handle_zv);
 
 		if (easy_handle->async_event != NULL) {
 			curl_async_event_t *const event = (curl_async_event_t *) easy_handle->async_event;
@@ -1008,6 +1008,13 @@ CURLMcode curl_async_multi_perform(php_curlm * curl_m, int *running_handles)
 			if (event->callback_exception != NULL) {
 				zend_object *const exception = event->callback_exception;
 				event->callback_exception = NULL;
+
+				/* Save error on the easy handle so curl_errno() works.
+				 * curl_easy_pause may return the error without generating
+				 * CURLMSG_DONE, so curl_multi_info_read won't set it. */
+				if (event->done_result != CURLE_OK) {
+					SAVE_CURL_ERROR(easy_handle, event->done_result);
+				}
 
 				zval exception_zv;
 				ZVAL_OBJ(&exception_zv, exception);
