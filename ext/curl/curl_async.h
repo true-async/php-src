@@ -45,6 +45,7 @@ typedef struct curl_async_event_s {
 	zend_async_event_t base;
 	CURL *curl;
 	php_curl *ch;
+	php_curlm *mh;                         /* NULL = single (curl_exec), non-NULL = multi (weak ref) */
 	zend_coroutine_t *coroutine;           /* owning coroutine (for output context) */
 	zend_async_scope_t *scope;             /* child scope for spawned callback coroutines */
 	bool done_deferred;                    /* CURLMSG_DONE received while async write pending */
@@ -135,6 +136,23 @@ void curl_async_shutdown(void);
  * - Cleaning up the resumption object and removing the handle from the resume list.
  */
 CURLcode curl_async_perform(php_curl *ch);
+
+/**
+ * @brief Creates a per-handle async event for an easy handle in a multi context.
+ *
+ * Called from curl_multi_add_handle() when async is active. Sets up scope,
+ * coroutine context, and links ch->async_event. The event uses mh to
+ * distinguish multi mode from single mode (mh != NULL).
+ */
+bool curl_async_multi_handle_init(php_curl *ch, php_curlm *mh);
+
+/**
+ * @brief Destroys the per-handle async event for an easy handle in multi context.
+ *
+ * Called from curl_multi_remove_handle(), curl_multi_close(), and free_obj.
+ * Only destroys events with mh != NULL (multi mode).
+ */
+void curl_async_multi_handle_destroy(php_curl *ch);
 
 void curl_async_dtor(php_curlm *multi_handle);
 

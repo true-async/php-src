@@ -155,6 +155,7 @@ typedef struct {
 	zend_string *filename;
 	php_stream *stream;
 	CURL *curl;                                  /* back-ref for async pause/unpause */
+	php_curl *ch;                                /* back-ref for async_event access */
 	curl_async_read_state_t *async_state;        /* async IO state, NULL when sync */
 } mime_data_cb_arg_t;
 

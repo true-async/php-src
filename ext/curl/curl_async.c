@@ -199,6 +199,12 @@ static bool curl_async_event_start(zend_async_event_t *event)
 {
 	curl_async_event_t *curl_event = (curl_async_event_t *) event;
 
+	/* Multi mode: handle already in user's multi, nothing to do */
+	if (curl_event->mh != NULL) {
+		return true;
+	}
+
+	/* Single mode: register in global multi handle */
 	if (zend_hash_index_update_ptr(curl_multi_event_list, (zend_ulong) curl_event->curl, curl_event) == NULL) {
 		zend_throw_exception_ex(
 			ZEND_ASYNC_GET_CE(ZEND_ASYNC_EXCEPTION_DEFAULT), 0, "Failed to register cURL event in the multi event list"
@@ -273,14 +279,19 @@ static bool curl_async_event_stop(zend_async_event_t *event)
 		curl_event->ch->async_read_state = NULL;
 	}
 
-	if (curl_event->curl != NULL) {
-		zend_hash_index_del(curl_multi_event_list, (zend_ulong) curl_event->curl);
-	}
+	/* Single mode: remove from global multi handle and event list */
+	if (curl_event->mh == NULL) {
+		if (curl_event->curl != NULL) {
+			zend_hash_index_del(curl_multi_event_list, (zend_ulong) curl_event->curl);
+		}
 
-	if (curl_multi_handle && curl_event->curl) {
-		curl_multi_remove_handle(curl_multi_handle, curl_event->curl);
-		curl_event->curl = NULL;
+		if (curl_multi_handle && curl_event->curl) {
+			curl_multi_remove_handle(curl_multi_handle, curl_event->curl);
+		}
 	}
+	/* Multi mode: do NOT remove from user's multi — lifecycle managed by user */
+
+	curl_event->curl = NULL;
 
 	return true;
 }
@@ -305,11 +316,64 @@ static curl_async_event_t * curl_async_event_ctor(php_curl *ch)
 	curl_event->base.info = curl_async_event_info;
 	curl_event->curl = ch->cp;
 	curl_event->ch = ch;
+	curl_event->mh = NULL; /* single mode */
 
 	/* Link php_curl to event so write callbacks can find it */
 	ch->async_event = curl_event;
 
 	return curl_event;
+}
+
+/**
+ * @brief Create a per-handle async event for multi mode.
+ *
+ * Same structure as single mode, but mh is set to distinguish behavior.
+ * Scope is created from the current coroutine (the one calling curl_multi_add_handle).
+ */
+bool curl_async_multi_handle_init(php_curl *ch, php_curlm *mh)
+{
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+	if (coroutine == NULL) {
+		return false;
+	}
+
+	curl_async_event_t *curl_event = curl_async_event_ctor(ch);
+	if (curl_event == NULL) {
+		return false;
+	}
+
+	curl_event->mh = mh;
+	curl_event->coroutine = coroutine;
+
+	curl_event->scope = ZEND_ASYNC_NEW_SCOPE(coroutine->scope);
+	if (curl_event->scope == NULL) {
+		curl_event->base.dispose(&curl_event->base);
+		return false;
+	}
+
+	ZEND_ASYNC_EVENT_ADD_REF(&curl_event->scope->event);
+
+	return true;
+}
+
+/**
+ * @brief Destroy per-handle async event for multi mode.
+ */
+void curl_async_multi_handle_destroy(php_curl *ch)
+{
+	if (ch->async_event == NULL) {
+		return;
+	}
+
+	curl_async_event_t *curl_event = (curl_async_event_t *) ch->async_event;
+
+	/* Only destroy multi-mode events; single-mode events are managed by the waker */
+	if (curl_event->mh == NULL) {
+		return;
+	}
+
+	curl_event->base.stop(&curl_event->base);
+	curl_event->base.dispose(&curl_event->base);
 }
 
 static bool curl_async_event_dtor(zend_async_event_t *event)
@@ -911,10 +975,10 @@ CURLMcode curl_async_multi_perform(php_curlm * curl_m, int *running_handles)
 	int running_handles_internal = 0;
 	curl_multi_socket_action(curl_m->multi, CURL_SOCKET_TIMEOUT, 0, &running_handles_internal);
 
-	const curl_async_multi_event_t *async_event = curl_m->async_event;
-
-	// Get number of active handles from poll list
-	*running_handles = async_event->poll_list.nNumUsed;
+	/* Use libcurl's running count — it includes handles that are paused
+	 * (waiting for async IO completion). poll_list.nNumUsed misses paused
+	 * handles because curl removes their sockets from monitoring. */
+	*running_handles = running_handles_internal;
 
 	return CURLM_OK;
 }
@@ -1016,8 +1080,15 @@ static void curl_async_unpause_transfer(curl_async_event_t *curl_event)
 	curl_easy_pause(curl_event->curl, CURLPAUSE_CONT);
 
 	int running;
-	curl_multi_socket_action(curl_multi_handle, CURL_SOCKET_TIMEOUT, 0, &running);
-	process_curl_completed_handles();
+
+	if (curl_event->mh == NULL) {
+		/* Single mode: drive global multi handle */
+		curl_multi_socket_action(curl_multi_handle, CURL_SOCKET_TIMEOUT, 0, &running);
+		process_curl_completed_handles();
+	} else if (curl_event->mh != NULL) {
+		/* Multi mode: drive user's multi handle */
+		curl_multi_socket_action(curl_event->mh->multi, CURL_SOCKET_TIMEOUT, 0, &running);
+	}
 }
 
 /* Forward declaration for deferred completion (defined in write section) */
@@ -1423,14 +1494,9 @@ size_t curl_async_read_cb(char *buffer, const size_t size, const size_t nitems, 
 			return CURL_READFUNC_ABORT;
 		}
 
-		/* Only use async IO when a curl event exists (running inside
-		 * curl_async_perform / async multi context).  Without an event,
-		 * CURL_READFUNC_PAUSE would never be unpaused → hang. */
-		curl_async_event_t *curl_event = NULL;
-		if (curl_multi_event_list != NULL) {
-			curl_event = zend_hash_index_find_ptr(
-				curl_multi_event_list, (zend_ulong) cb_arg->curl);
-		}
+		/* Use async IO when a curl event exists (single or multi mode).
+		 * Without an event, CURL_READFUNC_PAUSE would never be unpaused → hang. */
+		curl_async_event_t *curl_event = (curl_async_event_t *) cb_arg->ch->async_event;
 
 		if (curl_event != NULL) {
 			zend_async_io_t *io = NULL;
@@ -1606,7 +1672,12 @@ static void curl_async_write_finish_deferred(curl_async_event_t *curl_event)
 	curl_event->done_deferred = false;
 
 	if (curl_event->curl != NULL) {
-		curl_multi_remove_handle(curl_multi_handle, curl_event->curl);
+		CURLM *multi = (curl_event->mh == NULL)
+			? curl_multi_handle
+			: curl_event->mh->multi;
+		if (multi != NULL) {
+			curl_multi_remove_handle(multi, curl_event->curl);
+		}
 	}
 
 	zval done_result;
@@ -1851,15 +1922,24 @@ static void curl_async_write_user_complete(
 
 	/* User aborted — finish now, skip unpause */
 	if (user_abort) {
-		curl_event->done_deferred = false;
-		if (curl_event->curl != NULL) {
-			curl_multi_remove_handle(curl_multi_handle, curl_event->curl);
+		if (curl_event->mh == NULL) {
+			/* Single mode: remove from global multi, stop event, notify waker */
+			curl_event->done_deferred = false;
+			if (curl_event->curl != NULL) {
+				curl_multi_remove_handle(curl_multi_handle, curl_event->curl);
+			}
+			zval done_result;
+			ZVAL_LONG(&done_result, curl_event->done_result);
+			ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(&curl_event->base);
+			curl_event->base.stop(&curl_event->base);
+			ZEND_ASYNC_CALLBACKS_NOTIFY(&curl_event->base, &done_result, curl_event->callback_exception);
 		}
-		zval done_result;
-		ZVAL_LONG(&done_result, curl_event->done_result);
-		ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(&curl_event->base);
-		curl_event->base.stop(&curl_event->base);
-		ZEND_ASYNC_CALLBACKS_NOTIFY(&curl_event->base, &done_result, curl_event->callback_exception);
+		/* Multi mode: unpause so curl re-invokes the write callback,
+		 * which returns the stored error result → CURLE_WRITE_ERROR in CURLMSG_DONE.
+		 * User observes result via curl_multi_info_read(). */
+		if (curl_event->curl != NULL) {
+			curl_async_unpause_transfer(curl_event);
+		}
 		return;
 	}
 

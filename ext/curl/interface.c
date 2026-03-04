@@ -1374,6 +1374,7 @@ static inline zend_result build_mime_structure_from_hash(php_curl *ch, zval *zpo
 				cb_arg->filename = zend_string_copy(postval);
 				cb_arg->stream = NULL;
 				cb_arg->curl = ch->cp;
+				cb_arg->ch = ch;
 				cb_arg->async_state = NULL;
 
 				if ((form_error = curl_mime_name(part, ZSTR_VAL(string_key))) != CURLE_OK
@@ -2325,11 +2326,8 @@ PHP_FUNCTION(curl_exec)
 
 	_php_curl_cleanup_handle(ch);
 
-	if (ZEND_ASYNC_IS_ACTIVE) {
-		error = curl_async_perform(ch);
-	} else {
-		error = curl_easy_perform(ch->cp);
-	}
+	//error = curl_easy_perform(ch->cp);
+	error = curl_async_perform(ch);
 	SAVE_CURL_ERROR(ch, error);
 
 	if (error != CURLE_OK) {
@@ -2768,6 +2766,14 @@ static void curl_free_obj(zend_object *object)
 	efree(ch->handlers.write);
 	efree(ch->handlers.write_header);
 	efree(ch->handlers.read);
+
+	/* Safety net: destroy per-handle async event if still alive
+	 * (e.g. easy handle freed without curl_multi_remove_handle) */
+	if (ch->async_event != NULL) {
+		curl_async_event_t *event = (curl_async_event_t *) ch->async_event;
+		event->base.stop(&event->base);
+		event->base.dispose(&event->base);
+	}
 
 	/* Safety net: normally freed by curl_async_event_stop */
 	if (ch->async_read_state != NULL) {
