@@ -255,8 +255,18 @@ static bool curl_async_event_stop(zend_async_event_t *event)
 
 		ws->event = NULL; /* sever back-link so completion becomes no-op */
 
+		/* Remove IO callback from stream's IO event before freeing state */
+		if (ws->io != NULL && ws->io_cb != NULL) {
+			ws->io->event.del_callback(&ws->io->event, ws->io_cb);
+			ws->io_cb = NULL;
+		}
+
 		if (!ws->pending) {
 			/* Safe to free immediately — no completion callback pending */
+			if (ws->io != NULL) {
+				ZEND_ASYNC_EVENT_RELEASE(&ws->io->event);
+				ws->io = NULL;
+			}
 			if (ws->write_data != NULL) {
 				zend_string_release(ws->write_data);
 			}
@@ -565,15 +575,16 @@ fail:
 
 CURLcode curl_async_perform(php_curl *ch)
 {
+	/* If no coroutine is active (e.g. curl_exec from main script),
+	 * auto-launch the scheduler so the async machinery works. */
+	ZEND_ASYNC_SCHEDULER_INIT();
+
 	if (curl_multi_handle == NULL) {
 		curl_async_setup();
 	}
 
 	// Get current coroutine
 	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
-	if (coroutine == NULL) {
-		return CURLE_FAILED_INIT;
-	}
 
 	if (!ZEND_ASYNC_WAKER_NEW(coroutine)) {
 		return CURLE_FAILED_INIT;
@@ -1678,7 +1689,10 @@ static void curl_async_write_state_free_orphan(curl_async_write_state_t *state)
 	if (state->write_data != NULL) {
 		zend_string_release(state->write_data);
 	}
-	/* Note: we don't own state->io — the stream owns it */
+	if (state->io != NULL) {
+		ZEND_ASYNC_EVENT_RELEASE(&state->io->event);
+		state->io = NULL;
+	}
 	efree(state);
 }
 
@@ -1844,12 +1858,14 @@ size_t curl_async_write_file(char *data, const size_t size, const size_t nmemb, 
 		}
 
 		state->io = io;
+		ZEND_ASYNC_EVENT_ADD_REF(&io->event);
 
 		/* Register completion callback on the IO event */
 		curl_async_write_io_callback_t *io_cb = (curl_async_write_io_callback_t *)
 			ZEND_ASYNC_EVENT_CALLBACK_EX(curl_async_write_file_complete,
 				sizeof(curl_async_write_io_callback_t));
 		io_cb->state = state;
+		state->io_cb = &io_cb->base;
 		io->event.add_callback(&io->event, &io_cb->base);
 	}
 

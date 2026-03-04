@@ -93,8 +93,11 @@ struct curl_async_read_state_s {
 struct curl_async_write_state_s {
 	curl_async_event_t *event;      /* owning event (access curl/ch via event->) */
 
-	/* FILE mode: cached async IO handle from stream */
+	/* FILE mode: cached async IO handle from stream (ref-counted via io->event) */
 	zend_async_io_t *io;
+
+	/* IO completion callback registered on io->event (must be removed on cleanup) */
+	zend_async_event_callback_t *io_cb;
 
 	/* FILE mode: owned copy of data buffer for async write (curl may reuse original) */
 	char *write_buf;
