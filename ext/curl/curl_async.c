@@ -1329,7 +1329,12 @@ static size_t curl_async_read_callback_spawn(curl_async_read_state_t *state, con
 	php_curl * const ch = state->event->ch;
 	php_curl_read * const read_handler = ch->handlers.read;
 
-	zend_coroutine_t *coro = ZEND_ASYNC_SPAWN_WITH_SCOPE_EX(state->event->scope, ZEND_COROUTINE_HI_PRIORITY);
+	zend_async_scope_t *scope = curl_async_get_scope(state->event);
+	if (UNEXPECTED(scope == NULL)) {
+		state->flags |= CURL_READ_ERROR;
+		return CURL_READFUNC_ABORT;
+	}
+	zend_coroutine_t *coro = ZEND_ASYNC_SPAWN_WITH_SCOPE_EX(scope, ZEND_COROUTINE_HI_PRIORITY);
 
 	if (coro == NULL) {
 		state->flags |= CURL_READ_ERROR;
