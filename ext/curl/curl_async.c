@@ -980,6 +980,32 @@ CURLMcode curl_async_multi_perform(php_curlm * curl_m, int *running_handles)
 	 * handles because curl removes their sockets from monitoring. */
 	*running_handles = running_handles_internal;
 
+	/* Re-throw pending callback exceptions from any easy handle.
+	 * In multi mode, exceptions from user callbacks (write/read/header)
+	 * are stored on the per-handle event. Throw the first one found
+	 * so the user's try/catch around curl_multi_exec() catches it —
+	 * same behavior as curl_exec() in single mode. */
+	zend_llist_position list_pos;
+	for (const zval *handle_zv = (const zval *)zend_llist_get_first_ex(&curl_m->easyh, &list_pos);
+	     handle_zv;
+	     handle_zv = (const zval *)zend_llist_get_next_ex(&curl_m->easyh, &list_pos)) {
+		php_curl *const easy_handle = Z_CURL_P(handle_zv);
+
+		if (easy_handle->async_event != NULL) {
+			curl_async_event_t *const event = (curl_async_event_t *) easy_handle->async_event;
+
+			if (event->callback_exception != NULL) {
+				zend_object *const exception = event->callback_exception;
+				event->callback_exception = NULL;
+
+				zval exception_zv;
+				ZVAL_OBJ(&exception_zv, exception);
+				zend_throw_exception_object(&exception_zv);
+				return CURLM_OK;
+			}
+		}
+	}
+
 	return CURLM_OK;
 }
 
