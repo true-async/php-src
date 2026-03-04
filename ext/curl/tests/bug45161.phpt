@@ -11,14 +11,10 @@ $host = curl_cli_server_start();
 $ch = curl_init();
 $fp = fopen(PHP_OS_FAMILY === 'Windows' ? 'nul' : '/dev/null', 'w');
 
-/*
-$i = $start = $end = 100000.00;
-for ($i = 0; $i < 100; $i++) {
-    curl_setopt($ch, CURLOPT_URL, 'http://127.0.0.1:9/');
-    curl_setopt($ch, CURLOPT_FILE, $fp);
-    curl_exec($ch);
-}
-*/
+// Warmup: let the async machinery initialize
+curl_setopt($ch, CURLOPT_URL, "{$host}/get.inc");
+curl_setopt($ch, CURLOPT_FILE, $fp);
+curl_exec($ch);
 
 // Start actual test
 $start = memory_get_usage() + 1024;

@@ -313,6 +313,25 @@ static zend_string * curl_async_event_info(zend_async_event_t *event)
 
 static bool curl_async_event_dtor(zend_async_event_t *event);
 
+/**
+ * Lazily create a child scope for callback coroutines.
+ * Returns the scope, or NULL on failure.
+ */
+static zend_async_scope_t *curl_async_get_scope(curl_async_event_t *curl_event)
+{
+	if (curl_event->scope != NULL) {
+		return curl_event->scope;
+	}
+
+	curl_event->scope = ZEND_ASYNC_NEW_SCOPE(curl_event->coroutine->scope);
+	if (UNEXPECTED(curl_event->scope == NULL)) {
+		return NULL;
+	}
+
+	ZEND_ASYNC_EVENT_ADD_REF(&curl_event->scope->event);
+	return curl_event->scope;
+}
+
 static curl_async_event_t * curl_async_event_ctor(php_curl *ch)
 {
 	curl_async_event_t * curl_event = ecalloc(1, sizeof(curl_async_event_t));
@@ -355,13 +374,7 @@ bool curl_async_multi_handle_init(php_curl *ch, php_curlm *mh)
 	curl_event->mh = mh;
 	curl_event->coroutine = coroutine;
 
-	curl_event->scope = ZEND_ASYNC_NEW_SCOPE(coroutine->scope);
-	if (curl_event->scope == NULL) {
-		curl_event->base.dispose(&curl_event->base);
-		return false;
-	}
-
-	ZEND_ASYNC_EVENT_ADD_REF(&curl_event->scope->event);
+	/* Scope is created lazily on first callback spawn (see curl_async_get_scope) */
 
 	return true;
 }
@@ -396,14 +409,24 @@ static bool curl_async_event_dtor(zend_async_event_t *event)
 
 	curl_async_event_t *curl_event = (curl_async_event_t *) event;
 
-	/* Close the scope and release our reference.
-	 * The scope will auto-dispose via try_to_dispose when all its coroutines finish. */
+	/* Close the scope and dispose it.
+	 * If ref_count > 1, just decrement. If ref_count == 1, try_to_dispose
+	 * will handle the final cleanup. */
 	if (curl_event->scope != NULL) {
-		if (!ZEND_ASYNC_SCOPE_IS_CLOSED(curl_event->scope)) {
-			ZEND_ASYNC_SCOPE_CLOSE(curl_event->scope, true);
-		}
-		ZEND_ASYNC_EVENT_RELEASE(&curl_event->scope->event);
+		zend_async_scope_t *scope = curl_event->scope;
 		curl_event->scope = NULL;
+
+		if (!ZEND_ASYNC_SCOPE_IS_CLOSED(scope)) {
+			ZEND_ASYNC_SCOPE_CLOSE(scope, true);
+		}
+
+		if (scope->event.ref_count > 1) {
+			scope->event.ref_count--;
+		}
+
+		if (scope->event.ref_count == 1) {
+			scope->try_to_dispose(scope);
+		}
 	}
 
 	/* Release stored callback exception if not consumed */
@@ -599,18 +622,7 @@ CURLcode curl_async_perform(php_curl *ch)
 
 	curl_event->coroutine = coroutine;
 
-	/* Create a child scope owned by the calling coroutine's scope.
-	 * All callback coroutines (write/read/header) will be spawned into this scope.
-	 * If the curl operation is cancelled, the scope cascades cancellation to all children. */
-	curl_event->scope = ZEND_ASYNC_NEW_SCOPE(coroutine->scope);
-	if (UNEXPECTED(curl_event->scope == NULL)) {
-		curl_event->base.dispose(&curl_event->base);
-		ZEND_ASYNC_WAKER_DESTROY(coroutine);
-		return CURLE_FAILED_INIT;
-	}
-
-	/* Hold a reference so the scope stays alive while the curl event exists */
-	ZEND_ASYNC_EVENT_ADD_REF(&curl_event->scope->event);
+	/* Scope is created lazily on first callback spawn (see curl_async_get_scope) */
 
 	if (!zend_async_resume_when(
 		coroutine,
@@ -2082,7 +2094,13 @@ size_t curl_async_write_user(char *data, const size_t size, const size_t nmemb, 
 	state->write_data = zend_string_init(data, length, 0);
 
 	/* Spawn high-priority coroutine to run the PHP callback */
-	zend_coroutine_t *coro = ZEND_ASYNC_SPAWN_WITH_SCOPE_EX(curl_event->scope, ZEND_COROUTINE_HI_PRIORITY);
+	zend_async_scope_t *scope = curl_async_get_scope(curl_event);
+	if (UNEXPECTED(scope == NULL)) {
+		zend_string_release(state->write_data);
+		state->write_data = NULL;
+		return (size_t) -1;
+	}
+	zend_coroutine_t *coro = ZEND_ASYNC_SPAWN_WITH_SCOPE_EX(scope, ZEND_COROUTINE_HI_PRIORITY);
 
 	if (coro == NULL) {
 		zend_string_release(state->write_data);
