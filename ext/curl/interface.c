@@ -749,6 +749,14 @@ static int curl_prereqfunction(void *clientp, char *conn_primary_ip, char *conn_
 		}
 	}
 
+	if (EG(exception) && ch->async_event != NULL) {
+		curl_async_event_t *curl_event = (curl_async_event_t *) ch->async_event;
+		GC_ADDREF(EG(exception));
+		curl_event->callback_exception = EG(exception);
+		zend_clear_exception();
+		rval = CURL_PREREQFUNC_ABORT;
+	}
+
 	zval_ptr_dtor(&args[0]);
 	zval_ptr_dtor(&args[1]);
 	zval_ptr_dtor(&args[2]);

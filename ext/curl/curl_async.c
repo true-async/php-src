@@ -1058,6 +1058,14 @@ CURLMcode curl_async_multi_perform(php_curlm * curl_m, int *running_handles)
 
 CURLMcode curl_async_select(php_curlm * curl_m, int timeout_ms, int* numfds)
 {
+	/* If no easy handles are attached, fall back to curl_multi_wait
+	 * to avoid blocking the scheduler with a long timeout. */
+	if (zend_llist_count(&curl_m->easyh) == 0) {
+		return curl_multi_wait(curl_m->multi, NULL, 0, timeout_ms, numfds);
+	}
+
+	ZEND_ASYNC_SCHEDULER_INIT();
+
 	CURLM* multi_handle = curl_m->multi;
 
 	if (curl_m->async_event == NULL && false == curl_async_multi_event_init(curl_m)) {
