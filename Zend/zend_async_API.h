@@ -116,6 +116,7 @@ typedef enum {
 #define ZEND_ASYNC_IO_CLOSED      (1 << 2)
 #define ZEND_ASYNC_IO_EOF         (1 << 3)
 #define ZEND_ASYNC_IO_APPEND      (1 << 4)
+#define ZEND_ASYNC_IO_PRESERVE_FD (1 << 5)
 
 typedef struct _zend_async_io_s zend_async_io_t;
 typedef struct _zend_async_io_req_s zend_async_io_req_t;

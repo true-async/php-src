@@ -763,6 +763,9 @@ static int php_stdiop_close(php_stream *stream, int close_handle)
 	}
 
 	if (data->async_io != NULL) {
+		if (!close_handle) {
+			data->async_io->state |= ZEND_ASYNC_IO_PRESERVE_FD;
+		}
 		const int fd_closed = ZEND_ASYNC_IO_CLOSE(data->async_io);
 		data->async_io = NULL;
 		if (fd_closed && !data->is_process_pipe) {
