@@ -10,8 +10,8 @@ simplexml
     var_dump($simple->attributes());
     echo "Done";
 ?>
---EXPECT--
-object(SimpleXMLElement)#2 (1) {
+--EXPECTF--
+object(SimpleXMLElement)#%d (1) {
   ["@attributes"]=>
   array(1) {
     ["type"]=>
