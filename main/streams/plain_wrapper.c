@@ -1307,12 +1307,18 @@ static int php_stdiop_set_option(php_stream *stream, int option, int value, void
 			}
 
 			add_assoc_bool((zval*)ptrparam, "timed_out", data->timeout_event);
+			if (data->async_io != NULL) {
+				/* When async IO is active the fd is non-blocking at the OS level,
+				 * but the logical blocking mode is tracked in is_blocked. */
+				add_assoc_bool((zval*)ptrparam, "blocked", data->is_blocked);
+			} else {
 #ifdef O_NONBLOCK
-			flags = fcntl(fd, F_GETFL, 0);
-			add_assoc_bool((zval*)ptrparam, "blocked", (flags & O_NONBLOCK)? 0 : 1);
+				flags = fcntl(fd, F_GETFL, 0);
+				add_assoc_bool((zval*)ptrparam, "blocked", (flags & O_NONBLOCK)? 0 : 1);
 #else
-			add_assoc_bool((zval*)ptrparam, "blocked", 1);
+				add_assoc_bool((zval*)ptrparam, "blocked", 1);
 #endif
+			}
 			add_assoc_bool((zval*)ptrparam, "eof", stream->eof);
 			return PHP_STREAM_OPTION_RETURN_OK;
 		case PHP_STREAM_OPTION_ASYNC_EVENT_HANDLE:
@@ -1366,9 +1372,12 @@ static int php_stdiop_set_option(php_stream *stream, int option, int value, void
 			return PHP_STREAM_OPTION_RETURN_NOTIMPL;
 
 		case PHP_STREAM_OPTION_READ_TIMEOUT:
-			data->timeout = *(struct timeval *)ptrparam;
-			data->timeout_event = false;
-			return PHP_STREAM_OPTION_RETURN_OK;
+			if (data->is_pipe) {
+				data->timeout = *(struct timeval *)ptrparam;
+				data->timeout_event = false;
+				return PHP_STREAM_OPTION_RETURN_OK;
+			}
+			return PHP_STREAM_OPTION_RETURN_NOTIMPL;
 
 		default:
 			return PHP_STREAM_OPTION_RETURN_NOTIMPL;
