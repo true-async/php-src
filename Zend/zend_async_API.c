@@ -243,6 +243,7 @@ zend_async_waker_new_t zend_async_waker_new_fn = zend_async_waker_new_default;
 zend_async_waker_destroy_t zend_async_waker_destroy_fn = zend_async_waker_destroy_default;
 
 static char *thread_pool_module_name = NULL;
+static char *pool_module_name = NULL;
 zend_async_queue_task_t zend_async_queue_task_fn = NULL;
 
 /* Iterator API */
@@ -330,6 +331,12 @@ void zend_async_api_shutdown(void)
 #ifndef ZTS
 	zend_async_globals_dtor();
 #endif
+
+	/* Reset module registration guards so re-init (e.g. phpdbg) works */
+	scheduler_module_name = NULL;
+	reactor_module_name = NULL;
+	pool_module_name = NULL;
+	thread_pool_module_name = NULL;
 }
 
 ZEND_API int zend_async_get_api_version_number(void)
@@ -492,8 +499,6 @@ ZEND_API void zend_async_thread_pool_register(
 	thread_pool_module_name = module;
 	zend_async_queue_task_fn = queue_task_fn;
 }
-
-static char *pool_module_name = NULL;
 
 ZEND_API void zend_async_pool_api_register(
 		char *module, bool allow_override,
