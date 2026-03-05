@@ -240,6 +240,11 @@ static void socket_await_callback_resolve(
  */
 ZEND_API int network_async_await_stream_socket(php_netstream_data_t *netdata, async_poll_event events, struct timeval *timeout)
 {
+	/* Scheduler context cannot suspend — fall back to synchronous poll(). */
+	if (UNEXPECTED(ZEND_ASYNC_IS_SCHEDULER_CONTEXT)) {
+		return php_pollfd_for(netdata->socket, events, timeout);
+	}
+
 	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 
 	if (UNEXPECTED(coroutine == NULL)) {

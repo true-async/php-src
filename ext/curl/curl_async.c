@@ -230,6 +230,14 @@ static bool curl_async_event_start(zend_async_event_t *event)
 		event->stop(event);
 		return false;
 	}
+
+	/* When curl fails immediately (missing URL, bad protocol, invalid proxy, etc.),
+	 * curl_multi_socket_action completes the handle without registering any sockets
+	 * or timers. CURLMSG_DONE sits in the info queue, but no event loop callback
+	 * will ever fire to read it — causing a deadlock on suspend.
+	 * Process completed handles now so the waker gets notified before suspend. */
+	process_curl_completed_handles();
+
 	return true;
 }
 
@@ -1386,38 +1394,14 @@ static size_t curl_async_read_callback_spawn(curl_async_read_state_t *state, con
 #endif /* LIBCURL_VERSION_NUM >= 0x080B01 */
 
 /**
- * @brief Shared async read core — handles the PAUSE/unpause state machine.
+ * @brief Sync read callback — calls the PHP CURLOPT_READFUNCTION directly.
  *
- * For curl < 8.11.1: performs sync read (file: read(fd), callback: zend_call_known_fcc).
- * For curl >= 8.11.1: async PAUSE/unpause pattern via ZEND_ASYNC_IO_READ.
- *
- * Caller must have initialized state with source, curl, event, and
- * source-specific fields (file.fd + file.io for FILE, fcc accessible
- * via event->ch for CALLBACK).
+ * Used when CURL_READFUNC_PAUSE is not supported by the protocol (e.g. file://)
+ * or when curl < 8.11.1 where PAUSE/unpause is unreliable.
  */
-size_t curl_async_read(curl_async_read_state_t *state, char *buffer, const size_t requested)
+static size_t curl_async_read_callback_sync(
+	curl_async_read_state_t *state, char *buffer, const size_t requested)
 {
-#if LIBCURL_VERSION_NUM < 0x080B01
-	/*
-	 * curl < 8.11.1: the PAUSE/unpause mechanism is unreliable due to multiple
-	 * internal bugs (tempcount guard on cselect_bits, timer_lastcall issues).
-	 * Use synchronous operations instead.
-	 * See: https://github.com/curl/curl/pull/15627
-	 */
-	if (state->flags & CURL_READ_EOF) {
-		return 0;
-	}
-
-	if (state->source == CURL_READ_FILE) {
-		const ssize_t n = read(state->file.fd, buffer, requested);
-		if (n <= 0) {
-			state->flags |= CURL_READ_EOF;
-			return 0;
-		}
-		return (size_t) n;
-	}
-
-	/* CURL_READ_CALLBACK: sync call to PHP function */
 	php_curl *ch = state->event->ch;
 	php_curl_read *read_handler = ch->handlers.read;
 	zval argv[3];
@@ -1465,6 +1449,45 @@ size_t curl_async_read(curl_async_read_state_t *state, char *buffer, const size_
 	zval_ptr_dtor(&argv[0]);
 	zval_ptr_dtor(&argv[1]);
 	return length;
+}
+
+/**
+ * @brief Shared async read core — handles the PAUSE/unpause state machine.
+ *
+ * For curl < 8.11.1: performs sync read (file: read(fd), callback: zend_call_known_fcc).
+ * For curl >= 8.11.1: async PAUSE/unpause pattern via ZEND_ASYNC_IO_READ.
+ *  For CURL_READ_CALLBACK with curl >= 8.11.1: checks protocol scheme —
+ *  protocols without network connectivity (file://) do not support
+ *  CURL_READFUNC_PAUSE, so the callback is called synchronously.
+ *
+ * Caller must have initialized state with source, curl, event, and
+ * source-specific fields (file.fd + file.io for FILE, fcc accessible
+ * via event->ch for CALLBACK).
+ */
+size_t curl_async_read(curl_async_read_state_t *state, char *buffer, const size_t requested)
+{
+#if LIBCURL_VERSION_NUM < 0x080B01
+	/*
+	 * curl < 8.11.1: the PAUSE/unpause mechanism is unreliable due to multiple
+	 * internal bugs (tempcount guard on cselect_bits, timer_lastcall issues).
+	 * Use synchronous operations instead.
+	 * See: https://github.com/curl/curl/pull/15627
+	 */
+	if (state->flags & CURL_READ_EOF) {
+		return 0;
+	}
+
+	if (state->source == CURL_READ_FILE) {
+		const ssize_t n = read(state->file.fd, buffer, requested);
+		if (n <= 0) {
+			state->flags |= CURL_READ_EOF;
+			return 0;
+		}
+		return (size_t) n;
+	}
+
+	/* CURL_READ_CALLBACK: sync call to PHP function */
+	return curl_async_read_callback_sync(state, buffer, requested);
 
 #else
 	/* curl >= 8.11.1: use async PAUSE/unpause pattern */
@@ -1512,8 +1535,17 @@ size_t curl_async_read(curl_async_read_state_t *state, char *buffer, const size_
 		return 0;
 	}
 
-	/* CURL_READ_CALLBACK: spawn coroutine to call PHP function */
+	/* CURL_READ_CALLBACK: check if protocol supports PAUSE */
 	if (state->source == CURL_READ_CALLBACK) {
+		char *scheme = NULL;
+		curl_easy_getinfo(state->curl, CURLINFO_SCHEME, &scheme);
+
+		/* Protocols without network connectivity (file://) do not support
+		 * CURL_READFUNC_PAUSE — call the PHP callback synchronously. */
+		if (scheme == NULL || strcasecmp(scheme, "file") == 0) {
+			return curl_async_read_callback_sync(state, buffer, requested);
+		}
+
 		return curl_async_read_callback_spawn(state, requested);
 	}
 

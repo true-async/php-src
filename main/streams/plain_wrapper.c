@@ -143,7 +143,8 @@ typedef struct {
 	unsigned no_forced_fstat:1;  /* Use fstat cache even if forced */
 	unsigned is_seekable:1;		/* don't try and seek, if not set */
 	unsigned is_blocked:1;		/* true (default) = blocking mode; false = non-blocking */
-	unsigned _reserved:25;
+	unsigned sync_io_fallback:1;	/* fd temporarily set to blocking for scheduler context */
+	unsigned _reserved:24;
 
 	zend_async_io_t *async_io;
 	zend_async_poll_event_t *poll_event;
@@ -464,10 +465,15 @@ static ssize_t php_stdiop_write(php_stream *stream, const char *buf, size_t coun
 
 	assert(data != NULL);
 
-	if (data->async_io != NULL && data->is_blocked) {
+	if (data->async_io != NULL && data->is_blocked && !ZEND_ASYNC_IS_SCHEDULER_CONTEXT) {
 		ZEND_ASYNC_SCHEDULER_INIT();
 		if (UNEXPECTED(EG(exception))) {
 			return -1;
+		}
+
+		if (UNEXPECTED(data->sync_io_fallback)) {
+			fcntl(data->fd, F_SETFL, fcntl(data->fd, F_GETFL, 0) | O_NONBLOCK);
+			data->sync_io_fallback = 0;
 		}
 
 		zend_async_io_req_t *req = ZEND_ASYNC_IO_WRITE(data->async_io, buf, count);
@@ -508,6 +514,11 @@ static ssize_t php_stdiop_write(php_stream *stream, const char *buf, size_t coun
 		const ssize_t transferred = req->transferred;
 		req->dispose(req);
 		return transferred;
+	}
+
+	if (data->async_io != NULL && data->is_blocked && !data->sync_io_fallback) {
+		fcntl(data->fd, F_SETFL, fcntl(data->fd, F_GETFL, 0) & ~O_NONBLOCK);
+		data->sync_io_fallback = 1;
 	}
 
 	if (data->fd >= 0) {
@@ -557,13 +568,23 @@ static ssize_t php_stdiop_read(php_stream *stream, char *buf, size_t count)
 
 	assert(data != NULL);
 
-	if (data->async_io != NULL && data->is_blocked) {
+	/* Scheduler context cannot suspend coroutines, so async IO is not possible.
+	 * Skip this block entirely and fall through to the sync path below,
+	 * which will set the fd to blocking mode if needed. */
+	if (data->async_io != NULL && data->is_blocked && !ZEND_ASYNC_IS_SCHEDULER_CONTEXT) {
 		ZEND_ASYNC_SCHEDULER_INIT();
 		if (UNEXPECTED(EG(exception))) {
 			return -1;
 		}
 
 		data->timeout_event = false;
+
+		/* Restore non-blocking mode if a previous scheduler-context call
+		 * temporarily switched the fd to blocking. */
+		if (UNEXPECTED(data->sync_io_fallback)) {
+			fcntl(data->fd, F_SETFL, fcntl(data->fd, F_GETFL, 0) | O_NONBLOCK);
+			data->sync_io_fallback = 0;
+		}
 
 		zend_async_io_req_t *req = ZEND_ASYNC_IO_READ(data->async_io, count);
 		if (UNEXPECTED(req == NULL)) {
@@ -633,6 +654,11 @@ static ssize_t php_stdiop_read(php_stream *stream, char *buf, size_t count)
 		}
 		req->dispose(req);
 		return transferred;
+	}
+
+	if (data->async_io != NULL && data->is_blocked && !data->sync_io_fallback) {
+		fcntl(data->fd, F_SETFL, fcntl(data->fd, F_GETFL, 0) & ~O_NONBLOCK);
+		data->sync_io_fallback = 1;
 	}
 
 	if (data->fd >= 0) {
