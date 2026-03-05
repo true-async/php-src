@@ -642,7 +642,6 @@ static ssize_t php_stdiop_read(php_stream *stream, char *buf, size_t count)
 				req->exception = NULL;
 			}
 			req->dispose(req);
-			stream->eof = 1;
 			return -1;
 		}
 

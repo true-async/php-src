@@ -126,7 +126,9 @@ PHPAPI int php_exec(int type, const char *cmd, zval *array, zval *return_value)
 #ifdef PHP_WIN32
 	if (ZEND_ASYNC_ON) {
 		ZEND_ASYNC_SCHEDULER_INIT();
-		return ZEND_ASYNC_EXEC(type, cmd, array, return_value, NULL, NULL, NULL, 0);
+		pclose_return = ZEND_ASYNC_EXEC(type, cmd, array, return_value, NULL, NULL, NULL, 0);
+		php_clear_stat_cache(0, NULL, 0);
+		return pclose_return;
 	} else {
 		fp = VCWD_POPEN(cmd, "rb");
 	}
@@ -138,7 +140,9 @@ PHPAPI int php_exec(int type, const char *cmd, zval *array, zval *return_value)
 		}
 #endif
 		ZEND_ASYNC_SCHEDULER_INIT();
-		return ZEND_ASYNC_EXEC(type, cmd, array, return_value, NULL, NULL, NULL, 0);
+		pclose_return = ZEND_ASYNC_EXEC(type, cmd, array, return_value, NULL, NULL, NULL, 0);
+		php_clear_stat_cache(0, NULL, 0);
+		return pclose_return;
 	} else {
 		fp = VCWD_POPEN(cmd, "r");
 	}
@@ -541,6 +545,7 @@ PHP_FUNCTION(shell_exec)
 			NULL,
 			0
 		);
+		php_clear_stat_cache(0, NULL, 0);
 		return;
 	}
 
