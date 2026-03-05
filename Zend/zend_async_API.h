@@ -69,18 +69,18 @@ typedef enum {
 //
 #ifdef PHP_WIN32
 typedef int zend_file_descriptor_t;
-#define ZEND_FD_NULL -1
+#define ZEND_FD_NULL (-1)
 typedef DWORD zend_process_id_t;
 typedef HANDLE zend_process_t;
 typedef SOCKET zend_socket_t;
-#define INVALID_IO_DESCRIPTOR -1
+#define INVALID_IO_DESCRIPTOR (-1)
 #else
 typedef int zend_file_descriptor_t;
 typedef pid_t zend_process_id_t;
 typedef pid_t zend_process_t;
 typedef int zend_socket_t;
-#define ZEND_FD_NULL 0
-#define INVALID_IO_DESCRIPTOR -1;
+#define ZEND_FD_NULL (-1)
+#define INVALID_IO_DESCRIPTOR (-1)
 #endif
 
 typedef enum {
