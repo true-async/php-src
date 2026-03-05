@@ -453,7 +453,17 @@ PHPAPI php_stream *_php_stream_fopen_from_pipe(FILE *file, const char *mode STRE
 	stream = php_stream_alloc_rel(&php_stream_stdio_ops, self, 0, mode);
 	stream->flags |= PHP_STREAM_FLAG_NO_SEEK;
 
-	php_stdiop_init_async_io(self, mode);
+	/* TODO: popen() should be reimplemented using fork()/exec()/pipe() like proc_open()
+	 * instead of libc popen(), so the child PID is stored explicitly. This would allow
+	 * proper async waitpid() without the dup() workaround below.
+	 *
+	 * Current workaround: dup the fd so libuv owns the copy and the original stays
+	 * in FILE* for pclose() to do fclose() + waitpid(). */
+	int dup_fd = dup(self->fd);
+	if (dup_fd >= 0) {
+		self->fd = dup_fd;
+		php_stdiop_init_async_io(self, mode);
+	}
 
 	return stream;
 }
@@ -755,7 +765,7 @@ static int php_stdiop_close(php_stream *stream, int close_handle)
 	if (data->async_io != NULL) {
 		const int fd_closed = ZEND_ASYNC_IO_CLOSE(data->async_io);
 		data->async_io = NULL;
-		if (fd_closed) {
+		if (fd_closed && !data->is_process_pipe) {
 			data->fd = -1;
 			data->file = NULL;
 		}
