@@ -1572,6 +1572,10 @@ typedef struct {
 	zend_object *exit_exception;
 	/* Custom heartbeat handler */
 	zend_async_heartbeat_handler_t heartbeat_handler;
+	/* When set, error reporting (file/line/function) uses this coroutine's
+	 * suspended execute_data instead of EG(current_execute_data).
+	 * Used by scheduler code acting on behalf of a specific coroutine. */
+	zend_coroutine_t *acting_coroutine;
 } zend_async_globals_t;
 
 BEGIN_EXTERN_C()
@@ -1610,6 +1614,9 @@ END_EXTERN_C()
 #define ZEND_ASYNC_CURRENT_SCOPE (ZEND_ASYNC_G(coroutine) ? ZEND_ASYNC_G(coroutine)->scope : NULL)
 #define ZEND_ASYNC_MAIN_SCOPE ZEND_ASYNC_G(main_scope)
 #define ZEND_ASYNC_SCHEDULER ZEND_ASYNC_G(scheduler)
+#define ZEND_ASYNC_ACTING_COROUTINE ZEND_ASYNC_G(acting_coroutine)
+#define ZEND_ASYNC_ACT_AS_START(coroutine) ZEND_ASYNC_G(acting_coroutine) = (coroutine)
+#define ZEND_ASYNC_ACT_AS_END() ZEND_ASYNC_G(acting_coroutine) = NULL
 
 #define ZEND_ASYNC_INCREASE_EVENT_COUNT(ev) \
 	do { \

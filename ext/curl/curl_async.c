@@ -1979,6 +1979,11 @@ static void curl_async_write_user_complete(
 			state->has_pending_result = true;
 			state->pending_result = state->write_data ? ZSTR_LEN(state->write_data) : 0;
 		}
+
+		/* Detect closed file pointers after user callback (e.g. fclose in header callback) */
+		ZEND_ASYNC_ACT_AS_START(curl_event->coroutine);
+		_php_curl_verify_handlers(curl_event->ch, /* reporterror */ true);
+		ZEND_ASYNC_ACT_AS_END();
 	}
 
 	/* Check if user callback signaled abort (returned != data length) */

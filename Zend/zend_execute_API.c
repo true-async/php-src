@@ -668,13 +668,24 @@ ZEND_API const char *get_active_class_name(const char **space) /* {{{ */
 
 ZEND_API const char *get_active_function_name(void) /* {{{ */
 {
-	const zend_function *func;
-
 	if (!zend_is_executing()) {
 		return NULL;
 	}
 
-	func = zend_active_function();
+	/* When acting on behalf of a suspended coroutine, use its execute_data */
+	const zend_function *func = NULL;
+	zend_coroutine_t *acting = ZEND_ASYNC_ACTING_COROUTINE;
+
+	if (acting != NULL) {
+		const zend_execute_data *ex = ZEND_ASYNC_COROUTINE_GET_EXECUTE_DATA(acting);
+		if (ex && ex->func) {
+			func = ex->func;
+		}
+	}
+
+	if (func == NULL) {
+		func = zend_active_function();
+	}
 
 	switch (func->type) {
 		case ZEND_USER_FUNCTION: {
@@ -772,9 +783,21 @@ ZEND_API zend_string *zend_get_executed_filename_ex(void) /* {{{ */
 	}
 	if (ex) {
 		return ex->func->op_array.filename;
-	} else {
-		return NULL;
 	}
+
+	/* Fall back to acting_coroutine's suspended execute_data */
+	zend_coroutine_t *acting = ZEND_ASYNC_ACTING_COROUTINE;
+	if (acting != NULL) {
+		ex = ZEND_ASYNC_COROUTINE_GET_EXECUTE_DATA(acting);
+		while (ex && (!ex->func || !ZEND_USER_CODE(ex->func->type))) {
+			ex = ex->prev_execute_data;
+		}
+		if (ex) {
+			return ex->func->op_array.filename;
+		}
+	}
+
+	return NULL;
 }
 /* }}} */
 
@@ -800,9 +823,24 @@ ZEND_API uint32_t zend_get_executed_lineno(void) /* {{{ */
 			return EG(opline_before_exception)->lineno;
 		}
 		return ex->opline->lineno;
-	} else {
-		return 0;
 	}
+
+	/* Fall back to acting_coroutine's suspended execute_data */
+	zend_coroutine_t *acting = ZEND_ASYNC_ACTING_COROUTINE;
+	if (acting != NULL) {
+		ex = ZEND_ASYNC_COROUTINE_GET_EXECUTE_DATA(acting);
+		while (ex && (!ex->func || !ZEND_USER_CODE(ex->func->type))) {
+			ex = ex->prev_execute_data;
+		}
+		if (ex) {
+			if (!ex->opline) {
+				return ex->func->op_array.opcodes[0].lineno;
+			}
+			return ex->opline->lineno;
+		}
+	}
+
+	return 0;
 }
 /* }}} */
 
