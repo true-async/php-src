@@ -1185,6 +1185,8 @@ static void coroutine_entry_point(void)
 	if (EXPECTED(fcall && !(fiber && fiber->fcall == NULL))) {
 
 		if (fiber) {
+			/* Save callable for ReflectionFiber::getCallable() before freeing fcall */
+			ZVAL_COPY(&fiber->fci.function_name, &fcall->fci.function_name);
 			fiber->fcall = NULL;
 		}
 
@@ -1436,8 +1438,8 @@ static void zend_fiber_object_free(zend_object *object)
 {
 	zend_fiber *fiber = (zend_fiber *) object;
 
+	zval_ptr_dtor(&fiber->fci.function_name);
 	if (fiber->coroutine == NULL) {
-		zval_ptr_dtor(&fiber->fci.function_name);
 		zval_ptr_dtor(&fiber->result);
 	}
 
@@ -1458,6 +1460,9 @@ static HashTable *zend_fiber_object_gc(zend_object *object, zval **table, int *n
 		/* Add fcall if it's still owned by fiber (not yet transferred to coroutine) */
 		if (fiber->fcall != NULL) {
 			zend_get_gc_buffer_add_zval(buf, &fiber->fcall->fci.function_name);
+		} else if (!Z_ISUNDEF(fiber->fci.function_name)) {
+			/* After start, callable is saved in fci.function_name */
+			zend_get_gc_buffer_add_zval(buf, &fiber->fci.function_name);
 		}
 
 		/* Walk execution stack only if fiber is suspended via Fiber::suspend() (YIELD).

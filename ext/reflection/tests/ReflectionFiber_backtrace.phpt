@@ -61,7 +61,7 @@ array(3) {
     ["class"]=>
     string(4) "Test"
     ["object"]=>
-    object(Test)#2 (0) {
+    object(Test)#%d (0) {
     }
     ["type"]=>
     string(2) "->"
