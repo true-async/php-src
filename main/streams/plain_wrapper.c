@@ -191,7 +191,7 @@ static uint32_t php_stdiop_mode_to_io_state(const char *mode)
 
 static void php_stdiop_init_async_io(php_stdio_stream_data *self, const char *mode)
 {
-	if (UNEXPECTED(zend_async_io_create_fn == NULL)) {
+	if (UNEXPECTED(ZEND_ASYNC_IS_OFF)) {
 		return;
 	}
 
