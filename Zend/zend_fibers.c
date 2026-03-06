@@ -1330,6 +1330,38 @@ static zend_object *zend_fiber_object_create(zend_class_entry *ce)
 	return &fiber->std;
 }
 
+static void zend_fiber_release_coroutine(zend_fiber *fiber)
+{
+	if (fiber->coroutine == NULL) {
+		return;
+	}
+
+	//
+	// A situation is possible where a Fiber is destroyed earlier than the coroutine,
+	// while the coroutine is already running. In this case, we cancel the coroutine.
+	//
+	zend_coroutine_t *coroutine = fiber->coroutine;
+	coroutine->extended_data = NULL;
+	fiber->coroutine = NULL;
+
+	if (ZEND_COROUTINE_IS_FINISHED(coroutine) || false == ZEND_COROUTINE_IS_STARTED(coroutine)) {
+		ZEND_ASYNC_EVENT_RELEASE(&coroutine->event);
+		return;
+	}
+
+	ZEND_ASYNC_CANCEL(coroutine, zend_create_graceful_exit(), true);
+
+	//
+	// A Fiber shares ownership of a coroutine with the Scheduler. This is important.
+	// When a coroutine is running, it belongs to the Scheduler, and its reference count must be greater than 1.
+	// The purpose of this code is to ensure that when a Fiber is destroyed,
+	// it correctly decrements the coroutine’s reference count without destroying the coroutine itself.
+	//
+	if (ZEND_COROUTINE_IS_STARTED(coroutine)) {
+		ZEND_ASYNC_EVENT_RELEASE(&coroutine->event);
+	}
+}
+
 static void zend_fiber_object_destroy(zend_object *object)
 {
 	zend_fiber *fiber = (zend_fiber *) object;
@@ -1369,33 +1401,9 @@ static void zend_fiber_object_destroy(zend_object *object)
 		efree(fcall);
 	}
 
+	zend_fiber_release_coroutine(fiber);
+
 	if (fiber->coroutine != NULL) {
-
-		//
-		// A situation is possible where a Fiber is destroyed earlier than the coroutine,
-		// while the coroutine is already running. In this case, we cancel the coroutine.
-		//
-		zend_coroutine_t *coroutine = fiber->coroutine;
-		coroutine->extended_data = NULL;
-		fiber->coroutine = NULL;
-
-		if (ZEND_COROUTINE_IS_FINISHED(coroutine) || false == ZEND_COROUTINE_IS_STARTED(coroutine)) {
-			ZEND_ASYNC_EVENT_RELEASE(&coroutine->event);
-			return;
-		}
-
-		ZEND_ASYNC_CANCEL(coroutine, zend_create_graceful_exit(), true);
-
-		//
-		// A Fiber shares ownership of a coroutine with the Scheduler. This is important.
-		// When a coroutine is running, it belongs to the Scheduler, and its reference count must be greater than 1.
-		// The purpose of this code is to ensure that when a Fiber is destroyed,
-		// it correctly decrements the coroutine’s reference count without destroying the coroutine itself.
-		//
-		if (ZEND_COROUTINE_IS_STARTED(coroutine)) {
-			ZEND_ASYNC_EVENT_RELEASE(&coroutine->event);
-		}
-
 		return;
 	}
 
@@ -1437,6 +1445,8 @@ static void zend_fiber_object_destroy(zend_object *object)
 static void zend_fiber_object_free(zend_object *object)
 {
 	zend_fiber *fiber = (zend_fiber *) object;
+
+	zend_fiber_release_coroutine(fiber);
 
 	zval_ptr_dtor(&fiber->fci.function_name);
 	if (fiber->coroutine == NULL) {
