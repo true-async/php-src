@@ -60,10 +60,14 @@ extern int php_get_gid_by_name(const char *name, gid_t *gid);
 
 #if defined(PHP_WIN32)
 # define PLAIN_WRAP_BUF_SIZE(st) ((unsigned int)(st > INT_MAX ? INT_MAX : st))
-#define fsync _commit
-#define fdatasync fsync
+# define fsync _commit
+# define fdatasync fsync
+# define php_fd_set_nonblock(fd)	((void)0)
+# define php_fd_set_block(fd)		((void)0)
 #else
 # define PLAIN_WRAP_BUF_SIZE(st) (st)
+# define php_fd_set_nonblock(fd)	fcntl((fd), F_SETFL, fcntl((fd), F_GETFL, 0) | O_NONBLOCK)
+# define php_fd_set_block(fd)		fcntl((fd), F_SETFL, fcntl((fd), F_GETFL, 0) & ~O_NONBLOCK)
 # if !defined(HAVE_FDATASYNC)
 #  define fdatasync fsync
 # elif defined(__APPLE__)
@@ -482,7 +486,7 @@ static ssize_t php_stdiop_write(php_stream *stream, const char *buf, size_t coun
 		}
 
 		if (UNEXPECTED(data->sync_io_fallback)) {
-			fcntl(data->fd, F_SETFL, fcntl(data->fd, F_GETFL, 0) | O_NONBLOCK);
+			php_fd_set_nonblock(data->fd);
 			data->sync_io_fallback = 0;
 		}
 
@@ -527,7 +531,7 @@ static ssize_t php_stdiop_write(php_stream *stream, const char *buf, size_t coun
 	}
 
 	if (data->async_io != NULL && data->is_blocked && !data->sync_io_fallback) {
-		fcntl(data->fd, F_SETFL, fcntl(data->fd, F_GETFL, 0) & ~O_NONBLOCK);
+		php_fd_set_block(data->fd);
 		data->sync_io_fallback = 1;
 	}
 
@@ -592,7 +596,7 @@ static ssize_t php_stdiop_read(php_stream *stream, char *buf, size_t count)
 		/* Restore non-blocking mode if a previous scheduler-context call
 		 * temporarily switched the fd to blocking. */
 		if (UNEXPECTED(data->sync_io_fallback)) {
-			fcntl(data->fd, F_SETFL, fcntl(data->fd, F_GETFL, 0) | O_NONBLOCK);
+			php_fd_set_nonblock(data->fd);
 			data->sync_io_fallback = 0;
 		}
 
@@ -666,7 +670,7 @@ static ssize_t php_stdiop_read(php_stream *stream, char *buf, size_t count)
 	}
 
 	if (data->async_io != NULL && data->is_blocked && !data->sync_io_fallback) {
-		fcntl(data->fd, F_SETFL, fcntl(data->fd, F_GETFL, 0) & ~O_NONBLOCK);
+		php_fd_set_block(data->fd);
 		data->sync_io_fallback = 1;
 	}
 
