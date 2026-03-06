@@ -699,8 +699,10 @@ ZEND_API const char *get_active_function_name(void) /* {{{ */
 			}
 			break;
 		case ZEND_INTERNAL_FUNCTION:
-			return ZSTR_VAL(func->common.function_name);
-			break;
+			if (func->common.function_name) {
+				return ZSTR_VAL(func->common.function_name);
+			}
+			return NULL;
 		default:
 			return NULL;
 	}
