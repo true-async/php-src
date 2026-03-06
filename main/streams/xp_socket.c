@@ -259,6 +259,16 @@ static int php_sockop_close(php_stream *stream, int close_handle)
 		return 0;
 	}
 
+	if (sock->read_event) {
+		sock->read_event->base.dispose(&sock->read_event->base);
+		sock->read_event = NULL;
+	}
+
+	if (sock->write_event) {
+		sock->write_event->base.dispose(&sock->write_event->base);
+		sock->write_event = NULL;
+	}
+
 	if (close_handle) {
 
 #ifdef PHP_WIN32
@@ -286,50 +296,27 @@ static int php_sockop_close(php_stream *stream, int close_handle)
 			}
 #endif
 
-			/**
-			 * If we are in an async context and there is an active EventLoop, we should not close the
-			 * socket immediately, because there might be pending operations for this socket in the loop.
-			 * Instead, we transfer the ownership of the descriptor to the EventLoop which will close it
-			 * once all pending operations are finished.
-			 */
 			if (sock->poll_event) {
-				/* Dispose proxy events first */
-				if (sock->read_event) {
-					sock->read_event->base.dispose(&sock->read_event->base);
-					sock->read_event = NULL;
-				}
-				if (sock->write_event) {
-					sock->write_event->base.dispose(&sock->write_event->base);
-					sock->write_event = NULL;
-				}
-
+				/*
+				 * Transfer the socket descriptor to the EventLoop which will close it
+				 * once all pending operations are finished.
+				 */
 				sock->poll_event->socket = sock->socket;
-
-				/* Set flag to close descriptor after EventLoop leanup */
 				ZEND_ASYNC_EVENT_SET_CLOSE_FD(&sock->poll_event->base);
 				sock->socket = SOCK_ERR;
 				sock->poll_event->base.dispose(&sock->poll_event->base);
 				sock->poll_event = NULL;
 			} else {
-				// Just the socket close ourselves immediately
 				closesocket(sock->socket);
 				sock->socket = SOCK_ERR;
 			}
 		}
-	} else {
-		/* Cleanup async event handles before freeing socket structure */
-		if (sock->read_event) {
-			sock->read_event->base.dispose(&sock->read_event->base);
-			sock->read_event = NULL;
-		}
-		if (sock->write_event) {
-			sock->write_event->base.dispose(&sock->write_event->base);
-			sock->write_event = NULL;
-		}
-		if (sock->poll_event) {
-			sock->poll_event->base.dispose(&sock->poll_event->base);
-			sock->poll_event = NULL;
-		}
+	}
+
+	/* Dispose poll_event if it was not transferred to the EventLoop above */
+	if (sock->poll_event) {
+		sock->poll_event->base.dispose(&sock->poll_event->base);
+		sock->poll_event = NULL;
 	}
 
 	pefree(sock, php_stream_is_persistent(stream));
