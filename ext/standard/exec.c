@@ -125,8 +125,10 @@ PHPAPI int php_exec(int type, const char *cmd, zval *array, zval *return_value)
 
 #ifdef PHP_WIN32
 	if (ZEND_ASYNC_ON) {
+		char cur_cwd[MAXPATHLEN];
+		const char *cwd = VCWD_GETCWD(cur_cwd, MAXPATHLEN);
 		ZEND_ASYNC_SCHEDULER_INIT();
-		pclose_return = ZEND_ASYNC_EXEC(type, cmd, array, return_value, NULL, NULL, NULL, 0);
+		pclose_return = ZEND_ASYNC_EXEC(type, cmd, array, return_value, NULL, cwd, NULL, 0);
 		php_clear_stat_cache(0, NULL, 0);
 		return pclose_return;
 	} else {
@@ -134,13 +136,15 @@ PHPAPI int php_exec(int type, const char *cmd, zval *array, zval *return_value)
 	}
 #else
 	if (ZEND_ASYNC_ON) {
+		char cur_cwd[MAXPATHLEN];
+		const char *cwd = VCWD_GETCWD(cur_cwd, MAXPATHLEN);
 #if PHP_SIGCHILD
 		if (sig_handler) {
 			signal(SIGCHLD, sig_handler);
 		}
 #endif
 		ZEND_ASYNC_SCHEDULER_INIT();
-		pclose_return = ZEND_ASYNC_EXEC(type, cmd, array, return_value, NULL, NULL, NULL, 0);
+		pclose_return = ZEND_ASYNC_EXEC(type, cmd, array, return_value, NULL, cwd, NULL, 0);
 		php_clear_stat_cache(0, NULL, 0);
 		return pclose_return;
 	} else {
@@ -534,6 +538,8 @@ PHP_FUNCTION(shell_exec)
 	}
 
 	if (ZEND_ASYNC_ON) {
+		char cur_cwd[MAXPATHLEN];
+		const char *cwd = VCWD_GETCWD(cur_cwd, MAXPATHLEN);
 		ZEND_ASYNC_SCHEDULER_INIT();
 		ZEND_ASYNC_EXEC(
 			ZEND_ASYNC_EXEC_MODE_SHELL_EXEC,
@@ -541,7 +547,7 @@ PHP_FUNCTION(shell_exec)
 			return_value,
 			NULL,
 			NULL,
-			NULL,
+			cwd,
 			NULL,
 			0
 		);
