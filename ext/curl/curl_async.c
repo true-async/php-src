@@ -123,6 +123,25 @@ static void process_curl_completed_handles(void)
 			ZEND_ASYNC_CALLBACKS_NOTIFY(&curl_event->base, &result, curl_event->callback_exception);
 		}
 	}
+
+	/* Abort transfers that have a pending callback exception but haven't
+	 * finished yet (e.g. from CURLOPT_DEBUGFUNCTION whose return value
+	 * libcurl ignores).  We are outside curl_multi_socket_action here,
+	 * so curl_multi_remove_handle is safe. */
+	curl_async_event_t *curl_event;
+	ZEND_HASH_FOREACH_PTR(curl_multi_event_list, curl_event) {
+		if (curl_event->callback_exception != NULL && curl_event->curl != NULL) {
+			curl_multi_remove_handle(curl_multi_handle, curl_event->curl);
+			zend_hash_index_del(curl_multi_event_list, (zend_ulong) curl_event->curl);
+			curl_event->curl = NULL;
+
+			zval result;
+			ZVAL_LONG(&result, CURLE_ABORTED_BY_CALLBACK);
+			ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(&curl_event->base);
+			curl_event->base.stop(&curl_event->base);
+			ZEND_ASYNC_CALLBACKS_NOTIFY(&curl_event->base, &result, curl_event->callback_exception);
+		}
+	} ZEND_HASH_FOREACH_END();
 }
 
 void curl_async_setup(void)
@@ -1319,7 +1338,7 @@ static void curl_async_read_callback_complete(
 		 * Store it on curl_event to forward to the waiting coroutine. */
 		ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(event);
 		GC_ADDREF(exception);
-		curl_event->callback_exception = exception;
+		curl_async_event_set_callback_exception(curl_event, exception);
 		state->flags |= CURL_READ_ERROR;
 	} else {
 		zend_coroutine_t * const coro = (zend_coroutine_t *) event;
@@ -1434,7 +1453,7 @@ static size_t curl_async_read_callback_sync(
 		if (curl_event != NULL) {
 			zend_object *ex = EG(exception);
 			GC_ADDREF(ex);
-			curl_event->callback_exception = ex;
+			curl_async_event_set_callback_exception(curl_event, ex);
 			zend_clear_exception();
 		}
 		zval_ptr_dtor(&retval);
@@ -2005,7 +2024,7 @@ static void curl_async_write_user_complete(
 		 * Store it on curl_event to forward to the waiting coroutine. */
 		ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(event);
 		GC_ADDREF(exception);
-		curl_event->callback_exception = exception;
+		curl_async_event_set_callback_exception(curl_event, exception);
 		state->has_pending_result = true;
 		state->pending_result = (size_t) -1;
 	} else {

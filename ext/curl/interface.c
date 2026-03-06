@@ -752,7 +752,7 @@ static int curl_prereqfunction(void *clientp, char *conn_primary_ip, char *conn_
 	if (EG(exception) && ch->async_event != NULL) {
 		curl_async_event_t *curl_event = (curl_async_event_t *) ch->async_event;
 		GC_ADDREF(EG(exception));
-		curl_event->callback_exception = EG(exception);
+		curl_async_event_set_callback_exception(curl_event, EG(exception));
 		zend_clear_exception();
 		rval = CURL_PREREQFUNC_ABORT;
 	}
@@ -951,6 +951,16 @@ static int curl_debug(CURL *handle, curl_infotype type, char *data, size_t size,
 		return 0;
 	}
 
+	/* If we already have a pending callback exception, skip calling the user
+	 * callback — libcurl ignores the debug callback return value so we cannot
+	 * abort the transfer from here; just avoid creating more exceptions. */
+	if (ch->async_event != NULL) {
+		curl_async_event_t *curl_event = (curl_async_event_t *) ch->async_event;
+		if (curl_event->callback_exception != NULL) {
+			return 0;
+		}
+	}
+
 	zval args[3];
 
 	GC_ADDREF(&ch->std);
@@ -965,7 +975,7 @@ static int curl_debug(CURL *handle, curl_infotype type, char *data, size_t size,
 	if (EG(exception) && ch->async_event != NULL) {
 		curl_async_event_t *curl_event = (curl_async_event_t *) ch->async_event;
 		GC_ADDREF(EG(exception));
-		curl_event->callback_exception = EG(exception);
+		curl_async_event_set_callback_exception(curl_event, EG(exception));
 		zend_clear_exception();
 	}
 

@@ -55,6 +55,17 @@ typedef struct curl_async_event_s {
 	zend_object *callback_exception;       /* exception from user callback, forwarded on completion */
 } curl_async_event_t;
 
+/* Store a callback exception on the event, chaining via "previous" if one
+ * already exists.  Caller must have already addref'd `exception`. */
+static zend_always_inline void curl_async_event_set_callback_exception(
+	curl_async_event_t *event, zend_object *exception
+) {
+	if (event->callback_exception != NULL && event->callback_exception != exception) {
+		zend_exception_set_previous(exception, event->callback_exception);
+	}
+	event->callback_exception = exception;
+}
+
 /* Read source type */
 #define CURL_READ_FILE     0   /* CURLFile or CURLOPT_INFILE — async IO read */
 #define CURL_READ_CALLBACK 1   /* PHP_CURL_USER — spawn coroutine */
