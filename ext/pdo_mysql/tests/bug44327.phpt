@@ -55,7 +55,7 @@ string(1) "1"
 string(1) "1"
 string(17) "SELECT 1 AS "one""
 ----------------------------------
-object(PDORow)#5 (2) {
+object(PDORow)#%d (2) {
   ["queryString"]=>
   string(25) "SELECT id FROM test_44327"
   ["id"]=>
