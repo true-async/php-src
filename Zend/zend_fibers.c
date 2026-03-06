@@ -1175,6 +1175,14 @@ static void coroutine_entry_point(void)
 	// Update fiber flags if it still exists
 	fiber = coroutine->extended_data;
 	if (fiber) {
+		/* Unlink the backtrace chain from the caller's execute_data.
+		 * coroutine_entry_point linked stack_bottom->prev_execute_data to the
+		 * caller's frame for backtrace purposes.  That caller frame may be freed
+		 * after the main script finishes (zend_execute_script frees the op_array),
+		 * so we must sever the link before the fiber context is reused. */
+		if (fiber->stack_bottom) {
+			fiber->stack_bottom->prev_execute_data = NULL;
+		}
 		fiber->stack_bottom = NULL;
 		if (is_bailout) {
 			fiber->flags |= ZEND_FIBER_FLAG_BAILOUT;
