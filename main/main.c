@@ -1988,7 +1988,12 @@ void php_request_shutdown(void *dummy)
 
 	// Before PHP shuts down completely,
 	// control is passed to the coroutines one last time (if any remain).
-	ZEND_ASYNC_RUN_SCHEDULER_AFTER_MAIN(false);
+	zend_try {
+		ZEND_ASYNC_RUN_SCHEDULER_AFTER_MAIN(false);
+	} zend_end_try();
+
+	// At this point, we have completely released the Async engine
+	ZEND_ASYNC_DEACTIVATE;
 
 	/* 3. Flush all output buffers */
 	zend_try {
