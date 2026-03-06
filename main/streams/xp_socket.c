@@ -81,7 +81,7 @@ static ssize_t php_sockop_write(php_stream *stream, const char *buf, size_t coun
 	else
 		ptimeout = &sock->timeout;
 
-	if (ZEND_ASYNC_IS_ACTIVE && sock->is_blocked && !sock->nonblocking_applied) {
+	if (ZEND_ASYNC_IS_ACTIVE && !sock->is_sync && sock->is_blocked && !sock->nonblocking_applied) {
 		if (UNEXPECTED(!network_async_set_socket_blocking(sock->socket, false, sock))) {
 			/* If we are in async context and an exception was thrown, we should not continue. */
 			return -1;
@@ -100,7 +100,7 @@ retry:
 
 				sock->timeout_event = false;
 
-				if (ZEND_ASYNC_IS_ACTIVE) {
+				if (ZEND_ASYNC_IS_ACTIVE && !sock->is_sync) {
 					retval = network_async_await_stream_socket(sock, POLLOUT, ptimeout);
 
 					if (retval == 0) {
@@ -172,7 +172,7 @@ static void php_sock_stream_wait_for_data(php_stream *stream, php_netstream_data
 		ptimeout = &sock->timeout;
 	}
 
-	if (ZEND_ASYNC_IS_ACTIVE) {
+	if (ZEND_ASYNC_IS_ACTIVE && !sock->is_sync) {
 		retval = network_async_await_stream_socket(sock, PHP_POLLREADABLE, ptimeout);
 
 		if (retval == 0) {
@@ -286,7 +286,7 @@ static int php_sockop_close(php_stream *stream, int close_handle)
 			 * We use a small timeout which should encourage the OS to send the data,
 			 * but at the same time avoid hanging indefinitely.
 			 * */
-			if (ZEND_ASYNC_IS_ACTIVE) {
+			if (ZEND_ASYNC_IS_ACTIVE && !sock->is_sync) {
 				struct timeval tv = {0, 500000}; // 500ms
 				network_async_await_stream_socket(sock, POLLOUT, &tv);
 			} else {
@@ -346,7 +346,7 @@ static int php_sockop_stat(php_stream *stream, php_stream_statbuf *ssb)
 
 static inline int sock_async_poll(php_netstream_data_t *sock, async_poll_event poll_events)
 {
-	if (!sock->is_blocked || !ZEND_ASYNC_IS_ACTIVE) {
+	if (!sock->is_blocked || !ZEND_ASYNC_IS_ACTIVE || sock->is_sync) {
 		return 1; /* nothing to do */
 	}
 
@@ -476,7 +476,7 @@ static int php_sockop_set_option(php_stream *stream, int option, int value, void
 						!(stream->flags & PHP_STREAM_FLAG_NO_IO) &&
 						((MSG_DONTWAIT != 0) || !sock->is_blocked)
 					) ||
-					(ZEND_ASYNC_IS_ACTIVE ?
+					(ZEND_ASYNC_IS_ACTIVE && !sock->is_sync ?
 						network_async_await_stream_socket(sock, PHP_POLLREADABLE|POLLPRI, &tv) > 0 :
 						php_pollfd_for(sock->socket, PHP_POLLREADABLE|POLLPRI, &tv) > 0)
 				) {
@@ -990,7 +990,7 @@ static inline int php_tcp_sockop_connect(php_stream *stream, php_netstream_data_
 
 		parse_unix_address(xparam, &unix_addr);
 
-		if (ZEND_ASYNC_IS_ACTIVE) {
+		if (ZEND_ASYNC_IS_ACTIVE && !sock->is_sync) {
 			ret = network_async_connect_socket(sock, sock->socket,
 				(const struct sockaddr *)&unix_addr, (socklen_t) XtOffsetOf(struct sockaddr_un, sun_path) + xparam->inputs.namelen,
 				xparam->op == STREAM_XPORT_OP_CONNECT_ASYNC, xparam->inputs.timeout,
@@ -1147,7 +1147,7 @@ static inline int php_tcp_sockop_accept(php_stream *stream, php_netstream_data_t
 
 	php_socket_t clisock;
 
-	if (ZEND_ASYNC_IS_ACTIVE) {
+	if (ZEND_ASYNC_IS_ACTIVE && !sock->is_sync) {
 		clisock = network_async_accept_incoming(sock,
 			xparam->want_textaddr ? &xparam->outputs.textaddr : NULL,
 			xparam->want_addr ? &xparam->outputs.addr : NULL,
@@ -1259,10 +1259,7 @@ PHPAPI php_stream *php_stream_generic_socket_factory(const char *proto, size_t p
 	sock->is_blocked = true;
 	sock->timeout.tv_sec = FG(default_socket_timeout);
 	sock->timeout.tv_usec = 0;
-	sock->nonblocking_applied = false;
-	sock->poll_event = NULL;
-	sock->read_event = NULL;
-	sock->write_event = NULL;
+	sock->is_sync = persistent_id ? 1 : 0;
 
 	/* we don't know the socket until we have determined if we are binding or
 	 * connecting */
