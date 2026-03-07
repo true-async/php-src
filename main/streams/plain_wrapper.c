@@ -226,6 +226,15 @@ static void php_stdiop_init_async_io(php_stdio_stream_data *self, const char *mo
 	}
 
 	zend_file_descriptor_t fd = self->fd;
+
+	/* On Windows, _O_APPEND is a CRT-level flag: _write() seeks to EOF
+	 * before each write, but the underlying HANDLE position stays at 0
+	 * after CreateFile+_open_osfhandle.  Seek to EOF explicitly so that
+	 * lseek(SEEK_CUR) returns the correct position — matching Unix
+	 * behavior where O_APPEND is a kernel flag. */
+	if (type == ZEND_ASYNC_IO_TYPE_FILE && strchr(mode, 'a')) {
+		_lseeki64(fd, 0, SEEK_END);
+	}
 #else
 	if (self->is_pipe) {
 		type = ZEND_ASYNC_IO_TYPE_PIPE;
