@@ -1016,7 +1016,6 @@ CURLMcode curl_async_multi_perform(php_curlm * curl_m, int *running_handles)
 
 	int running_handles_internal = 0;
 	curl_multi_socket_action(curl_m->multi, CURL_SOCKET_TIMEOUT, 0, &running_handles_internal);
-
 	if (running_handles_internal > 0) {
 		ZEND_ASYNC_ENQUEUE_COROUTINE(ZEND_ASYNC_CURRENT_COROUTINE);
 		if (UNEXPECTED(!ZEND_ASYNC_SUSPEND())) {
@@ -1171,17 +1170,33 @@ finally:
  */
 static void curl_async_unpause_transfer(curl_async_event_t *curl_event)
 {
-	curl_easy_pause(curl_event->curl, CURLPAUSE_CONT);
-
+	const CURLcode rc = curl_easy_pause(curl_event->curl, CURLPAUSE_CONT);
 	int running;
 
 	if (curl_event->mh == NULL) {
 		/* Single mode: drive global multi handle */
 		curl_multi_socket_action(curl_multi_handle, CURL_SOCKET_TIMEOUT, 0, &running);
 		process_curl_completed_handles();
-	} else if (curl_event->mh != NULL) {
+	} else {
 		/* Multi mode: drive user's multi handle */
 		curl_multi_socket_action(curl_event->mh->multi, CURL_SOCKET_TIMEOUT, 0, &running);
+
+		/* curl_easy_pause(CURLPAUSE_CONT) re-invokes the write callback
+		 * synchronously. If it returns -1, curl_easy_pause returns
+		 * CURLE_WRITE_ERROR but does NOT propagate the error to the
+		 * transfer's internal state (mstate). multi_runsingle doesn't
+		 * know about the error and re-registers the socket — the transfer
+		 * stays "alive". On Unix this is masked because the server's FIN
+		 * arrives quickly; on Windows the TCP stack is slower and the
+		 * transfer stays alive indefinitely.
+		 *
+		 * Force-remove the handle so the transfer doesn't leak.
+		 * CURLMSG_DONE won't be generated (libcurl limitation),
+		 * but curl_errno() will return the correct error. */
+		if (UNEXPECTED(rc != CURLE_OK && running > 0)) {
+			SAVE_CURL_ERROR(curl_event->ch, (int) curl_event->done_result);
+			curl_multi_remove_handle(curl_event->mh->multi, curl_event->curl);
+		}
 	}
 }
 
