@@ -226,6 +226,15 @@ static void php_stdiop_init_async_io(php_stdio_stream_data *self, const char *mo
 	}
 
 	zend_file_descriptor_t fd = self->fd;
+
+	/* On Windows, _O_APPEND is a CRT-level flag: _write() seeks to EOF
+	 * before each write, but the underlying HANDLE position stays at 0
+	 * after CreateFile+_open_osfhandle.  Seek to EOF explicitly so that
+	 * lseek(SEEK_CUR) returns the correct position — matching Unix
+	 * behavior where O_APPEND is a kernel flag. */
+	if (type == ZEND_ASYNC_IO_TYPE_FILE && strchr(mode, 'a')) {
+		_lseeki64(fd, 0, SEEK_END);
+	}
 #else
 	if (self->is_pipe) {
 		type = ZEND_ASYNC_IO_TYPE_PIPE;
@@ -692,6 +701,9 @@ static ssize_t php_stdiop_read(php_stream *stream, char *buf, size_t count)
 				}
 				/* If there's nothing to read, wait in 10us periods. */
 				if (0 == avail_read) {
+					if (!self->is_blocked) {
+						return 0;
+					}
 					usleep(10);
 				}
 			} while (0 == avail_read && retry++ < 3200000);
@@ -1019,7 +1031,15 @@ static int php_stdiop_set_option(php_stream *stream, int option, int value, void
 			data->is_blocked = value ? 1 : 0;
 			return oldval;
 #else
-			return -1; /* not yet implemented */
+			/* Windows has no fcntl/O_NONBLOCK, but when async IO is active
+			 * the is_blocked flag controls whether reads suspend the coroutine
+			 * (blocking) or return immediately (non-blocking). */
+			if (data->async_io != NULL) {
+				const int was_blocked = data->is_blocked;
+				data->is_blocked = value ? 1 : 0;
+				return was_blocked;
+			}
+			return -1;
 #endif
 
 		case PHP_STREAM_OPTION_WRITE_BUFFER:

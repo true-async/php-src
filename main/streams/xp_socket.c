@@ -259,16 +259,6 @@ static int php_sockop_close(php_stream *stream, int close_handle)
 		return 0;
 	}
 
-	if (sock->read_event) {
-		sock->read_event->base.dispose(&sock->read_event->base);
-		sock->read_event = NULL;
-	}
-
-	if (sock->write_event) {
-		sock->write_event->base.dispose(&sock->write_event->base);
-		sock->write_event = NULL;
-	}
-
 	if (close_handle) {
 
 #ifdef PHP_WIN32
@@ -304,8 +294,6 @@ static int php_sockop_close(php_stream *stream, int close_handle)
 				sock->poll_event->socket = sock->socket;
 				ZEND_ASYNC_EVENT_SET_CLOSE_FD(&sock->poll_event->base);
 				sock->socket = SOCK_ERR;
-				sock->poll_event->base.dispose(&sock->poll_event->base);
-				sock->poll_event = NULL;
 			} else {
 				closesocket(sock->socket);
 				sock->socket = SOCK_ERR;
@@ -313,7 +301,18 @@ static int php_sockop_close(php_stream *stream, int close_handle)
 		}
 	}
 
-	/* Dispose poll_event if it was not transferred to the EventLoop above */
+	/* Dispose proxies first — they hold references to poll_event.
+	 * Must happen after the await above which may create new proxies. */
+	if (sock->read_event) {
+		sock->read_event->base.dispose(&sock->read_event->base);
+		sock->read_event = NULL;
+	}
+
+	if (sock->write_event) {
+		sock->write_event->base.dispose(&sock->write_event->base);
+		sock->write_event = NULL;
+	}
+
 	if (sock->poll_event) {
 		sock->poll_event->base.dispose(&sock->poll_event->base);
 		sock->poll_event = NULL;
