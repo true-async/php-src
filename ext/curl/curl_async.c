@@ -1970,7 +1970,7 @@ size_t curl_async_write_user(char *data, const size_t size, const size_t nmemb, 
 	 * See: https://github.com/curl/curl/pull/15627
 	 */
 	{
-		php_curl_write * const write_handler = is_header ? ch->handlers.write_header : ch->handlers.write;
+		const php_curl_write * write_handler = is_header ? ch->handlers.write_header : ch->handlers.write;
 		zval argv[2];
 		zval retval;
 
@@ -1978,9 +1978,11 @@ size_t curl_async_write_user(char *data, const size_t size, const size_t nmemb, 
 		ZVAL_OBJ(&argv[0], &ch->std);
 		ZVAL_STRINGL(&argv[1], data, length);
 
+		ZEND_ASYNC_ACT_AS_START(curl_event->coroutine);
 		ch->in_callback = true;
 		zend_call_known_fcc(&write_handler->fcc, &retval, 2, argv, NULL);
 		ch->in_callback = false;
+		ZEND_ASYNC_ACT_AS_END();
 
 		if (EG(exception)) {
 			if (curl_event != NULL) {
@@ -1997,9 +1999,11 @@ size_t curl_async_write_user(char *data, const size_t size, const size_t nmemb, 
 
 		size_t result = length;
 		if (!Z_ISUNDEF(retval)) {
+			ZEND_ASYNC_ACT_AS_START(curl_event->coroutine);
 			_php_curl_verify_handlers(ch, true);
 			result = (size_t) zval_get_long(&retval);
 			zval_ptr_dtor(&retval);
+			ZEND_ASYNC_ACT_AS_END();
 		}
 
 		zval_ptr_dtor(&argv[0]);
