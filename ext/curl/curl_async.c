@@ -1441,7 +1441,7 @@ static size_t curl_async_read_callback_sync(
 	curl_async_read_state_t *state, char *buffer, const size_t requested)
 {
 	php_curl *ch = state->event->ch;
-	php_curl_read *read_handler = ch->handlers.read;
+	const php_curl_read *read_handler = ch->handlers.read;
 	zval argv[3];
 	zval retval;
 
@@ -1459,7 +1459,7 @@ static size_t curl_async_read_callback_sync(
 	zend_call_known_fcc(&read_handler->fcc, &retval, 3, argv, NULL);
 	ch->in_callback = false;
 
-	if (EG(exception)) {
+	if (UNEXPECTED(EG(exception))) {
 		curl_async_event_t *curl_event = state->event;
 		if (curl_event != NULL) {
 			zend_object *ex = EG(exception);
@@ -1484,6 +1484,7 @@ static size_t curl_async_read_callback_sync(
 		}
 		zval_ptr_dtor(&retval);
 	}
+
 	zval_ptr_dtor(&argv[0]);
 	zval_ptr_dtor(&argv[1]);
 	return length;

@@ -1419,8 +1419,17 @@ PHPAPI void _php_emit_fd_setsize_warning(int max_fd)
 
 PHPAPI int php_poll2(php_pollfd *ufds, unsigned int nfds, int timeout)
 {
-	if(UNEXPECTED(ZEND_ASYNC_IS_ACTIVE)) {
-		return php_poll2_async(ufds, nfds, timeout);
+	if (UNEXPECTED(ZEND_ASYNC_IS_ACTIVE)) {
+		if (EXPECTED(!ZEND_ASYNC_IS_SCHEDULER_CONTEXT)) {
+			return php_poll2_async(ufds, nfds, timeout);
+		}
+
+		/* Scheduler context cannot suspend — fall back to synchronous
+		 * select() but cap the timeout to avoid blocking the event loop
+		 * indefinitely (default: 5 minutes). */
+		if (timeout < 0) {
+			timeout = 300000;
+		}
 	}
 
 	fd_set rset, wset, eset;
