@@ -35,6 +35,6 @@ print "Collected\n";
 ?>
 --EXPECT--
 Collected
-Dtor x()
 2
 Cleaned
+Dtor x()

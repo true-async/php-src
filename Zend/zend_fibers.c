@@ -1001,7 +1001,13 @@ static zend_result zend_fiber_yield(zend_fiber *fiber, zval *value, zval *return
 		zend_async_waker_clean(coroutine);
 
 		if (EG(exception) && (zend_is_graceful_exit(EG(exception)) || zend_is_unwind_exit(EG(exception)))) {
-			fiber->flags |= ZEND_FIBER_FLAG_DESTROYED;
+			/* Re-read fiber pointer: the Fiber object may have been destroyed
+			 * while we were suspended (e.g. unset($fiber)). In that case
+			 * zend_fiber_release_coroutine already set extended_data = NULL. */
+			zend_fiber *current_fiber = (zend_fiber *) coroutine->extended_data;
+			if (current_fiber != NULL) {
+				current_fiber->flags |= ZEND_FIBER_FLAG_DESTROYED;
+			}
 		}
 
 		return FAILURE;
@@ -1086,6 +1092,7 @@ static void coroutine_entry_point(void)
 	 * so we transfer fcall ownership to a local variable.
 	 */
 	zend_fcall_t *fcall = fiber->fcall;
+	fiber->fcall = NULL;
 
 	bool is_bailout = false;
 	zend_object **exception_ptr = &EG(exception);
@@ -1483,6 +1490,14 @@ static HashTable *zend_fiber_object_gc(zend_object *object, zval **table, int *n
 			zend_get_gc_buffer_add_zval(buf, &fiber->fci.function_name);
 		}
 
+		/* Expose finished coroutine to GC so Fiber→Coroutine ref is visible
+		 * for cycle collection. While running, the scheduler holds an extra
+		 * ref that GC can't track, so we only add it after completion. */
+		if (ZEND_COROUTINE_IS_FINISHED(fiber->coroutine)) {
+			zend_object *coroutine_obj = ZEND_ASYNC_EVENT_TO_OBJECT(&fiber->coroutine->event);
+			zend_get_gc_buffer_add_obj(buf, coroutine_obj);
+		}
+
 		/* Walk execution stack only if fiber is suspended via Fiber::suspend() (YIELD).
 		 * If fiber is running or awaiting a child, its stack is active. */
 		zend_execute_data *ex = ZEND_ASYNC_COROUTINE_GET_EXECUTE_DATA(fiber->coroutine);
@@ -1627,9 +1642,20 @@ ZEND_METHOD(Fiber, start)
 {
 	zend_fiber *fiber = (zend_fiber *) Z_OBJ_P(ZEND_THIS);
 
+	if (EXPECTED(fiber->coroutine != NULL) && ZEND_COROUTINE_IS_STARTED(fiber->coroutine)) {
+		zval *_params;
+		uint32_t _param_count;
+		HashTable *_named_params;
+		ZEND_PARSE_PARAMETERS_START(0, -1)
+			Z_PARAM_VARIADIC_WITH_NAMED(_params, _param_count, _named_params);
+		ZEND_PARSE_PARAMETERS_END();
+
+		zend_throw_error(zend_ce_fiber_error, "Cannot start a fiber that has already been started");
+		RETURN_THROWS();
+	}
+
 	ZEND_PARSE_PARAMETERS_START(0, -1)
 		if (EXPECTED(fiber->coroutine != NULL)) {
-			/* Coroutine path: parameters go into fiber->fcall */
 			ZEND_ASSERT(fiber->fcall != NULL && "Fiber fcall must exist after constructor");
 			Z_PARAM_VARIADIC_WITH_NAMED(
 				fiber->fcall->fci.params,
@@ -1637,7 +1663,6 @@ ZEND_METHOD(Fiber, start)
 				fiber->fcall->fci.named_params
 			);
 		} else {
-			/* Non-coroutine path: parameters go into fiber->fci */
 			Z_PARAM_VARIADIC_WITH_NAMED(fiber->fci.params, fiber->fci.param_count, fiber->fci.named_params);
 		}
 	ZEND_PARSE_PARAMETERS_END();
@@ -1665,11 +1690,6 @@ ZEND_METHOD(Fiber, start)
 	}
 
 	if (EXPECTED(fiber->coroutine != NULL)) {
-		if (ZEND_COROUTINE_IS_STARTED(fiber->coroutine)) {
-			zend_throw_error(zend_ce_fiber_error, "Cannot start a fiber that has already been started");
-			RETURN_THROWS();
-		}
-
 		if (!ZEND_ASYNC_ENQUEUE_COROUTINE(fiber->coroutine)) {
 			RETURN_THROWS();
 		}
