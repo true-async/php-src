@@ -282,18 +282,8 @@ static bool curl_async_event_stop(zend_async_event_t *event)
 
 		ws->event = NULL; /* sever back-link so completion becomes no-op */
 
-		/* Remove IO callback from stream's IO event before freeing state */
-		if (ws->io != NULL && ws->io_cb != NULL) {
-			ws->io->event.del_callback(&ws->io->event, ws->io_cb);
-			ws->io_cb = NULL;
-		}
-
 		if (!ws->pending) {
 			/* Safe to free immediately — no completion callback pending */
-			if (ws->io != NULL) {
-				ZEND_ASYNC_EVENT_RELEASE(&ws->io->event);
-				ws->io = NULL;
-			}
 			if (ws->write_data != NULL) {
 				zend_string_release(ws->write_data);
 			}
@@ -340,6 +330,7 @@ static zend_string * curl_async_event_info(zend_async_event_t *event)
 
 static bool curl_async_event_dtor(zend_async_event_t *event);
 
+#if LIBCURL_VERSION_NUM >= 0x080B01
 /**
  * Lazily create a child scope for callback coroutines.
  * Returns the scope, or NULL on failure.
@@ -358,6 +349,7 @@ static zend_async_scope_t *curl_async_get_scope(curl_async_event_t *curl_event)
 	ZEND_ASYNC_EVENT_ADD_REF(&curl_event->scope->event);
 	return curl_event->scope;
 }
+#endif /* LIBCURL_VERSION_NUM >= 0x080B01 */
 
 static curl_async_event_t * curl_async_event_ctor(php_curl *ch)
 {
@@ -1160,6 +1152,8 @@ finally:
 /// ASYNC FILE READ FOR CURLFile UPLOADS
 ///////////////////////////////////////////////////////////////
 
+#if LIBCURL_VERSION_NUM >= 0x080B01
+
 /**
  * @brief Unpause a curl transfer and ensure it gets processed.
  *
@@ -1193,6 +1187,8 @@ static void curl_async_unpause_transfer(curl_async_event_t *curl_event)
 
 /* Forward declaration for deferred completion (defined in write section) */
 static void curl_async_write_finish_deferred(curl_async_event_t *curl_event);
+
+#endif /* LIBCURL_VERSION_NUM >= 0x080B01 */
 
 ///////////////////////////////////////////////////////////////
 /// ASYNC READ SECTION (unified: CURLFile + CURLOPT_INFILE + USER)
@@ -1758,36 +1754,26 @@ size_t curl_async_read_dispatch(php_curl *ch, char *buffer, const size_t request
 /// ASYNC WRITE SECTION (PHP_CURL_FILE + PHP_CURL_USER)
 ///////////////////////////////////////////////////////////////
 
-/** @brief Extended callback carrying a reference to the async write state. */
-typedef struct {
-	zend_async_event_callback_t base;
-	curl_async_write_state_t *state;
-} curl_async_write_io_callback_t;
+#if LIBCURL_VERSION_NUM >= 0x080B01
 
-/** @brief Extended callback carrying a reference to the async write state. */
+/** @brief Extended callback carrying a reference to the async write state (USER mode). */
 typedef struct {
 	zend_async_event_callback_t base;
 	curl_async_write_state_t *state;
 } curl_async_write_coro_callback_t;
-
 /**
  * @brief Free an orphaned write state (event was cancelled while IO in-flight).
  */
 static void curl_async_write_state_free_orphan(curl_async_write_state_t *state)
 {
-	if (state->write_buf != NULL) {
-		efree(state->write_buf);
-	}
 	if (state->write_data != NULL) {
 		zend_string_release(state->write_data);
 	}
-	if (state->io != NULL) {
-		ZEND_ASYNC_EVENT_RELEASE(&state->io->event);
-		state->io = NULL;
-	}
 	efree(state);
 }
+#endif /* LIBCURL_VERSION_NUM >= 0x080B01 */
 
+#if LIBCURL_VERSION_NUM >= 0x080B01
 /**
  * @brief Complete a deferred CURLMSG_DONE after async write finishes.
  *
@@ -1819,83 +1805,17 @@ static void curl_async_write_finish_deferred(curl_async_event_t *curl_event)
 	curl_event->base.stop(&curl_event->base);
 	ZEND_ASYNC_CALLBACKS_NOTIFY(&curl_event->base, &done_result, curl_event->callback_exception);
 }
+#endif /* LIBCURL_VERSION_NUM >= 0x080B01 */
+
+/* curl_async_write_file_complete removed — FILE writes now use php_stream_write
+ * which handles sync/async transparently. No PAUSE/unpause needed. */
 
 /**
- * @brief IO completion callback for async file writes.
+ * @brief Write callback for PHP_CURL_FILE mode (body and headers).
  *
- * Invoked by the async IO layer when ZEND_ASYNC_IO_WRITE completes.
- * Stores the transfer result and either unpauses curl (if still alive)
- * or completes a deferred transfer.
- */
-static void curl_async_write_file_complete(
-	zend_async_event_t *event, zend_async_event_callback_t *callback,
-	void *result, zend_object *exception)
-{
-	const curl_async_write_io_callback_t *io_cb = (curl_async_write_io_callback_t *) callback;
-	curl_async_write_state_t *state = io_cb->state;
-
-	if (state == NULL) {
-		return;
-	}
-
-	state->pending = false;
-
-	/* Free the data buffer copy */
-	if (state->write_buf != NULL) {
-		efree(state->write_buf);
-		state->write_buf = NULL;
-	}
-
-	/* Event was cancelled — free orphaned state and bail */
-	if (state->event == NULL) {
-		curl_async_write_state_free_orphan(state);
-		return;
-	}
-
-	curl_async_event_t *curl_event = state->event;
-
-	/* Handle error from async event layer */
-	if (exception != NULL) {
-		state->has_pending_result = true;
-		state->pending_result = (size_t) -1;
-		goto finish;
-	}
-
-	zend_async_io_req_t *req = (zend_async_io_req_t *) result;
-
-	if (req == NULL || req->exception != NULL || req->transferred < 0) {
-		state->has_pending_result = true;
-		state->pending_result = (size_t) -1;
-	} else {
-		state->has_pending_result = true;
-		state->pending_result = (size_t) req->transferred;
-	}
-
-	if (req != NULL) {
-		req->dispose(req);
-	}
-
-finish:
-
-	/* Unpause and drive — even when done_deferred, curl may still have
-	 * buffered headers/body that need to be delivered via callbacks. */
-	if (curl_event->curl != NULL) {
-		curl_async_unpause_transfer(curl_event);
-	}
-
-	/* If curl finished (deferred) and no more async IO is pending,
-	 * all callbacks have been delivered — finalize now. */
-	if (curl_event->done_deferred && !curl_has_pending_async_io(curl_event)) {
-		curl_async_write_finish_deferred(curl_event);
-	}
-}
-
-/**
- * @brief Async write callback for PHP_CURL_FILE mode (body and headers).
- *
- * Writes received data to the output file stream asynchronously using
- * the stream's async IO handle. Uses the PAUSE/unpause pattern.
- * Falls back to sync fwrite() if the stream has no async IO.
+ * Uses php_stream_write which automatically handles sync/async:
+ * - In scheduler context (curl callbacks): blocking write (safe for local files)
+ * - In coroutine context: async write with suspend
  *
  * @param is_header  true for CURLOPT_HEADERFUNCTION, false for CURLOPT_WRITEFUNCTION
  */
@@ -1904,90 +1824,19 @@ size_t curl_async_write_file(char *data, const size_t size, const size_t nmemb, 
 	php_curl_write * const write_handler = is_header ? ch->handlers.write_header : ch->handlers.write;
 	const size_t length = size * nmemb;
 
-	curl_async_event_t *curl_event = (curl_async_event_t *) ch->async_event;
-	if (curl_event == NULL) {
+	if (Z_ISUNDEF(write_handler->stream)) {
 		return fwrite(data, size, nmemb, write_handler->fp);
 	}
 
-	curl_async_write_state_t *state = is_header ? curl_event->header_write_state : curl_event->write_state;
+	php_stream * const stream = (php_stream *) zend_fetch_resource2_ex(
+		&write_handler->stream, NULL, php_file_le_stream(), php_file_le_pstream());
 
-	/* Re-call after async completion — return stored result */
-	if (state != NULL && state->has_pending_result) {
-		const size_t result = state->pending_result;
-		state->has_pending_result = false;
-		return result;
+	if (stream == NULL) {
+		return fwrite(data, size, nmemb, write_handler->fp);
 	}
 
-	/* Lazy init state */
-	if (state == NULL) {
-		state = ecalloc(1, sizeof(curl_async_write_state_t));
-		state->event = curl_event;
-		if (is_header) {
-			curl_event->header_write_state = state;
-		} else {
-			curl_event->write_state = state;
-		}
-	}
-
-	/* Lazy get async IO from stream */
-	if (state->io == NULL) {
-		if (Z_ISUNDEF(write_handler->stream)) {
-			return (size_t) -1;
-		}
-
-		php_stream * const stream = (php_stream *) zend_fetch_resource2_ex(
-			&write_handler->stream, NULL, php_file_le_stream(), php_file_le_pstream());
-
-		if (stream == NULL) {
-			return (size_t) -1;
-		}
-
-		zend_async_io_t *io = NULL;
-		const int opt_result = php_stream_set_option(stream, PHP_STREAM_OPTION_ASYNC_IO, 0, &io);
-		if (opt_result != PHP_STREAM_OPTION_RETURN_OK || io == NULL) {
-			/* Stream doesn't have async IO — fallback to sync fwrite */
-			return fwrite(data, size, nmemb, write_handler->fp);
-		}
-
-		state->io = io;
-		ZEND_ASYNC_EVENT_ADD_REF(&io->event);
-
-		/* Register completion callback on the IO event */
-		curl_async_write_io_callback_t *io_cb = (curl_async_write_io_callback_t *)
-			ZEND_ASYNC_EVENT_CALLBACK_EX(curl_async_write_file_complete,
-				sizeof(curl_async_write_io_callback_t));
-		io_cb->state = state;
-		state->io_cb = &io_cb->base;
-		io->event.add_callback(&io->event, &io_cb->base);
-	}
-
-	/* Copy data — curl may reuse its buffer for another transfer */
-	state->write_buf = emalloc(length);
-	memcpy(state->write_buf, data, length);
-
-	/* Start async write */
-	zend_async_io_req_t *req = ZEND_ASYNC_IO_WRITE(state->io, state->write_buf, length);
-
-	if (req == NULL) {
-		efree(state->write_buf);
-		state->write_buf = NULL;
-		return (size_t) -1;
-	}
-
-	/* Sync fast path — write already completed */
-	if (req->completed) {
-		efree(state->write_buf);
-		state->write_buf = NULL;
-		const size_t result = (req->transferred < 0 || req->exception != NULL)
-			? (size_t) -1
-			: (size_t) req->transferred;
-		req->dispose(req);
-		return result;
-	}
-
-	/* Async path — mark in-flight and pause */
-	state->pending = true;
-	return CURL_WRITEFUNC_PAUSE;
+	const ssize_t written = php_stream_write(stream, data, length);
+	return written >= 0 ? (size_t) written : (size_t) -1;
 }
 
 #if LIBCURL_VERSION_NUM >= 0x080B01
@@ -2132,6 +1981,19 @@ size_t curl_async_write_user(char *data, const size_t size, const size_t nmemb, 
 		ch->in_callback = true;
 		zend_call_known_fcc(&write_handler->fcc, &retval, 2, argv, NULL);
 		ch->in_callback = false;
+
+		if (EG(exception)) {
+			if (curl_event != NULL) {
+				zend_object *ex = EG(exception);
+				GC_ADDREF(ex);
+				curl_async_event_set_callback_exception(curl_event, ex);
+				zend_clear_exception();
+			}
+			zval_ptr_dtor(&retval);
+			zval_ptr_dtor(&argv[0]);
+			zval_ptr_dtor(&argv[1]);
+			return (size_t) -1;
+		}
 
 		size_t result = length;
 		if (!Z_ISUNDEF(retval)) {
