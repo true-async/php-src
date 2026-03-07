@@ -701,6 +701,9 @@ static ssize_t php_stdiop_read(php_stream *stream, char *buf, size_t count)
 				}
 				/* If there's nothing to read, wait in 10us periods. */
 				if (0 == avail_read) {
+					if (!self->is_blocked) {
+						return 0;
+					}
 					usleep(10);
 				}
 			} while (0 == avail_read && retry++ < 3200000);
@@ -1028,7 +1031,15 @@ static int php_stdiop_set_option(php_stream *stream, int option, int value, void
 			data->is_blocked = value ? 1 : 0;
 			return oldval;
 #else
-			return -1; /* not yet implemented */
+			/* Windows has no fcntl/O_NONBLOCK, but when async IO is active
+			 * the is_blocked flag controls whether reads suspend the coroutine
+			 * (blocking) or return immediately (non-blocking). */
+			if (data->async_io != NULL) {
+				const int was_blocked = data->is_blocked;
+				data->is_blocked = value ? 1 : 0;
+				return was_blocked;
+			}
+			return -1;
 #endif
 
 		case PHP_STREAM_OPTION_WRITE_BUFFER:
