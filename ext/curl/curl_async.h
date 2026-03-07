@@ -17,6 +17,7 @@
 #define CURL_ASYNC_H
 
 #include <Zend/zend_async_API.h>
+#include <Zend/zend_exceptions.h>
 #include <curl/curl.h>
 #include "curl_private.h"
 

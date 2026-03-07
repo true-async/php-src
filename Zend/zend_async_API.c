@@ -296,6 +296,7 @@ static void internal_globals_ctor(zend_async_globals_t *globals)
 	globals->scheduler = NULL;
 	globals->exit_exception = NULL;
 	globals->heartbeat_handler = NULL;
+	globals->acting_coroutine = NULL;
 }
 
 static void internal_globals_dtor(zend_async_globals_t *globals)
