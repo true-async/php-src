@@ -1592,6 +1592,9 @@ ZEND_METHOD(Fiber, start)
 		ZEND_PARSE_PARAMETERS_START(0, -1)
 			Z_PARAM_VARIADIC_WITH_NAMED(_params, _param_count, _named_params);
 		ZEND_PARSE_PARAMETERS_END();
+		(void)_params;
+		(void)_param_count;
+		(void)_named_params;
 
 		zend_throw_error(zend_ce_fiber_error, "Cannot start a fiber that has already been started");
 		RETURN_THROWS();
