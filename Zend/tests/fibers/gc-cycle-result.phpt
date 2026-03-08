@@ -46,5 +46,5 @@ string(4) "DONE"
 bool(true)
 string(14) "COLLECT CYCLES"
 string(4) "DONE"
-%s
-%s
+string(4) "DTOR"
+2

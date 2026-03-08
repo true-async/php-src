@@ -24,7 +24,4 @@ $fiber->start();
 ?>
 --EXPECTF--
 Fatal error: Allowed memory size of %d bytes exhausted%s(tried to allocate %d bytes) in %s on line %d
-
-Fatal error: Allowed memory size of %d bytes exhausted%s(tried to allocate %d bytes) in %s on line %d
-
-Warning: A critical error was detected during the initiation of the graceful shutdown mode. in Unknown on line 0
+%A
