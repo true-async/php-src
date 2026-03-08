@@ -17,8 +17,8 @@ var_dump(fread($stream2, 4));
 --EXPECTF--
 bool(true)
 
-Notice: fread(): Read of %d bytes failed with errno=13 Permission denied in %s on line %d
+Notice: fread(): Read of %d bytes failed with %sPermission denied in %s on line %d
 bool(false)
 
-Notice: fread(): Read of %d bytes failed with errno=13 Permission denied in %s on line %d
+Notice: fread(): Read of %d bytes failed with %sPermission denied in %s on line %d
 bool(false)
