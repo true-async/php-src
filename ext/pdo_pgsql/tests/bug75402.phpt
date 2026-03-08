@@ -16,6 +16,7 @@ $db = PDOTest::test_factory(__DIR__ . '/common.phpt');
 $resp = new \stdClass();
 $resp->entries = [];
 
+$db->exec('DROP TABLE IF EXISTS bug75402');
 $db->query('CREATE TABLE bug75402 (
     "id" character varying(64) NOT NULL,
     "group_id" character varying(64) NOT NULL,
@@ -88,12 +89,12 @@ require __DIR__ . '/../../../ext/pdo/tests/pdo_test.inc';
 $db = PDOTest::test_factory(__DIR__ . '/common.phpt');
 $db->exec('DROP TABLE IF EXISTS bug75402');
 ?>
---EXPECT--
-object(stdClass)#2 (1) {
+--EXPECTF--
+object(stdClass)#%d (1) {
   ["entries"]=>
   array(1) {
     [0]=>
-    object(stdClass)#4 (10) {
+    object(stdClass)#%d (10) {
       ["sid"]=>
       string(19) "20171016083645_5337"
       ["sgroupid"]=>
