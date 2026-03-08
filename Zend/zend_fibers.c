@@ -1074,7 +1074,7 @@ static void coroutine_entry_point(void)
 
 	zend_fiber *fiber = coroutine->extended_data;
 
-	if (UNEXPECTED(fiber == NULL || fiber->fcall == NULL)) {
+	if (UNEXPECTED(fiber == NULL || coroutine->fcall == NULL)) {
 		zend_throw_error(zend_ce_fiber_error, "Fiber coroutine has no callback function");
 		return;
 	}
@@ -1086,17 +1086,6 @@ static void coroutine_entry_point(void)
 		fiber->execute_data = NULL;
 	}
 
-	/*
-	 * SHARE OWNERSHIP of fcall from fiber.
-	 * Fiber may be destroyed during execution,
-	 * so we transfer fcall ownership to a local variable.
-	 */
-	zend_fcall_t *fcall = fiber->fcall;
-	fiber->fcall = NULL;
-
-	/* Save callable for ReflectionFiber::getCallable() while fiber is running/suspended */
-	ZVAL_COPY(&fiber->fci.function_name, &fcall->fci.function_name);
-
 	bool is_bailout = false;
 	zend_object **exception_ptr = &EG(exception);
 	zend_object *prev_exception = NULL;
@@ -1105,9 +1094,9 @@ static void coroutine_entry_point(void)
 
 	zend_try
 	{
-		// Result is saved in coroutine->result
-		fcall->fci.retval = &coroutine->result;
-		zend_call_function(&fcall->fci, &fcall->fci_cache);
+		coroutine->fcall->fci.retval = &coroutine->result;
+		zend_call_function(&coroutine->fcall->fci, &coroutine->fcall->fci_cache);
+		coroutine->fcall->fci.retval = NULL;
 	}
 	zend_catch
 	{
@@ -1197,33 +1186,6 @@ static void coroutine_entry_point(void)
 		if (is_bailout) {
 			fiber->flags |= ZEND_FIBER_FLAG_BAILOUT;
 		}
-	}
-
-	// Cleanup fcall (Except in the case when the Fiber itself has already cleaned up this structure)
-	if (EXPECTED(fcall && !(fiber && fiber->fcall == NULL))) {
-
-		if (fiber) {
-			/* callable already saved in fiber->fci.function_name at coroutine start */
-			fiber->fcall = NULL;
-		}
-
-		fcall->fci.retval = NULL;
-
-		if (fcall->fci.param_count) {
-			for (uint32_t i = 0; i < fcall->fci.param_count; i++) {
-				zval_ptr_dtor(&fcall->fci.params[i]);
-			}
-			efree(fcall->fci.params);
-		}
-
-		if (fcall->fci.named_params) {
-			GC_DELREF(fcall->fci.named_params);
-			fcall->fci.named_params = NULL;
-		}
-
-		zval_ptr_dtor(&fcall->fci.function_name);
-		ZVAL_UNDEF(&fcall->fci.function_name);
-		efree(fcall);
 	}
 
 	if (is_bailout) {
@@ -1393,29 +1355,11 @@ static void zend_fiber_object_destroy(zend_object *object)
 		fiber->yield_event = NULL;
 	}
 
-	/*
-	 * Free fcall if still owned by fiber (coroutine never started or was
-	 * already destroyed). This must happen before the coroutine check
-	 * because coroutine_object_destroy may have set fiber->coroutine = NULL.
-	 */
+	/* Free fcall if still owned by fiber (coroutine never started).
+	 * Once started, fcall ownership transfers to coroutine. */
 	if (fiber->fcall != NULL) {
-		zend_fcall_t *fcall = fiber->fcall;
+		zend_fcall_release(fiber->fcall);
 		fiber->fcall = NULL;
-
-		if (fcall->fci.param_count) {
-			for (uint32_t i = 0; i < fcall->fci.param_count; i++) {
-				zval_ptr_dtor(&fcall->fci.params[i]);
-			}
-			efree(fcall->fci.params);
-		}
-
-		if (fcall->fci.named_params) {
-			GC_DELREF(fcall->fci.named_params);
-			fcall->fci.named_params = NULL;
-		}
-
-		zval_ptr_dtor(&fcall->fci.function_name);
-		efree(fcall);
 	}
 
 	zend_fiber_release_coroutine(fiber);
@@ -1484,12 +1428,9 @@ static HashTable *zend_fiber_object_gc(zend_object *object, zval **table, int *n
 	 * trial deletion (coroutine has extra refs from event system that GC can't track).
 	 */
 	if (fiber->coroutine != NULL) {
-		/* Add fcall if it's still owned by fiber (not yet transferred to coroutine) */
+		/* Add fcall if still owned by fiber (not yet started, i.e. not transferred to coroutine) */
 		if (fiber->fcall != NULL) {
 			zend_get_gc_buffer_add_zval(buf, &fiber->fcall->fci.function_name);
-		} else if (!Z_ISUNDEF(fiber->fci.function_name)) {
-			/* After start, callable is saved in fci.function_name */
-			zend_get_gc_buffer_add_zval(buf, &fiber->fci.function_name);
 		}
 
 		/* Expose finished coroutine to GC so Fiber→Coroutine ref is visible
@@ -1684,6 +1625,11 @@ ZEND_METHOD(Fiber, start)
 		if (fiber->fcall->fci.named_params) {
 			GC_ADDREF(fiber->fcall->fci.named_params);
 		}
+
+		/* Transfer fcall ownership to coroutine.
+		 * Coroutine dispose calls zend_fcall_release(). */
+		fiber->coroutine->fcall = fiber->fcall;
+		fiber->fcall = NULL;
 	}
 
 	if (UNEXPECTED(zend_fiber_switch_blocked())) {
