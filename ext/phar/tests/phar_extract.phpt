@@ -9,6 +9,19 @@ phar.readonly=0
 --FILE--
 <?php
 
+// Clean up leftover files from previous runs
+function rrmdir(string $dir): void {
+    if (!is_dir($dir)) return;
+    foreach (new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS),
+        RecursiveIteratorIterator::CHILD_FIRST
+    ) as $item) {
+        $item->isDir() ? rmdir($item->getPathname()) : unlink($item->getPathname());
+    }
+    rmdir($dir);
+}
+rrmdir(__DIR__ . '/extract');
+
 $fname = __DIR__ . '/tempmanifest1.phar.php';
 $pname = 'phar://' . $fname;
 
