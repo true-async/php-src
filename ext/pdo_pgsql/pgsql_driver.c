@@ -126,6 +126,15 @@ static PGresult *pdo_pgsql_collect_results(PGconn *pgsql)
 			PQclear(last_result);
 		}
 		last_result = result;
+
+		/* COPY IN/OUT results require the caller to handle the data transfer
+		 * before any further results become available. Continuing the loop
+		 * would deadlock: we'd wait for the server, while the server waits
+		 * for COPY data from us. */
+		ExecStatusType status = PQresultStatus(result);
+		if (status == PGRES_COPY_IN || status == PGRES_COPY_OUT || status == PGRES_COPY_BOTH) {
+			break;
+		}
 	}
 
 	return last_result;
