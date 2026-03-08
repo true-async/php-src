@@ -1094,6 +1094,9 @@ static void coroutine_entry_point(void)
 	zend_fcall_t *fcall = fiber->fcall;
 	fiber->fcall = NULL;
 
+	/* Save callable for ReflectionFiber::getCallable() while fiber is running/suspended */
+	ZVAL_COPY(&fiber->fci.function_name, &fcall->fci.function_name);
+
 	bool is_bailout = false;
 	zend_object **exception_ptr = &EG(exception);
 	zend_object *prev_exception = NULL;
@@ -1200,8 +1203,7 @@ static void coroutine_entry_point(void)
 	if (EXPECTED(fcall && !(fiber && fiber->fcall == NULL))) {
 
 		if (fiber) {
-			/* Save callable for ReflectionFiber::getCallable() before freeing fcall */
-			ZVAL_COPY(&fiber->fci.function_name, &fcall->fci.function_name);
+			/* callable already saved in fiber->fci.function_name at coroutine start */
 			fiber->fcall = NULL;
 		}
 
