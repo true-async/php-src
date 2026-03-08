@@ -7676,9 +7676,13 @@ ZEND_METHOD(ReflectionFiber, getCallable)
 	}
 
 	/* In coroutine mode, callable is in fiber->fcall before start,
-	 * or saved in fiber->fci.function_name after start (see coroutine_entry_point). */
+	 * or in fiber->coroutine->fcall after start. */
 	if (fiber->fcall != NULL) {
 		RETURN_COPY(&fiber->fcall->fci.function_name);
+	}
+
+	if (fiber->coroutine != NULL && fiber->coroutine->fcall != NULL) {
+		RETURN_COPY(&fiber->coroutine->fcall->fci.function_name);
 	}
 
 	RETURN_COPY(&fiber->fci.function_name);
