@@ -394,7 +394,7 @@ typedef int (*zend_async_io_close_t)(zend_async_io_t *io);
 typedef int (*zend_async_io_await_t)(zend_async_io_t *io, uint32_t events, struct timeval *timeout);
 typedef zend_async_io_req_t *(*zend_async_io_flush_t)(zend_async_io_t *io);
 typedef zend_async_io_req_t *(*zend_async_io_stat_t)(zend_async_io_t *io, zend_stat_t *buf);
-typedef void (*zend_async_io_seek_t)(zend_async_io_t *io, zend_off_t offset);
+typedef zend_off_t (*zend_async_io_seek_t)(zend_async_io_t *io, zend_off_t offset, int whence);
 
 /* Socket options enum */
 typedef enum {
@@ -2117,7 +2117,7 @@ END_EXTERN_C()
 #define ZEND_ASYNC_IO_AWAIT(io, events, tv)    zend_async_io_await_fn(io, events, tv)
 #define ZEND_ASYNC_IO_FLUSH(io)                zend_async_io_flush_fn(io)
 #define ZEND_ASYNC_IO_STAT(io, buf)            zend_async_io_stat_fn(io, buf)
-#define ZEND_ASYNC_IO_SEEK(io, offset)         zend_async_io_seek_fn(io, offset)
+#define ZEND_ASYNC_IO_SEEK(io, offset, whence)  zend_async_io_seek_fn(io, offset, whence)
 #define ZEND_ASYNC_UDP_SENDTO(io, buf, count, addr, addr_len) \
 	zend_async_udp_sendto_fn(io, buf, count, addr, addr_len)
 #define ZEND_ASYNC_UDP_RECVFROM(io, max_size)  zend_async_udp_recvfrom_fn(io, max_size)
