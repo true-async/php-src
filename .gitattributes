@@ -27,12 +27,6 @@
 /Zend/zend_vm_handlers.h linguist-generated -diff
 /Zend/zend_vm_opcodes.[ch] linguist-generated -diff
 
-# Test files (.phpt) must use LF line endings.
-# CRLF on Windows breaks tests that depend on byte offsets (__halt_compiler),
-# heredoc string lengths, tokenizer output, and other byte-sensitive checks.
-*.phpt eol=lf
-*.inc eol=lf
-
 # The OSS fuzz files are binary
 /ext/date/tests/ossfuzz*.txt binary
 
