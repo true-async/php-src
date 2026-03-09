@@ -388,7 +388,7 @@ typedef void (*zend_async_microtask_handler_t)(zend_async_microtask_t *microtask
 /* Async IO function pointer types */
 typedef zend_async_io_t *(*zend_async_io_create_t)(
 		zend_file_descriptor_t fd, zend_async_io_type type, uint32_t state);
-typedef zend_async_io_req_t *(*zend_async_io_read_t)(zend_async_io_t *io, size_t max_size);
+typedef zend_async_io_req_t *(*zend_async_io_read_t)(zend_async_io_t *io, char *buf, size_t max_size);
 typedef zend_async_io_req_t *(*zend_async_io_write_t)(zend_async_io_t *io, const char *buf, size_t count);
 typedef int (*zend_async_io_close_t)(zend_async_io_t *io);
 typedef int (*zend_async_io_await_t)(zend_async_io_t *io, uint32_t events, struct timeval *timeout);
@@ -2111,7 +2111,7 @@ END_EXTERN_C()
 
 /* Async IO API Macros */
 #define ZEND_ASYNC_IO_CREATE(fd, type, state)  zend_async_io_create_fn(fd, type, state)
-#define ZEND_ASYNC_IO_READ(io, max_size)       zend_async_io_read_fn(io, max_size)
+#define ZEND_ASYNC_IO_READ(io, buf, max_size)  zend_async_io_read_fn(io, buf, max_size)
 #define ZEND_ASYNC_IO_WRITE(io, buf, count)    zend_async_io_write_fn(io, buf, count)
 #define ZEND_ASYNC_IO_CLOSE(io)                zend_async_io_close_fn(io)
 #define ZEND_ASYNC_IO_AWAIT(io, events, tv)    zend_async_io_await_fn(io, events, tv)

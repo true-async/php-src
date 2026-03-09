@@ -1597,7 +1597,7 @@ size_t curl_async_read(curl_async_read_state_t *state, char *buffer, const size_
 	}
 
 	/* CURL_READ_FILE: start async read */
-	zend_async_io_req_t *req = ZEND_ASYNC_IO_READ(state->file.io, requested);
+	zend_async_io_req_t *req = ZEND_ASYNC_IO_READ(state->file.io, NULL, requested);
 
 	if (req == NULL) {
 		return CURL_READFUNC_ABORT;

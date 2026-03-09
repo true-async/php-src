@@ -609,7 +609,7 @@ static ssize_t php_stdiop_read(php_stream *stream, char *buf, size_t count)
 			data->sync_io_fallback = 0;
 		}
 
-		zend_async_io_req_t *req = ZEND_ASYNC_IO_READ(data->async_io, count);
+		zend_async_io_req_t *req = ZEND_ASYNC_IO_READ(data->async_io, buf, count);
 		if (UNEXPECTED(req == NULL)) {
 			return -1;
 		}
@@ -669,9 +669,7 @@ static ssize_t php_stdiop_read(php_stream *stream, char *buf, size_t count)
 		}
 
 		const ssize_t transferred = req->transferred;
-		if (transferred > 0) {
-			memcpy(buf, req->buf, transferred);
-		} else if (transferred == 0) {
+		if (transferred == 0) {
 			stream->eof = 1;
 		}
 		req->dispose(req);
@@ -786,6 +784,11 @@ static int php_stdiop_close(php_stream *stream, int close_handle)
 		data->async_io = NULL;
 		if (fd_closed && !data->is_process_pipe) {
 			data->fd = -1;
+			/* If FILE* was created via fdopen(dup(fd)) in php_stdiop_cast,
+			 * it owns a separate fd copy that must be closed explicitly. */
+			if (data->file != NULL) {
+				fclose(data->file);
+			}
 			data->file = NULL;
 		}
 	}
@@ -873,6 +876,35 @@ static int php_stdiop_flush(php_stream *stream)
 static int php_stdiop_sync(php_stream *stream, bool dataonly)
 {
 	php_stdio_stream_data *data = (php_stdio_stream_data*)stream->abstract;
+
+	/* Async IO path: flush via async reactor, avoid fdopen() which creates
+	 * a FILE* that conflicts with reactor's fd ownership. */
+	if (data->async_io != NULL) {
+		/* fsync/fdatasync is only meaningful for regular files */
+		if (data->async_io->type == ZEND_ASYNC_IO_TYPE_PIPE
+				|| data->async_io->type == ZEND_ASYNC_IO_TYPE_TTY) {
+			return -1;
+		}
+
+		zend_async_io_req_t *req = ZEND_ASYNC_IO_FLUSH(data->async_io);
+		if (UNEXPECTED(req == NULL)) {
+			return -1;
+		}
+
+		if (!req->completed) {
+			zend_coroutine_t *const coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+			ZEND_ASYNC_WAKER_NEW(coroutine);
+			zend_async_resume_when(coroutine, &data->async_io->event, false,
+					zend_async_waker_callback_resolve, NULL);
+			ZEND_ASYNC_SUSPEND();
+			ZEND_ASYNC_WAKER_DESTROY(coroutine);
+		}
+
+		const int result = (int) req->result;
+		req->dispose(req);
+		return result;
+	}
+
 	FILE *fp;
 	int fd;
 
@@ -943,14 +975,38 @@ static int php_stdiop_cast(php_stream *stream, int castas, void **ret)
 	switch (castas)	{
 		case PHP_STREAM_AS_STDIO:
 			if (ret) {
-
 				if (data->file == NULL) {
-					/* we were opened as a plain file descriptor, so we
-					 * need fdopen now */
+					int fd_for_fdopen = data->fd;
+
+					/* TEMPORARY: When async IO owns the fd, dup() before fdopen()
+					 * to avoid dual ownership.  fdopen() wraps the fd, but libuv
+					 * also holds it; on close libuv calls _close(fd), orphaning
+					 * the FILE* in CRT — which crashes on Windows during exit().
+					 * With dup, FILE* gets its own fd copy.
+					 * TODO: analyze all PHP_STREAM_AS_STDIO call sites for a
+					 * proper long-term solution (see ext/async/TODO.md). */
+					if (data->async_io != NULL) {
+#ifdef PHP_WIN32
+						fd_for_fdopen = _dup(data->fd);
+#else
+						fd_for_fdopen = dup(data->fd);
+#endif
+						if (fd_for_fdopen < 0) {
+							return FAILURE;
+						}
+					}
+
 					char fixed_mode[5];
 					php_stream_mode_sanitize_fdopen_fopencookie(stream, fixed_mode);
-					data->file = fdopen(data->fd, fixed_mode);
+					data->file = fdopen(fd_for_fdopen, fixed_mode);
 					if (data->file == NULL) {
+						if (data->async_io != NULL) {
+#ifdef PHP_WIN32
+							_close(fd_for_fdopen);
+#else
+							close(fd_for_fdopen);
+#endif
+						}
 						return FAILURE;
 					}
 				}
