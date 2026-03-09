@@ -227,14 +227,6 @@ static void php_stdiop_init_async_io(php_stdio_stream_data *self, const char *mo
 
 	zend_file_descriptor_t fd = self->fd;
 
-	/* On Windows, _O_APPEND is a CRT-level flag: _write() seeks to EOF
-	 * before each write, but the underlying HANDLE position stays at 0
-	 * after CreateFile+_open_osfhandle.  Seek to EOF explicitly so that
-	 * lseek(SEEK_CUR) returns the correct position — matching Unix
-	 * behavior where O_APPEND is a kernel flag. */
-	if (type == ZEND_ASYNC_IO_TYPE_FILE && strchr(mode, 'a')) {
-		_lseeki64(fd, 0, SEEK_END);
-	}
 #else
 	if (self->is_pipe) {
 		type = ZEND_ASYNC_IO_TYPE_PIPE;
@@ -926,7 +918,6 @@ static int php_stdiop_sync(php_stream *stream, bool dataonly)
 static int php_stdiop_seek(php_stream *stream, zend_off_t offset, int whence, zend_off_t *newoffset)
 {
 	php_stdio_stream_data *data = (php_stdio_stream_data*)stream->abstract;
-	int ret;
 
 	assert(data != NULL);
 
@@ -936,28 +927,20 @@ static int php_stdiop_seek(php_stream *stream, zend_off_t offset, int whence, ze
 	}
 
 	if (data->fd >= 0) {
-		zend_off_t result;
+		const zend_off_t result = data->async_io != NULL
+			? ZEND_ASYNC_IO_SEEK(data->async_io, offset, whence)
+			: zend_lseek(data->fd, offset, whence);
 
-		result = zend_lseek(data->fd, offset, whence);
-		if (result == (zend_off_t)-1)
+		if (result == (zend_off_t)-1) {
 			return -1;
-
-		*newoffset = result;
-
-		if (data->async_io != NULL && zend_async_io_seek_fn != NULL) {
-			ZEND_ASYNC_IO_SEEK(data->async_io, result);
 		}
 
+		*newoffset = result;
 		return 0;
 
 	} else {
-		ret = zend_fseek(data->file, offset, whence);
+		const int ret = zend_fseek(data->file, offset, whence);
 		*newoffset = zend_ftell(data->file);
-
-		if (ret == 0 && data->async_io != NULL && zend_async_io_seek_fn != NULL) {
-			ZEND_ASYNC_IO_SEEK(data->async_io, *newoffset);
-		}
-
 		return ret;
 	}
 }
@@ -1449,7 +1432,7 @@ static int php_stdiop_set_option(php_stream *stream, int option, int value, void
 		case PHP_STREAM_OPTION_ALIGN_POSITION:
 			if (data->async_io != NULL && ptrparam != NULL && zend_async_io_seek_fn != NULL) {
 				zend_off_t *pos = (zend_off_t *)ptrparam;
-				ZEND_ASYNC_IO_SEEK(data->async_io, *pos);
+				ZEND_ASYNC_IO_SEEK(data->async_io, *pos, SEEK_SET);
 				return PHP_STREAM_OPTION_RETURN_OK;
 			}
 			return PHP_STREAM_OPTION_RETURN_NOTIMPL;

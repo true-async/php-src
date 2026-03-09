@@ -96,19 +96,10 @@ PW32IO BOOL php_win32_ioutil_posix_to_open_opts(int flags, mode_t mode, php_iout
 	}
 
 	if (flags & _O_APPEND) {
+		/* XXX this might look wrong, but i just leave it here. Disabling FILE_WRITE_DATA prevents the current truncate behaviors for files opened with "a". */
+		/* access &= ~FILE_WRITE_DATA;*/
 		opts->access |= FILE_APPEND_DATA;
 		opts->attributes &= ~FILE_FLAG_BACKUP_SEMANTICS;
-
-		/* For write-only append ("a"), remove FILE_WRITE_DATA so that
-		 * WriteFile always appends to EOF regardless of the offset
-		 * passed via OVERLAPPED.  This is critical for libuv async
-		 * writes which bypass CRT _O_APPEND handling.
-		 *
-		 * For read-write append ("a+"), keep FILE_WRITE_DATA because
-		 * SetEndOfFile (ftruncate) requires it. */
-		if ((flags & (_O_RDONLY | _O_WRONLY | _O_RDWR)) == _O_WRONLY) {
-			opts->access &= ~FILE_WRITE_DATA;
-		}
 	}
 
 	/*
