@@ -784,11 +784,12 @@ static int php_stdiop_close(php_stream *stream, int close_handle)
 		data->async_io = NULL;
 		if (is_stream && !data->is_process_pipe) {
 			data->fd = -1;
-			/* If FILE* was created via fdopen(dup(fd)) in php_stdiop_cast,
-			 * it owns a separate fd copy that must be closed explicitly. */
-			if (data->file != NULL) {
-				fclose(data->file);
-			}
+		}
+		/* If FILE* was created via fdopen(dup(fd)) in php_stdiop_cast,
+		 * it owns a separate fd copy that must be closed explicitly.
+		 * The original fd (data->fd) will be closed by normal logic below. */
+		if (data->file != NULL) {
+			fclose(data->file);
 			data->file = NULL;
 		}
 	}
@@ -1003,7 +1004,11 @@ static int php_stdiop_cast(php_stream *stream, int castas, void **ret)
 				}
 
 				*(FILE**)ret = data->file;
-				data->fd = SOCK_ERR;
+				/* When async IO dup'd the fd, the original fd is still valid
+				 * and must remain tracked so plain_wrapper can close it. */
+				if (data->async_io == NULL) {
+					data->fd = SOCK_ERR;
+				}
 			}
 			return SUCCESS;
 
