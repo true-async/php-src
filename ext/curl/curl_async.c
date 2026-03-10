@@ -1297,9 +1297,9 @@ finish:
 void curl_async_read_state_free(curl_async_read_state_t *state)
 {
 	if (state->source == CURL_READ_FILE) {
-		if (state->file.io != NULL) {
-			ZEND_ASYNC_IO_CLOSE(state->file.io);
-		}
+		/* IO is borrowed from the stream, not owned by curl.
+		 * The stream (plain_wrapper) is responsible for close + dispose. */
+		state->file.io = NULL;
 		if (state->file.req != NULL) {
 			state->file.req->dispose(state->file.req);
 		}
@@ -1659,10 +1659,10 @@ size_t curl_async_read_cb(char *buffer, const size_t size, const size_t nitems, 
 				cb_arg->async_state->file.io = io;
 				cb_arg->async_state->file.fd = -1;
 
-				int fd;
+				intptr_t fd;
 				if (php_stream_cast(cb_arg->stream, PHP_STREAM_AS_FD | PHP_STREAM_CAST_INTERNAL,
 						(void **) &fd, 0) == SUCCESS) {
-					cb_arg->async_state->file.fd = fd;
+					cb_arg->async_state->file.fd = (int) fd;
 				}
 
 #if LIBCURL_VERSION_NUM >= 0x080B01
@@ -1732,10 +1732,10 @@ size_t curl_async_read_dispatch(php_curl *ch, char *buffer, const size_t request
 				php_stream *stream = (php_stream *) zend_fetch_resource2_ex(
 					&read_handler->stream, NULL, php_file_le_stream(), php_file_le_pstream());
 				if (stream != NULL) {
-					int fd;
+					intptr_t fd;
 					if (php_stream_cast(stream, PHP_STREAM_AS_FD | PHP_STREAM_CAST_INTERNAL,
 							(void **) &fd, 0) == SUCCESS) {
-						ch->async_read_state->file.fd = fd;
+						ch->async_read_state->file.fd = (int) fd;
 					}
 				}
 			} else if (read_handler->fp) {
