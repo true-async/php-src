@@ -1,5 +1,10 @@
 --TEST--
 Bug #51056 (fread() on blocking stream will block even if data is available)
+--SKIPIF--
+<?php
+if (PHP_OS_FAMILY === 'Windows' && extension_loaded('true_async')) die('skip TCP timing unreliable on Windows with
+async');
+?>
 --FILE--
 <?php
 
