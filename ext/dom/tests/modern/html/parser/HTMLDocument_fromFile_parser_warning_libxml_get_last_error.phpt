@@ -14,7 +14,7 @@ var_dump(libxml_get_last_error());
 
 ?>
 --EXPECTF--
-object(LibXMLError)#2 (6) {
+object(LibXMLError)#%d (6) {
   ["level"]=>
   int(2)
   ["code"]=>

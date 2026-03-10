@@ -21,6 +21,7 @@
 #include "zend.h"
 #include "zend_compile.h"
 #include "zend_exceptions.h"
+#include "zend_async_API.h"
 #include "zend_vm.h"
 #include "zend_generators.h"
 #include "zend_interfaces.h"
@@ -860,6 +861,11 @@ free_cmd:
 			PHPDBG_G(flags) ^= PHPDBG_IS_INTERACTIVE;
 			PHPDBG_G(flags) |= PHPDBG_IS_RUNNING;
 			zend_execute(PHPDBG_G(ops), &PHPDBG_G(retval));
+			PHPDBG_G(in_execution) = 1;
+			ZEND_ASYNC_RUN_SCHEDULER_AFTER_MAIN(false);
+			if (ZEND_ASYNC_GRACEFUL_SHUTDOWN && (PHPDBG_G(flags) & PHPDBG_IS_STOPPING)) {
+				zend_bailout();
+			}
 			PHPDBG_G(flags) ^= PHPDBG_IS_INTERACTIVE;
 		} zend_catch {
 			PHPDBG_G(in_execution) = 0;

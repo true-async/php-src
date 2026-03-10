@@ -1,5 +1,7 @@
 --TEST--
 Make sure exceptions are rethrown when throwing from fiber destructor
+--SKIPIF--
+<?php if (extension_loaded("true_async")) die("skip TrueAsync has different async destructor exception propagation"); ?>
 --FILE--
 <?php
 $fiber = new Fiber(function() {

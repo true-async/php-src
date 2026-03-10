@@ -1,5 +1,7 @@
 --TEST--
 GH-20483 (ASAN stack overflow with small fiber.stack_size INI value)
+--SKIPIF--
+<?php if (extension_loaded("true_async")) die("skip TrueAsync has different stack size handling"); ?>
 --INI--
 fiber.stack_size=1024
 --FILE--

@@ -86,12 +86,12 @@ Adds coroutine to execution queue for scheduling.
 .. code:: c
 
    ZEND_ASYNC_SUSPEND()
-   ZEND_ASYNC_RUN_SCHEDULER_AFTER_MAIN()
+   ZEND_ASYNC_RUN_SCHEDULER_AFTER_MAIN(is_bailout)
 
 Suspends current coroutine execution:
 
 -  ``SUSPEND()`` - Normal suspension
--  ``RUN_SCHEDULER_AFTER_MAIN()`` - Suspend from main context
+-  ``RUN_SCHEDULER_AFTER_MAIN(is_bailout)`` - Suspend from main context. Pass ``true`` if called during bailout.
 
 Coroutine Control
 =================

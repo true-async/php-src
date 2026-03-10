@@ -169,8 +169,9 @@ ZEND_API extern int php_poll2_async(php_pollfd *ufds, unsigned int nfds, const i
 
 static zend_always_inline int _php_poll2_async(php_pollfd *ufds, unsigned int nfds, int timeout)
 {
-	// Use context switching only if a timeout is specified.
-	if(UNEXPECTED(timeout > 0 && ZEND_ASYNC_IS_ACTIVE)) {
+	// Use context switching only if a timeout is specified
+	// and we are not in the scheduler context (which cannot suspend).
+	if(UNEXPECTED(timeout > 0 && ZEND_ASYNC_IS_ACTIVE && !ZEND_ASYNC_IS_SCHEDULER_CONTEXT)) {
 		return php_poll2_async(ufds, nfds, timeout);
 	} else {
 		return poll(ufds, nfds, timeout);
@@ -377,10 +378,12 @@ struct _php_netstream_data_t	{
 	bool timeout_event;
 	struct timeval timeout;
 	size_t ownsize;
-	bool nonblocking_applied;
 	zend_async_poll_event_t *poll_event;
 	zend_async_poll_proxy_t *read_event;
 	zend_async_poll_proxy_t *write_event;
+	unsigned nonblocking_applied:1;
+	unsigned is_sync:1;
+	unsigned _reserved:30;
 };
 PHPAPI extern const php_stream_ops php_stream_socket_ops;
 extern const php_stream_ops php_stream_generic_socket_ops;

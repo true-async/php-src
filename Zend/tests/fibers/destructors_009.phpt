@@ -1,5 +1,7 @@
 --TEST--
 Fibers in destructors 009: Destructor resurrects object, suspends
+--SKIPIF--
+<?php if (extension_loaded("true_async")) die("skip TrueAsync runs GC destructors in a separate coroutine"); ?>
 --FILE--
 <?php
 

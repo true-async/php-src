@@ -18,20 +18,20 @@ var_dump($xpath->query("//p"));
 var_dump($xpath->query("//x:p"));
 
 ?>
---EXPECT--
-object(Dom\NodeList)#3 (1) {
+--EXPECTF--
+object(Dom\NodeList)#%d (1) {
   ["length"]=>
   int(0)
 }
-object(Dom\NodeList)#4 (1) {
+object(Dom\NodeList)#%d (1) {
   ["length"]=>
   int(1)
 }
-object(Dom\NodeList)#3 (1) {
+object(Dom\NodeList)#%d (1) {
   ["length"]=>
   int(1)
 }
-object(Dom\NodeList)#3 (1) {
+object(Dom\NodeList)#%d (1) {
   ["length"]=>
   int(0)
 }

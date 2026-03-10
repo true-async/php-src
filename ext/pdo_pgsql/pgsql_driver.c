@@ -83,8 +83,13 @@ static bool pdo_pgsql_await_socket(PGconn *pgsql, async_poll_event events, zend_
 	return suspend_result && EG(exception) == NULL;
 }
 
-bool pdo_pgsql_flush(PGconn *pgsql)
+/* Check whether async path is available for this handle */
+#define PDO_PGSQL_ASYNC_AVAIL(H) \
+	(ZEND_ASYNC_CURRENT_COROUTINE != NULL && !(H)->is_sync)
+
+bool pdo_pgsql_flush(pdo_pgsql_db_handle *H)
 {
+	PGconn *pgsql = H->server;
 	int flush_result;
 
 	while ((flush_result = PQflush(pgsql)) > 0) {
@@ -96,11 +101,12 @@ bool pdo_pgsql_flush(PGconn *pgsql)
 	return flush_result >= 0;
 }
 
-PGresult *pdo_pgsql_get_result_concurrent(PGconn *pgsql)
+PGresult *pdo_pgsql_get_result_concurrent(pdo_pgsql_db_handle *H)
 {
+	PGconn *pgsql = H->server;
 	ZEND_ASSERT(pgsql != NULL);
 
-	if (ZEND_ASYNC_CURRENT_COROUTINE == NULL) {
+	if (!PDO_PGSQL_ASYNC_AVAIL(H)) {
 		return PQgetResult(pgsql);
 	}
 
@@ -116,27 +122,37 @@ PGresult *pdo_pgsql_get_result_concurrent(PGconn *pgsql)
 	return PQgetResult(pgsql);
 }
 
-static PGresult *pdo_pgsql_collect_results(PGconn *pgsql)
+static PGresult *pdo_pgsql_collect_results(pdo_pgsql_db_handle *H)
 {
 	PGresult *last_result = NULL;
 	PGresult *result;
 
-	while ((result = pdo_pgsql_get_result_concurrent(pgsql)) != NULL) {
+	while ((result = pdo_pgsql_get_result_concurrent(H)) != NULL) {
 		if (last_result != NULL) {
 			PQclear(last_result);
 		}
 		last_result = result;
+
+		/* COPY IN/OUT results require the caller to handle the data transfer
+		 * before any further results become available. Continuing the loop
+		 * would deadlock: we'd wait for the server, while the server waits
+		 * for COPY data from us. */
+		ExecStatusType status = PQresultStatus(result);
+		if (status == PGRES_COPY_IN || status == PGRES_COPY_OUT || status == PGRES_COPY_BOTH) {
+			break;
+		}
 	}
 
 	return last_result;
 }
 
-PGresult *pdo_pgsql_exec_concurrent(PGconn *pgsql, const char *query)
+PGresult *pdo_pgsql_exec_concurrent(pdo_pgsql_db_handle *H, const char *query)
 {
+	PGconn *pgsql = H->server;
 	ZEND_ASSERT(pgsql != NULL);
 	ZEND_ASSERT(query != NULL);
 
-	if (ZEND_ASYNC_CURRENT_COROUTINE == NULL) {
+	if (!PDO_PGSQL_ASYNC_AVAIL(H)) {
 		return PQexec(pgsql, query);
 	}
 
@@ -144,21 +160,22 @@ PGresult *pdo_pgsql_exec_concurrent(PGconn *pgsql, const char *query)
 		return NULL;
 	}
 
-	if (!pdo_pgsql_flush(pgsql)) {
+	if (!pdo_pgsql_flush(H)) {
 		return NULL;
 	}
 
-	return pdo_pgsql_collect_results(pgsql);
+	return pdo_pgsql_collect_results(H);
 }
 
-PGresult *pdo_pgsql_exec_params_concurrent(PGconn *pgsql, const char *query,
+PGresult *pdo_pgsql_exec_params_concurrent(pdo_pgsql_db_handle *H, const char *query,
 		int nParams, const Oid *paramTypes, const char *const *paramValues,
 		const int *paramLengths, const int *paramFormats, int resultFormat)
 {
+	PGconn *pgsql = H->server;
 	ZEND_ASSERT(pgsql != NULL);
 	ZEND_ASSERT(query != NULL);
 
-	if (ZEND_ASYNC_CURRENT_COROUTINE == NULL) {
+	if (!PDO_PGSQL_ASYNC_AVAIL(H)) {
 		return PQexecParams(pgsql, query, nParams, paramTypes, paramValues,
 			paramLengths, paramFormats, resultFormat);
 	}
@@ -168,19 +185,20 @@ PGresult *pdo_pgsql_exec_params_concurrent(PGconn *pgsql, const char *query,
 		return NULL;
 	}
 
-	if (!pdo_pgsql_flush(pgsql)) {
+	if (!pdo_pgsql_flush(H)) {
 		return NULL;
 	}
 
-	return pdo_pgsql_collect_results(pgsql);
+	return pdo_pgsql_collect_results(H);
 }
 
-PGresult *pdo_pgsql_prepare_concurrent(PGconn *pgsql, const char *stmtName,
+PGresult *pdo_pgsql_prepare_concurrent(pdo_pgsql_db_handle *H, const char *stmtName,
 		const char *query, int nParams, const Oid *paramTypes)
 {
+	PGconn *pgsql = H->server;
 	ZEND_ASSERT(pgsql != NULL);
 
-	if (ZEND_ASYNC_CURRENT_COROUTINE == NULL) {
+	if (!PDO_PGSQL_ASYNC_AVAIL(H)) {
 		return PQprepare(pgsql, stmtName, query, nParams, paramTypes);
 	}
 
@@ -188,20 +206,21 @@ PGresult *pdo_pgsql_prepare_concurrent(PGconn *pgsql, const char *stmtName,
 		return NULL;
 	}
 
-	if (!pdo_pgsql_flush(pgsql)) {
+	if (!pdo_pgsql_flush(H)) {
 		return NULL;
 	}
 
-	return pdo_pgsql_collect_results(pgsql);
+	return pdo_pgsql_collect_results(H);
 }
 
-PGresult *pdo_pgsql_exec_prepared_concurrent(PGconn *pgsql, const char *stmtName,
+PGresult *pdo_pgsql_exec_prepared_concurrent(pdo_pgsql_db_handle *H, const char *stmtName,
 		int nParams, const char *const *paramValues,
 		const int *paramLengths, const int *paramFormats, int resultFormat)
 {
+	PGconn *pgsql = H->server;
 	ZEND_ASSERT(pgsql != NULL);
 
-	if (ZEND_ASYNC_CURRENT_COROUTINE == NULL) {
+	if (!PDO_PGSQL_ASYNC_AVAIL(H)) {
 		return PQexecPrepared(pgsql, stmtName, nParams, paramValues,
 			paramLengths, paramFormats, resultFormat);
 	}
@@ -211,19 +230,20 @@ PGresult *pdo_pgsql_exec_prepared_concurrent(PGconn *pgsql, const char *stmtName
 		return NULL;
 	}
 
-	if (!pdo_pgsql_flush(pgsql)) {
+	if (!pdo_pgsql_flush(H)) {
 		return NULL;
 	}
 
-	return pdo_pgsql_collect_results(pgsql);
+	return pdo_pgsql_collect_results(H);
 }
 
 #ifdef HAVE_PQCLOSEPREPARED
-PGresult *pdo_pgsql_close_prepared_concurrent(PGconn *pgsql, const char *stmtName)
+PGresult *pdo_pgsql_close_prepared_concurrent(pdo_pgsql_db_handle *H, const char *stmtName)
 {
+	PGconn *pgsql = H->server;
 	ZEND_ASSERT(pgsql != NULL);
 
-	if (ZEND_ASYNC_CURRENT_COROUTINE == NULL) {
+	if (!PDO_PGSQL_ASYNC_AVAIL(H)) {
 		return PQclosePrepared(pgsql, stmtName);
 	}
 
@@ -231,11 +251,11 @@ PGresult *pdo_pgsql_close_prepared_concurrent(PGconn *pgsql, const char *stmtNam
 		return NULL;
 	}
 
-	if (!pdo_pgsql_flush(pgsql)) {
+	if (!pdo_pgsql_flush(H)) {
 		return NULL;
 	}
 
-	return pdo_pgsql_collect_results(pgsql);
+	return pdo_pgsql_collect_results(H);
 }
 #endif
 
@@ -563,7 +583,7 @@ static zend_long pgsql_handle_doer(pdo_dbh_t *dbh, const zend_string *sql)
 
 	bool in_trans = pgsql_handle_in_transaction(dbh);
 
-	if (!(res = pdo_pgsql_exec_concurrent(H->server, ZSTR_VAL(sql)))) {
+	if (!(res = pdo_pgsql_exec_concurrent(H, ZSTR_VAL(sql)))) {
 		/* fatal error */
 		pdo_pgsql_error(dbh, PGRES_FATAL_ERROR, NULL);
 		return -1;
@@ -639,12 +659,12 @@ static zend_string *pdo_pgsql_last_insert_id(pdo_dbh_t *dbh, const zend_string *
 	ExecStatusType status;
 
 	if (name == NULL) {
-		res = pdo_pgsql_exec_concurrent(H->server, "SELECT LASTVAL()");
+		res = pdo_pgsql_exec_concurrent(H, "SELECT LASTVAL()");
 	} else {
 		const char *q[1];
 		q[0] = ZSTR_VAL(name);
 
-		res = pdo_pgsql_exec_params_concurrent(H->server, "SELECT CURRVAL($1)", 1, NULL, q, NULL, NULL, 0);
+		res = pdo_pgsql_exec_params_concurrent(H, "SELECT CURRVAL($1)", 1, NULL, q, NULL, NULL, 0);
 	}
 	status = PQresultStatus(res);
 
@@ -801,7 +821,7 @@ static bool pdo_pgsql_transaction_cmd(const char *cmd, pdo_dbh_t *dbh)
 	PGresult *res;
 	bool ret = true;
 
-	res = pdo_pgsql_exec_concurrent(H->server, cmd);
+	res = pdo_pgsql_exec_concurrent(H, cmd);
 
 	if (PQresultStatus(res) != PGRES_COMMAND_OK) {
 		pdo_pgsql_error(dbh, PQresultStatus(res), pdo_pgsql_sqlstate(res));
@@ -908,10 +928,10 @@ void pgsqlCopyFromArray_internal(INTERNAL_FUNCTION_PARAMETERS)
 	/* Obtain db Handle */
 	H = (pdo_pgsql_db_handle *)dbh->driver_data;
 
-	while ((pgsql_result = pdo_pgsql_get_result_concurrent(H->server))) {
+	while ((pgsql_result = pdo_pgsql_get_result_concurrent(H))) {
 		PQclear(pgsql_result);
 	}
-	pgsql_result = pdo_pgsql_exec_concurrent(H->server, query);
+	pgsql_result = pdo_pgsql_exec_concurrent(H, query);
 
 	efree(query);
 	query = NULL;
@@ -968,7 +988,7 @@ void pgsqlCopyFromArray_internal(INTERNAL_FUNCTION_PARAMETERS)
 			RETURN_FALSE;
 		}
 
-		while ((pgsql_result = pdo_pgsql_get_result_concurrent(H->server))) {
+		while ((pgsql_result = pdo_pgsql_get_result_concurrent(H))) {
 			if (PGRES_COMMAND_OK != PQresultStatus(pgsql_result)) {
 				pdo_pgsql_error(dbh, PGRES_FATAL_ERROR, pdo_pgsql_sqlstate(pgsql_result));
 				command_failed = 1;
@@ -1032,10 +1052,10 @@ void pgsqlCopyFromFile_internal(INTERNAL_FUNCTION_PARAMETERS)
 
 	H = (pdo_pgsql_db_handle *)dbh->driver_data;
 
-	while ((pgsql_result = pdo_pgsql_get_result_concurrent(H->server))) {
+	while ((pgsql_result = pdo_pgsql_get_result_concurrent(H))) {
 		PQclear(pgsql_result);
 	}
-	pgsql_result = pdo_pgsql_exec_concurrent(H->server, query);
+	pgsql_result = pdo_pgsql_exec_concurrent(H, query);
 
 	efree(query);
 
@@ -1069,7 +1089,7 @@ void pgsqlCopyFromFile_internal(INTERNAL_FUNCTION_PARAMETERS)
 			RETURN_FALSE;
 		}
 
-		while ((pgsql_result = pdo_pgsql_get_result_concurrent(H->server))) {
+		while ((pgsql_result = pdo_pgsql_get_result_concurrent(H))) {
 			if (PGRES_COMMAND_OK != PQresultStatus(pgsql_result)) {
 				pdo_pgsql_error(dbh, PGRES_FATAL_ERROR, pdo_pgsql_sqlstate(pgsql_result));
 				command_failed = 1;
@@ -1128,7 +1148,7 @@ void pgsqlCopyToFile_internal(INTERNAL_FUNCTION_PARAMETERS)
 		RETURN_FALSE;
 	}
 
-	while ((pgsql_result = pdo_pgsql_get_result_concurrent(H->server))) {
+	while ((pgsql_result = pdo_pgsql_get_result_concurrent(H))) {
 		PQclear(pgsql_result);
 	}
 
@@ -1138,7 +1158,7 @@ void pgsqlCopyToFile_internal(INTERNAL_FUNCTION_PARAMETERS)
 	} else {
 		spprintf(&query, 0, "COPY %s TO STDIN WITH DELIMITER E'%c' NULL AS E'%s'", table_name, (pg_delim_len ? *pg_delim : '\t'), (pg_null_as_len ? pg_null_as : "\\\\N"));
 	}
-	pgsql_result = pdo_pgsql_exec_concurrent(H->server, query);
+	pgsql_result = pdo_pgsql_exec_concurrent(H, query);
 	efree(query);
 
 	if (pgsql_result) {
@@ -1174,7 +1194,7 @@ void pgsqlCopyToFile_internal(INTERNAL_FUNCTION_PARAMETERS)
 		}
 		php_stream_close(stream);
 
-		while ((pgsql_result = pdo_pgsql_get_result_concurrent(H->server))) {
+		while ((pgsql_result = pdo_pgsql_get_result_concurrent(H))) {
 			PQclear(pgsql_result);
 		}
 		RETURN_TRUE;
@@ -1219,7 +1239,7 @@ void pgsqlCopyToArray_internal(INTERNAL_FUNCTION_PARAMETERS)
 
 	H = (pdo_pgsql_db_handle *)dbh->driver_data;
 
-	while ((pgsql_result = pdo_pgsql_get_result_concurrent(H->server))) {
+	while ((pgsql_result = pdo_pgsql_get_result_concurrent(H))) {
 		PQclear(pgsql_result);
 	}
 
@@ -1229,7 +1249,7 @@ void pgsqlCopyToArray_internal(INTERNAL_FUNCTION_PARAMETERS)
 	} else {
 		spprintf(&query, 0, "COPY %s TO STDIN WITH DELIMITER E'%c' NULL AS E'%s'", table_name, (pg_delim_len ? *pg_delim : '\t'), (pg_null_as_len ? pg_null_as : "\\\\N"));
 	}
-	pgsql_result = pdo_pgsql_exec_concurrent(H->server, query);
+	pgsql_result = pdo_pgsql_exec_concurrent(H, query);
 	efree(query);
 
 	if (pgsql_result) {
@@ -1257,7 +1277,7 @@ void pgsqlCopyToArray_internal(INTERNAL_FUNCTION_PARAMETERS)
 			}
 		}
 
-		while ((pgsql_result = pdo_pgsql_get_result_concurrent(H->server))) {
+		while ((pgsql_result = pdo_pgsql_get_result_concurrent(H))) {
 			PQclear(pgsql_result);
 		}
 	} else {
@@ -1686,6 +1706,7 @@ static int pdo_pgsql_handle_factory(pdo_dbh_t *dbh, zval *driver_options) /* {{{
 	PQsetNoticeProcessor(H->server, _pdo_pgsql_notice, (void *)dbh);
 
 	H->attached = 1;
+	H->is_sync = dbh->is_persistent ? 1 : 0;
 	H->pgoid = -1;
 
 	dbh->methods = &pgsql_methods;

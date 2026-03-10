@@ -1,5 +1,7 @@
 --TEST--
 OSS-Fuzz #471533782: Infinite loop in GC destructor fiber
+--SKIPIF--
+<?php if (extension_loaded("true_async")) die("skip TrueAsync does not use gc_destructor_fiber"); ?>
 --FILE--
 <?php
 

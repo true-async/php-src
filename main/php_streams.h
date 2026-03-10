@@ -520,6 +520,10 @@ END_EXTERN_C()
  * ptrparam = zend_off_t* pointing to the new position */
 #define PHP_STREAM_OPTION_ALIGN_POSITION		16
 
+/* Retrieve the async IO handle from a stream.
+ * ptrparam = zend_async_io_t** (output) */
+#define PHP_STREAM_OPTION_ASYNC_IO				17
+
 #define PHP_STREAM_OPTION_RETURN_OK			 0 /* option set OK */
 #define PHP_STREAM_OPTION_RETURN_ERR		-1 /* problem setting option */
 #define PHP_STREAM_OPTION_RETURN_NOTIMPL	-2 /* underlying stream does not implement; streams can handle it instead */

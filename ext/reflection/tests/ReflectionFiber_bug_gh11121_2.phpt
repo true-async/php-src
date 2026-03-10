@@ -32,7 +32,7 @@ array(3) {
     ["class"]=>
     string(5) "Fiber"
     ["object"]=>
-    object(Fiber)#3 (0) {
+    object(Fiber)#%d (0) {
     }
     ["type"]=>
     string(2) "->"

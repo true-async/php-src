@@ -52,6 +52,8 @@ var_dump($phar->getMetadata());
 unset($phar);
 
 ?>
+
+?>
 --CLEAN--
 <?php
 unlink(__DIR__ . '/' . basename(__FILE__, '.clean.php') . '.phar.php');
@@ -64,16 +66,16 @@ Original metadata
 NULL
 Calling getMetadata
 In wakeup
-object(EchoesOnWakeup)#2 (0) {
+object(EchoesOnWakeup)#%d (0) {
 }
 Calling getMetadata with no allowed_classes
-object(__PHP_Incomplete_Class)#2 (1) {
+object(__PHP_Incomplete_Class)#%d (1) {
   ["__PHP_Incomplete_Class_Name"]=>
   string(14) "EchoesOnWakeup"
 }
 Calling getMetadata with EchoesOnWakeup allowed
 In wakeup
-object(EchoesOnWakeup)#2 (0) {
+object(EchoesOnWakeup)#%d (0) {
 }
 Calling getMetadata with too low max_depth
 
@@ -85,10 +87,10 @@ Calling getMetadata with some allowed classes
 In wakeup
 array(2) {
   [0]=>
-  object(EchoesOnWakeup)#4 (0) {
+  object(EchoesOnWakeup)#%d (0) {
   }
   [1]=>
-  object(__PHP_Incomplete_Class)#5 (1) {
+  object(__PHP_Incomplete_Class)#%d (1) {
     ["__PHP_Incomplete_Class_Name"]=>
     string(8) "stdClass"
   }
@@ -96,9 +98,11 @@ array(2) {
 Calling getMetadata with no options returns the original metadata value
 array(2) {
   [0]=>
-  object(EchoesOnWakeup)#2 (0) {
+  object(EchoesOnWakeup)#%d (0) {
   }
   [1]=>
-  object(stdClass)#3 (0) {
+  object(stdClass)#%d (0) {
   }
 }
+
+?>

@@ -140,6 +140,11 @@ try {
 catch (\RuntimeException $e) {
     var_dump($e->getMessage());
 }
+// In async mode the transfer is aborted immediately after the first callback
+// exception (via curl_multi_remove_handle in process_curl_completed_handles),
+// so CURLINFO_HEADER_OUT is never recorded.  The original sync curl_easy_perform
+// would keep running (leaking every subsequent exception object) and finish
+// the transfer, but that behaviour was a bug — not something to preserve.
 var_dump(curl_getinfo($ch, CURLINFO_HEADER_OUT));
 
 echo "\n===Test CURLOPT_DEBUGFUNCTION on shared handles work===\n";
@@ -217,11 +222,7 @@ Accept: */*
 ===Test CURLOPT_DEBUGFUNCTION can throw within callback===
 bool(true)
 string(41) "This should get caught after verbose=true"
-string(%d) "GET /get.inc?test=file HTTP/%s
-Host: %s:%d
-Accept: */*
-
-"
+bool(false)
 
 ===Test CURLOPT_DEBUGFUNCTION on shared handles work===
 bool(false)

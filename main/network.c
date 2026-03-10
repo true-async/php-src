@@ -1070,7 +1070,7 @@ php_socket_t php_network_connect_socket_to_host_ex(const char *host, unsigned sh
 #endif
 		}
 
-		if (ZEND_ASYNC_IS_ACTIVE && netdata != NULL) {
+		if (ZEND_ASYNC_IS_ACTIVE && netdata != NULL && !netdata->is_sync) {
 			netdata->socket = sock;
 
 			n = network_async_connect_socket(netdata, sock, sa, socklen, asynchronous,
@@ -1326,6 +1326,7 @@ PHPAPI php_stream *_php_stream_sock_open_from_socket(php_socket_t socket, const 
 	sock->timeout.tv_sec = FG(default_socket_timeout);
 	sock->timeout.tv_usec = 0;
 	sock->socket = socket;
+	sock->is_sync = persistent_id ? 1 : 0;
 
 	stream = php_stream_alloc_rel(&php_stream_generic_socket_ops, sock, persistent_id, "r+");
 
@@ -1418,8 +1419,17 @@ PHPAPI void _php_emit_fd_setsize_warning(int max_fd)
 
 PHPAPI int php_poll2(php_pollfd *ufds, unsigned int nfds, int timeout)
 {
-	if(UNEXPECTED(ZEND_ASYNC_IS_ACTIVE)) {
-		return php_poll2_async(ufds, nfds, timeout);
+	if (UNEXPECTED(ZEND_ASYNC_IS_ACTIVE)) {
+		if (EXPECTED(!ZEND_ASYNC_IS_SCHEDULER_CONTEXT)) {
+			return php_poll2_async(ufds, nfds, timeout);
+		}
+
+		/* Scheduler context cannot suspend — fall back to synchronous
+		 * select() but cap the timeout to avoid blocking the event loop
+		 * indefinitely (default: 5 minutes). */
+		if (timeout < 0) {
+			timeout = 300000;
+		}
 	}
 
 	fd_set rset, wset, eset;

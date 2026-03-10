@@ -249,7 +249,7 @@ static void  shutdown_destructors_coroutine_dtor(zend_coroutine_t *coroutine) /*
 {
 	zend_shutdown_context_t *shutdown_context = &EG(shutdown_context);
 
-	if (shutdown_context->coroutine == coroutine) {
+	if (shutdown_context->is_started && shutdown_context->coroutine == coroutine) {
 		shutdown_context->coroutine = NULL;
 		shutdown_context->is_started = false;
 		zend_error(E_CORE_ERROR, "Shutdown destructors coroutine was not finished property");
@@ -668,13 +668,24 @@ ZEND_API const char *get_active_class_name(const char **space) /* {{{ */
 
 ZEND_API const char *get_active_function_name(void) /* {{{ */
 {
-	const zend_function *func;
-
 	if (!zend_is_executing()) {
 		return NULL;
 	}
 
-	func = zend_active_function();
+	/* When acting on behalf of a suspended coroutine, use its execute_data */
+	const zend_function *func = NULL;
+	zend_coroutine_t *acting = ZEND_ASYNC_ACTING_COROUTINE;
+
+	if (acting != NULL) {
+		const zend_execute_data *ex = ZEND_ASYNC_COROUTINE_GET_EXECUTE_DATA(acting);
+		if (ex && ex->func) {
+			func = ex->func;
+		}
+	}
+
+	if (func == NULL) {
+		func = zend_active_function();
+	}
 
 	switch (func->type) {
 		case ZEND_USER_FUNCTION: {
@@ -688,8 +699,10 @@ ZEND_API const char *get_active_function_name(void) /* {{{ */
 			}
 			break;
 		case ZEND_INTERNAL_FUNCTION:
-			return ZSTR_VAL(func->common.function_name);
-			break;
+			if (func->common.function_name) {
+				return ZSTR_VAL(func->common.function_name);
+			}
+			return NULL;
 		default:
 			return NULL;
 	}
@@ -772,9 +785,21 @@ ZEND_API zend_string *zend_get_executed_filename_ex(void) /* {{{ */
 	}
 	if (ex) {
 		return ex->func->op_array.filename;
-	} else {
-		return NULL;
 	}
+
+	/* Fall back to acting_coroutine's suspended execute_data */
+	zend_coroutine_t *acting = ZEND_ASYNC_ACTING_COROUTINE;
+	if (acting != NULL) {
+		ex = ZEND_ASYNC_COROUTINE_GET_EXECUTE_DATA(acting);
+		while (ex && (!ex->func || !ZEND_USER_CODE(ex->func->type))) {
+			ex = ex->prev_execute_data;
+		}
+		if (ex) {
+			return ex->func->op_array.filename;
+		}
+	}
+
+	return NULL;
 }
 /* }}} */
 
@@ -800,9 +825,24 @@ ZEND_API uint32_t zend_get_executed_lineno(void) /* {{{ */
 			return EG(opline_before_exception)->lineno;
 		}
 		return ex->opline->lineno;
-	} else {
-		return 0;
 	}
+
+	/* Fall back to acting_coroutine's suspended execute_data */
+	zend_coroutine_t *acting = ZEND_ASYNC_ACTING_COROUTINE;
+	if (acting != NULL) {
+		ex = ZEND_ASYNC_COROUTINE_GET_EXECUTE_DATA(acting);
+		while (ex && (!ex->func || !ZEND_USER_CODE(ex->func->type))) {
+			ex = ex->prev_execute_data;
+		}
+		if (ex) {
+			if (!ex->opline) {
+				return ex->func->op_array.opcodes[0].lineno;
+			}
+			return ex->opline->lineno;
+		}
+	}
+
+	return 0;
 }
 /* }}} */
 

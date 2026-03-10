@@ -36,10 +36,10 @@ var_dump($phar->getMetadata());
 unlink(__DIR__ . '/' . basename(__FILE__, '.clean.php') . '.phar.php');
 unlink(__DIR__ . '/' . basename(__FILE__, '.clean.php') . '.phar.php.copy.php');
 ?>
---EXPECT--
+--EXPECTF--
 string(1) "a"
 NULL
-object(stdClass)#2 (1) {
+object(stdClass)#%d (1) {
   ["my"]=>
   string(6) "friend"
 }

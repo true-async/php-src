@@ -102,6 +102,11 @@ PHP_FUNCTION(curl_multi_add_handle)
 	SAVE_CURLM_ERROR(mh, error);
 
 	if (error == CURLM_OK) {
+		/* Create per-handle async event for async context */
+		if (ZEND_ASYNC_IS_ACTIVE) {
+			curl_async_multi_handle_init(ch, mh);
+		}
+
 		Z_ADDREF_P(z_ch);
 		zend_llist_add_element(&mh->easyh, z_ch);
 	}
@@ -164,6 +169,9 @@ PHP_FUNCTION(curl_multi_remove_handle)
 	mh = Z_CURL_MULTI_P(z_mh);
 	ch = Z_CURL_P(z_ch);
 
+	/* Destroy per-handle async event before removing from multi */
+	curl_async_multi_handle_destroy(ch);
+
 	error = curl_multi_remove_handle(mh->multi, ch->cp);
 	SAVE_CURLM_ERROR(mh, error);
 
@@ -221,11 +229,9 @@ PHP_FUNCTION(curl_multi_select)
 		RETURN_THROWS();
 	}
 
-	if (ZEND_ASYNC_IS_ACTIVE) {
-		error = curl_async_select(mh, (int) (timeout * 1000.0), &numfds);
-	} else {
-		error = curl_multi_wait(mh->multi, NULL, 0, (int) (timeout * 1000.0), &numfds);
-	}
+	// error = curl_multi_wait(mh->multi, NULL, 0, (int) (timeout * 1000.0), &numfds);
+	error = curl_async_select(mh, (int) (timeout * 1000.0), &numfds);
+
 	if (CURLM_OK != error) {
 		SAVE_CURLM_ERROR(mh, error);
 		RETURN_LONG(-1);
@@ -265,11 +271,9 @@ PHP_FUNCTION(curl_multi_exec)
 	}
 
 	still_running = zval_get_long(z_still_running);
-	if (ZEND_ASYNC_IS_ACTIVE) {
-		error = curl_async_multi_perform(mh, &still_running);
-	} else {
-		error = curl_multi_perform(mh->multi, &still_running);
-	}
+
+	//error = curl_multi_perform(mh->multi, &still_running);
+	error = curl_async_multi_perform(mh, &still_running);
 	ZEND_TRY_ASSIGN_REF_LONG(z_still_running, still_running);
 
 	SAVE_CURLM_ERROR(mh, error);
@@ -369,6 +373,7 @@ PHP_FUNCTION(curl_multi_close)
 	for (pz_ch = (zval *)zend_llist_get_first_ex(&mh->easyh, &pos); pz_ch;
 		pz_ch = (zval *)zend_llist_get_next_ex(&mh->easyh, &pos)) {
 		php_curl *ch = Z_CURL_P(pz_ch);
+		curl_async_multi_handle_destroy(ch);
 		_php_curl_verify_handlers(ch, /* reporterror */ true);
 		curl_multi_remove_handle(mh->multi, ch->cp);
 	}
@@ -578,7 +583,9 @@ static void curl_multi_free_obj(zend_object *object)
 		pz_ch = (zval *)zend_llist_get_next_ex(&mh->easyh, &pos)) {
 		if (!(OBJ_FLAGS(Z_OBJ_P(pz_ch)) & IS_OBJ_FREE_CALLED)) {
 			ch = Z_CURL_P(pz_ch);
+			curl_async_multi_handle_destroy(ch);
 			_php_curl_verify_handlers(ch, /* reporterror */ false);
+			curl_multi_remove_handle(mh->multi, ch->cp);
 		}
 	}
 

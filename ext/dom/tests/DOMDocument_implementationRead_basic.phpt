@@ -15,6 +15,6 @@ var_dump($doc->implementation);
 
 
 ?>
---EXPECT--
-object(DOMImplementation)#2 (0) {
+--EXPECTF--
+object(DOMImplementation)#%d (0) {
 }

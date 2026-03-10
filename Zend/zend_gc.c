@@ -2438,9 +2438,6 @@ rerun_gc:
 
 	gc_compact();
 
-	/* Objects with destructors were removed from this GC run. Rerun GC right away to clean them
-	 * up. We do this only once: If we encounter more destructors on the second run, we'll not
-	 * run GC another time. */
 	if (should_rerun_gc && !did_rerun_gc) {
 		did_rerun_gc = true;
 		goto rerun_gc;

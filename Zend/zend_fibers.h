@@ -123,8 +123,11 @@ struct _zend_fiber {
 	/* Native C fiber context. */
 	zend_fiber_context context;
 
-	/* Fiber that resumed us. */
-	zend_fiber_context *caller;
+	/* Fiber/coroutine that resumed us. */
+	union {
+		zend_fiber_context *caller;            /* non-coroutine mode */
+		zend_coroutine_t *caller_coroutine;    /* coroutine mode */
+	};
 
 	/* Fiber that suspended us. */
 	zend_fiber_context *previous;

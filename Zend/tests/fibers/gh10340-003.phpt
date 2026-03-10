@@ -28,11 +28,17 @@ print "1\n";
 $fiber = null;
 gc_collect_cycles();
 
+// In TrueAsync, destructors from GC run in a separate coroutine.
+Async\spawn(function () {
+    echo "3\n";
+});
+
 print "2\n";
 ?>
 ==DONE==
 --EXPECT--
 1
-C::__destruct
 2
 ==DONE==
+C::__destruct
+3

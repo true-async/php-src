@@ -20,7 +20,7 @@
 #include "zend_globals.h"
 #include "zend_stream.h"
 
-#define ZEND_ASYNC_API "TrueAsync API v0.9.0"
+#define ZEND_ASYNC_API "TrueAsync ABI v0.9.0"
 #define ZEND_ASYNC_API_VERSION_MAJOR 0
 #define ZEND_ASYNC_API_VERSION_MINOR 9
 #define ZEND_ASYNC_API_VERSION_PATCH 0
@@ -69,18 +69,18 @@ typedef enum {
 //
 #ifdef PHP_WIN32
 typedef int zend_file_descriptor_t;
-#define ZEND_FD_NULL -1
+#define ZEND_FD_NULL (-1)
 typedef DWORD zend_process_id_t;
 typedef HANDLE zend_process_t;
 typedef SOCKET zend_socket_t;
-#define INVALID_IO_DESCRIPTOR -1
+#define INVALID_IO_DESCRIPTOR (-1)
 #else
 typedef int zend_file_descriptor_t;
 typedef pid_t zend_process_id_t;
 typedef pid_t zend_process_t;
 typedef int zend_socket_t;
-#define ZEND_FD_NULL 0
-#define INVALID_IO_DESCRIPTOR -1;
+#define ZEND_FD_NULL (-1)
+#define INVALID_IO_DESCRIPTOR (-1)
 #endif
 
 typedef enum {
@@ -111,11 +111,15 @@ typedef enum {
 	ZEND_ASYNC_IO_TYPE_TTY
 } zend_async_io_type;
 
+#define ZEND_ASYNC_IO_IS_STREAM(type) \
+	((type) == ZEND_ASYNC_IO_TYPE_PIPE || (type) == ZEND_ASYNC_IO_TYPE_TTY || (type) == ZEND_ASYNC_IO_TYPE_TCP)
+
 #define ZEND_ASYNC_IO_READABLE    (1 << 0)
 #define ZEND_ASYNC_IO_WRITABLE    (1 << 1)
 #define ZEND_ASYNC_IO_CLOSED      (1 << 2)
 #define ZEND_ASYNC_IO_EOF         (1 << 3)
 #define ZEND_ASYNC_IO_APPEND      (1 << 4)
+#define ZEND_ASYNC_IO_PRESERVE_FD (1 << 5)
 
 typedef struct _zend_async_io_s zend_async_io_t;
 typedef struct _zend_async_io_req_s zend_async_io_req_t;
@@ -290,7 +294,7 @@ typedef zend_async_scope_t *(*zend_async_new_scope_t)(
 		zend_async_scope_t *parent_scope, bool with_zend_object);
 typedef zend_coroutine_t *(*zend_async_spawn_t)(
 		zend_async_scope_t *scope, zend_object *scope_provider, int32_t priority);
-typedef bool (*zend_async_suspend_t)(bool from_main);
+typedef bool (*zend_async_suspend_t)(bool from_main, bool is_bailout);
 typedef bool (*zend_async_enqueue_coroutine_t)(zend_coroutine_t *coroutine);
 typedef bool (*zend_async_resume_t)(
 		zend_coroutine_t *coroutine, zend_object *error, const bool transfer_error);
@@ -387,13 +391,13 @@ typedef void (*zend_async_microtask_handler_t)(zend_async_microtask_t *microtask
 /* Async IO function pointer types */
 typedef zend_async_io_t *(*zend_async_io_create_t)(
 		zend_file_descriptor_t fd, zend_async_io_type type, uint32_t state);
-typedef zend_async_io_req_t *(*zend_async_io_read_t)(zend_async_io_t *io, size_t max_size);
+typedef zend_async_io_req_t *(*zend_async_io_read_t)(zend_async_io_t *io, char *buf, size_t max_size);
 typedef zend_async_io_req_t *(*zend_async_io_write_t)(zend_async_io_t *io, const char *buf, size_t count);
-typedef int (*zend_async_io_close_t)(zend_async_io_t *io);
+typedef bool (*zend_async_io_close_t)(zend_async_io_t *io);
 typedef int (*zend_async_io_await_t)(zend_async_io_t *io, uint32_t events, struct timeval *timeout);
 typedef zend_async_io_req_t *(*zend_async_io_flush_t)(zend_async_io_t *io);
 typedef zend_async_io_req_t *(*zend_async_io_stat_t)(zend_async_io_t *io, zend_stat_t *buf);
-typedef void (*zend_async_io_seek_t)(zend_async_io_t *io, zend_off_t offset);
+typedef zend_off_t (*zend_async_io_seek_t)(zend_async_io_t *io, zend_off_t offset, int whence);
 
 /* Socket options enum */
 typedef enum {
@@ -707,6 +711,7 @@ typedef struct {
  * Use ZEND_ASYNC_EVENT_SET_HIDDEN(ev) to mark an event as hidden.
  */
 #define ZEND_ASYNC_EVENT_F_HIDDEN (1u << 10)
+#define ZEND_ASYNC_EVENT_F_BAILOUT (1u << 11) /* event is in bailout — skip PHP handlers */
 
 #define ZEND_ASYNC_EVENT_REFERENCE_PREFIX ((uint32_t) 0x80) /* prefix for reference structures */
 
@@ -760,6 +765,9 @@ typedef struct {
 #define ZEND_ASYNC_EVENT_SET_HIDDEN(ev) ((ev)->flags |= ZEND_ASYNC_EVENT_F_HIDDEN)
 #define ZEND_ASYNC_EVENT_CLR_HIDDEN(ev) ((ev)->flags &= ~ZEND_ASYNC_EVENT_F_HIDDEN)
 #define ZEND_ASYNC_EVENT_IS_HIDDEN(ev) (((ev)->flags & ZEND_ASYNC_EVENT_F_HIDDEN) != 0)
+
+#define ZEND_ASYNC_EVENT_SET_BAILOUT(ev) ((ev)->flags |= ZEND_ASYNC_EVENT_F_BAILOUT)
+#define ZEND_ASYNC_EVENT_IS_BAILOUT(ev) (((ev)->flags & ZEND_ASYNC_EVENT_F_BAILOUT) != 0)
 
 // Convert awaitable Zend object to zend_async_event_t pointer
 #define ZEND_ASYNC_EVENT_IS_REFERENCE(ptr) \
@@ -1069,6 +1077,10 @@ struct _zend_async_scope_s {
 	(((scope)->event.flags & ZEND_ASYNC_SCOPE_F_CANCELLED) != 0)
 #define ZEND_ASYNC_SCOPE_IS_DISPOSING(scope) \
 	(((scope)->event.flags & ZEND_ASYNC_SCOPE_F_DISPOSING) != 0)
+#define ZEND_ASYNC_SCOPE_IS_BAILOUT(scope) \
+	ZEND_ASYNC_EVENT_IS_BAILOUT(&(scope)->event)
+#define ZEND_ASYNC_SCOPE_SET_BAILOUT(scope) \
+	ZEND_ASYNC_EVENT_SET_BAILOUT(&(scope)->event)
 
 #define ZEND_ASYNC_SCOPE_SET_CLOSED(scope) ((scope)->event.flags |= ZEND_ASYNC_SCOPE_F_CLOSED)
 #define ZEND_ASYNC_SCOPE_CLR_CLOSED(scope) ((scope)->event.flags &= ~ZEND_ASYNC_SCOPE_F_CLOSED)
@@ -1253,7 +1265,7 @@ struct _zend_coroutine_s {
 #define ZEND_COROUTINE_SUSPENDED(coroutine) \
 	((coroutine)->waker != NULL && ZEND_ASYNC_WAKER_WAITING((coroutine)->waker))
 
-/* Coroutine flags (bits 13-19, bits 10-12 reserved for event flags) */
+/* Coroutine flags (bits 13-19, bits 0-12 reserved for event flags) */
 #define ZEND_COROUTINE_F_STARTED (1u << 13) /* coroutine is started */
 #define ZEND_COROUTINE_F_CANCELLED (1u << 14) /* coroutine is cancelled */
 #define ZEND_COROUTINE_F_ZOMBIE (1u << 15) /* coroutine is a zombie */
@@ -1300,6 +1312,10 @@ struct _zend_coroutine_s {
 	((coroutine)->event.flags |= ZEND_COROUTINE_F_YIELD)
 #define ZEND_COROUTINE_CLR_YIELD(coroutine) \
 	((coroutine)->event.flags &= ~ZEND_COROUTINE_F_YIELD)
+#define ZEND_COROUTINE_IS_BAILOUT(coroutine) \
+	ZEND_ASYNC_EVENT_IS_BAILOUT(&(coroutine)->event)
+#define ZEND_COROUTINE_SET_BAILOUT(coroutine) \
+	ZEND_ASYNC_EVENT_SET_BAILOUT(&(coroutine)->event)
 
 static zend_always_inline zend_string *zend_coroutine_callable_name(
 		const zend_coroutine_t *coroutine)
@@ -1560,6 +1576,10 @@ typedef struct {
 	zend_object *exit_exception;
 	/* Custom heartbeat handler */
 	zend_async_heartbeat_handler_t heartbeat_handler;
+	/* When set, error reporting (file/line/function) uses this coroutine's
+	 * suspended execute_data instead of EG(current_execute_data).
+	 * Used by scheduler code acting on behalf of a specific coroutine. */
+	zend_coroutine_t *acting_coroutine;
 } zend_async_globals_t;
 
 BEGIN_EXTERN_C()
@@ -1598,6 +1618,9 @@ END_EXTERN_C()
 #define ZEND_ASYNC_CURRENT_SCOPE (ZEND_ASYNC_G(coroutine) ? ZEND_ASYNC_G(coroutine)->scope : NULL)
 #define ZEND_ASYNC_MAIN_SCOPE ZEND_ASYNC_G(main_scope)
 #define ZEND_ASYNC_SCHEDULER ZEND_ASYNC_G(scheduler)
+#define ZEND_ASYNC_ACTING_COROUTINE ZEND_ASYNC_G(acting_coroutine)
+#define ZEND_ASYNC_ACT_AS_START(coroutine) ZEND_ASYNC_G(acting_coroutine) = (coroutine)
+#define ZEND_ASYNC_ACT_AS_END() ZEND_ASYNC_G(acting_coroutine) = NULL
 
 #define ZEND_ASYNC_INCREASE_EVENT_COUNT(ev) \
 	do { \
@@ -1756,6 +1779,12 @@ ZEND_API extern zend_async_freeaddrinfo_t zend_async_freeaddrinfo_fn;
 /* Exec API */
 ZEND_API extern zend_async_new_exec_event_t zend_async_new_exec_event_fn;
 ZEND_API extern zend_async_exec_t zend_async_exec_fn;
+
+/* Coroutine VM execute data accessor */
+typedef zend_execute_data *(*zend_async_coroutine_get_execute_data_t)(zend_coroutine_t *coroutine);
+ZEND_API extern zend_async_coroutine_get_execute_data_t zend_async_coroutine_get_execute_data_fn;
+#define ZEND_ASYNC_COROUTINE_GET_EXECUTE_DATA(coroutine) \
+	(zend_async_coroutine_get_execute_data_fn ? zend_async_coroutine_get_execute_data_fn(coroutine) : NULL)
 
 /* Waker API */
 ZEND_API extern zend_async_waker_new_t zend_async_waker_new_fn;
@@ -1966,8 +1995,8 @@ END_EXTERN_C()
 #define ZEND_ASYNC_NEW_COROUTINE(scope) zend_async_new_coroutine_fn(scope)
 #define ZEND_ASYNC_NEW_SCOPE(parent) zend_async_new_scope_fn(parent, false)
 #define ZEND_ASYNC_NEW_SCOPE_WITH_OBJECT(parent) zend_async_new_scope_fn(parent, true)
-#define ZEND_ASYNC_SUSPEND() zend_async_suspend_fn(false)
-#define ZEND_ASYNC_RUN_SCHEDULER_AFTER_MAIN() zend_async_suspend_fn(true)
+#define ZEND_ASYNC_SUSPEND() zend_async_suspend_fn(false, false)
+#define ZEND_ASYNC_RUN_SCHEDULER_AFTER_MAIN(is_bailout) zend_async_suspend_fn(true, is_bailout)
 #define ZEND_ASYNC_ENQUEUE_COROUTINE(coroutine) zend_async_enqueue_coroutine_fn(coroutine)
 #define ZEND_ASYNC_RESUME(coroutine) zend_async_resume_fn(coroutine, NULL, false)
 #define ZEND_ASYNC_RESUME_WITH_ERROR(coroutine, error, transfer_error) \
@@ -2085,13 +2114,13 @@ END_EXTERN_C()
 
 /* Async IO API Macros */
 #define ZEND_ASYNC_IO_CREATE(fd, type, state)  zend_async_io_create_fn(fd, type, state)
-#define ZEND_ASYNC_IO_READ(io, max_size)       zend_async_io_read_fn(io, max_size)
+#define ZEND_ASYNC_IO_READ(io, buf, max_size)  zend_async_io_read_fn(io, buf, max_size)
 #define ZEND_ASYNC_IO_WRITE(io, buf, count)    zend_async_io_write_fn(io, buf, count)
 #define ZEND_ASYNC_IO_CLOSE(io)                zend_async_io_close_fn(io)
 #define ZEND_ASYNC_IO_AWAIT(io, events, tv)    zend_async_io_await_fn(io, events, tv)
 #define ZEND_ASYNC_IO_FLUSH(io)                zend_async_io_flush_fn(io)
 #define ZEND_ASYNC_IO_STAT(io, buf)            zend_async_io_stat_fn(io, buf)
-#define ZEND_ASYNC_IO_SEEK(io, offset)         zend_async_io_seek_fn(io, offset)
+#define ZEND_ASYNC_IO_SEEK(io, offset, whence)  zend_async_io_seek_fn(io, offset, whence)
 #define ZEND_ASYNC_UDP_SENDTO(io, buf, count, addr, addr_len) \
 	zend_async_udp_sendto_fn(io, buf, count, addr, addr_len)
 #define ZEND_ASYNC_UDP_RECVFROM(io, max_size)  zend_async_udp_recvfrom_fn(io, max_size)

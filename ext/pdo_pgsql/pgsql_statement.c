@@ -89,7 +89,7 @@ static void pgsql_stmt_finish(pdo_pgsql_stmt *S, int fin_mode)
 		// @todo Implement !(fin_mode & FIN_DISCARD)
 		//       instead of discarding results we could store them to their statement
 		//       so that their fetch() will get them (albeit not in lazy mode anymore).
-		while ((S->result = pdo_pgsql_get_result_concurrent(H->server))) {
+		while ((S->result = pdo_pgsql_get_result_concurrent(H))) {
 			PQclear(S->result);
 			S->result = NULL;
 		}
@@ -103,10 +103,10 @@ static void pgsql_stmt_finish(pdo_pgsql_stmt *S, int fin_mode)
 		// check if we can circumvent this.
 		char *q = NULL;
 		spprintf(&q, 0, "DEALLOCATE %s", S->stmt_name);
-		res = pdo_pgsql_exec_concurrent(H->server, q);
+		res = pdo_pgsql_exec_concurrent(H, q);
 		efree(q);
 #else
-		res = pdo_pgsql_close_prepared_concurrent(H->server, S->stmt_name);
+		res = pdo_pgsql_close_prepared_concurrent(H, S->stmt_name);
 #endif
 		if (res) {
 			PQclear(res);
@@ -158,7 +158,7 @@ static int pgsql_stmt_dtor(pdo_stmt_t *stmt)
 			PGresult *res;
 
 			spprintf(&q, 0, "CLOSE %s", S->cursor_name);
-			res = pdo_pgsql_exec_concurrent(H->server, q);
+			res = pdo_pgsql_exec_concurrent(H, q);
 			efree(q);
 			if (res) PQclear(res);
 		}
@@ -202,12 +202,12 @@ static int pgsql_stmt_execute(pdo_stmt_t *stmt)
 
 		if (S->is_prepared) {
 			spprintf(&q, 0, "CLOSE %s", S->cursor_name);
-			PQclear(pdo_pgsql_exec_concurrent(H->server, q));
+			PQclear(pdo_pgsql_exec_concurrent(H, q));
 			efree(q);
 		}
 
 		spprintf(&q, 0, "DECLARE %s SCROLL CURSOR WITH HOLD FOR %s", S->cursor_name, ZSTR_VAL(stmt->active_query_string));
-		S->result = pdo_pgsql_exec_concurrent(H->server, q);
+		S->result = pdo_pgsql_exec_concurrent(H, q);
 		efree(q);
 
 		/* check if declare failed */
@@ -223,7 +223,7 @@ static int pgsql_stmt_execute(pdo_stmt_t *stmt)
 
 		/* fetch to be able to get the number of tuples later, but don't advance the cursor pointer */
 		spprintf(&q, 0, "FETCH FORWARD 0 FROM %s", S->cursor_name);
-		S->result = pdo_pgsql_exec_concurrent(H->server, q);
+		S->result = pdo_pgsql_exec_concurrent(H, q);
 		efree(q);
 	} else if (S->stmt_name) {
 		/* using a prepared statement */
@@ -232,7 +232,7 @@ static int pgsql_stmt_execute(pdo_stmt_t *stmt)
 stmt_retry:
 			/* we deferred the prepare until now, because we didn't
 			 * know anything about the parameter types; now we do */
-			S->result = pdo_pgsql_prepare_concurrent(H->server, S->stmt_name, ZSTR_VAL(S->query),
+			S->result = pdo_pgsql_prepare_concurrent(H, S->stmt_name, ZSTR_VAL(S->query),
 						stmt->bound_params ? zend_hash_num_elements(stmt->bound_params) : 0,
 						S->param_types);
 			status = PQresultStatus(S->result);
@@ -257,9 +257,9 @@ stmt_retry:
 #ifndef HAVE_PQCLOSEPREPARED
 						char buf[100]; /* stmt_name == "pdo_crsr_%08x" */
 						snprintf(buf, sizeof(buf), "DEALLOCATE %s", S->stmt_name);
-						res = pdo_pgsql_exec_concurrent(H->server, buf);
+						res = pdo_pgsql_exec_concurrent(H, buf);
 #else
-						res = pdo_pgsql_close_prepared_concurrent(H->server, S->stmt_name);
+						res = pdo_pgsql_close_prepared_concurrent(H, S->stmt_name);
 #endif
 						if (res) {
 							PQclear(res);
@@ -282,12 +282,12 @@ stmt_retry:
 					S->param_formats,
 					0);
 			if (dispatch_result) {
-				if (!pdo_pgsql_flush(H->server)) {
+				if (!pdo_pgsql_flush(H)) {
 					dispatch_result = 0;
 				}
 			}
 		} else {
-			S->result = pdo_pgsql_exec_prepared_concurrent(H->server, S->stmt_name,
+			S->result = pdo_pgsql_exec_prepared_concurrent(H, S->stmt_name,
 				stmt->bound_params ?
 					zend_hash_num_elements(stmt->bound_params) :
 					0,
@@ -307,12 +307,12 @@ stmt_retry:
 					S->param_formats,
 					0);
 			if (dispatch_result) {
-				if (!pdo_pgsql_flush(H->server)) {
+				if (!pdo_pgsql_flush(H)) {
 					dispatch_result = 0;
 				}
 			}
 		} else {
-			S->result = pdo_pgsql_exec_params_concurrent(H->server, ZSTR_VAL(S->query),
+			S->result = pdo_pgsql_exec_params_concurrent(H, ZSTR_VAL(S->query),
 				stmt->bound_params ? zend_hash_num_elements(stmt->bound_params) : 0,
 				S->param_types,
 				(const char**)S->param_values,
@@ -325,12 +325,12 @@ stmt_retry:
 		if (S->is_unbuffered) {
 			dispatch_result = PQsendQuery(H->server, ZSTR_VAL(stmt->active_query_string));
 			if (dispatch_result) {
-				if (!pdo_pgsql_flush(H->server)) {
+				if (!pdo_pgsql_flush(H)) {
 					dispatch_result = 0;
 				}
 			}
 		} else {
-			S->result = pdo_pgsql_exec_concurrent(H->server, ZSTR_VAL(stmt->active_query_string));
+			S->result = pdo_pgsql_exec_concurrent(H, ZSTR_VAL(stmt->active_query_string));
 		}
 	}
 
@@ -347,7 +347,7 @@ stmt_retry:
 		/* no matter if it returns 0: PQ then transparently fallbacks to full result fetching */
 
 		/* try a first fetch to at least have column names and so on */
-		S->result = pdo_pgsql_get_result_concurrent(S->H->server);
+		S->result = pdo_pgsql_get_result_concurrent(S->H);
 	}
 
 	status = PQresultStatus(S->result);
@@ -560,7 +560,7 @@ static int pgsql_stmt_fetch(pdo_stmt_t *stmt,
 		if (ori == PDO_FETCH_ORI_ABS || ori == PDO_FETCH_ORI_REL) {
 			efree(ori_str);
 		}
-		S->result = pdo_pgsql_exec_concurrent(S->H->server, q);
+		S->result = pdo_pgsql_exec_concurrent(S->H, q);
 		efree(q);
 		status = PQresultStatus(S->result);
 
@@ -587,7 +587,7 @@ static int pgsql_stmt_fetch(pdo_stmt_t *stmt,
 				S->result = NULL;
 			}
 
-			S->result = pdo_pgsql_get_result_concurrent(S->H->server);
+			S->result = pdo_pgsql_get_result_concurrent(S->H);
 			status = PQresultStatus(S->result);
 
 			if (status != PGRES_COMMAND_OK && status != PGRES_TUPLES_OK && status != PGRES_SINGLE_TUPLE) {
@@ -599,8 +599,8 @@ static int pgsql_stmt_fetch(pdo_stmt_t *stmt,
 			S->current_row = 0;
 
 			if (!stmt->row_count) {
-				S->is_running_unbuffered = false;
-				/* libpq requires looping until getResult returns null */
+				/* libpq requires looping until getResult returns null.
+				 * pgsql_stmt_finish will clear is_running_unbuffered after draining. */
 				pgsql_stmt_finish(S, 0);
 			}
 		}
@@ -717,7 +717,7 @@ static int pgsql_stmt_get_col(pdo_stmt_t *stmt, int colno, zval *result, enum pd
 	return 1;
 }
 
-static zend_always_inline char * pdo_pgsql_translate_oid_to_table(Oid oid, PGconn *conn)
+static zend_always_inline char * pdo_pgsql_translate_oid_to_table(Oid oid, pdo_pgsql_db_handle *conn)
 {
 	char *table_name = NULL;
 	PGresult *tmp_res;
@@ -767,7 +767,7 @@ static int pgsql_stmt_get_column_meta(pdo_stmt_t *stmt, zend_long colno, zval *r
 
 	table_oid = PQftable(S->result, colno);
 	add_assoc_long(return_value, "pgsql:table_oid", table_oid);
-	table_name = pdo_pgsql_translate_oid_to_table(table_oid, S->H->server);
+	table_name = pdo_pgsql_translate_oid_to_table(table_oid, S->H);
 	if (table_name) {
 		add_assoc_string(return_value, "table", table_name);
 		efree(table_name);
@@ -810,7 +810,7 @@ static int pgsql_stmt_get_column_meta(pdo_stmt_t *stmt, zend_long colno, zval *r
 		default:
 			/* Fetch metadata from Postgres system catalogue */
 			spprintf(&q, 0, "SELECT TYPNAME FROM PG_TYPE WHERE OID=%u", S->cols[colno].pgsql_type);
-			res = pdo_pgsql_exec_concurrent(S->H->server, q);
+			res = pdo_pgsql_exec_concurrent(S->H, q);
 			efree(q);
 			status = PQresultStatus(res);
 			if (status == PGRES_TUPLES_OK && 1 == PQntuples(res)) {

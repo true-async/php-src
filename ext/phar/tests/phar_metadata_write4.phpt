@@ -71,31 +71,31 @@ unlink(__DIR__ . '/' . basename(__FILE__, '.clean.php') . '.phar.php.copy.php');
 In __destruct 1
 string(1) "a"
 Loading metadata for 'a' without allowed_classes
-object(__PHP_Incomplete_Class)#3 (1) {
+object(__PHP_Incomplete_Class)#%d (1) {
   ["__PHP_Incomplete_Class_Name"]=>
   string(14) "EchoesOnWakeup"
 }
 Loading metadata for 'a' with allowed_classes
-In __wakeup 2
-object(EchoesOnWakeup)#2 (0) {
+In __wakeup %d
+object(EchoesOnWakeup)#%d (0) {
 }
-In __destruct 2
+In __destruct %d
 Loading metadata from 'a' from the new phar
-In __wakeup 3
-object(EchoesOnWakeup)#3 (0) {
+In __wakeup %d
+object(EchoesOnWakeup)#%d (0) {
 }
-In __destruct 3
+In __destruct %d
 Loading metadata from 'a' from the new phar with unserialize options
-In __wakeup 2
-object(EchoesOnWakeup)#2 (0) {
+In __wakeup %d
+object(EchoesOnWakeup)#%d (0) {
 }
-In __destruct 2
+In __destruct %d
 Caught In sleep at %sphar_metadata_write4.php:12
-In __wakeup 3
-object(EchoesOnWakeup)#3 (0) {
+In __wakeup %d
+object(EchoesOnWakeup)#%d (0) {
 }
-In __destruct 3
-object(__PHP_Incomplete_Class)#4 (1) {
+In __destruct %d
+object(__PHP_Incomplete_Class)#%d (1) {
   ["__PHP_Incomplete_Class_Name"]=>
   string(14) "EchoesOnWakeup"
 }

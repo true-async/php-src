@@ -541,9 +541,17 @@ static size_t curl_write(char *data, size_t size, size_t nmemb, void *ctx)
 
 	switch (write_handler->method) {
 		case PHP_CURL_STDOUT:
-			PHPWRITE(data, length);
+			if (ch->async_event != NULL) {
+				PHPWRITE_CORO(data, length,
+					((curl_async_event_t *) ch->async_event)->coroutine);
+			} else {
+				PHPWRITE(data, length);
+			}
 			break;
 		case PHP_CURL_FILE:
+			if (ch->async_event != NULL) {
+				return curl_async_write_file(data, size, nmemb, ch, false);
+			}
 			return fwrite(data, size, nmemb, write_handler->fp);
 		case PHP_CURL_RETURN:
 			if (length > 0) {
@@ -551,6 +559,9 @@ static size_t curl_write(char *data, size_t size, size_t nmemb, void *ctx)
 			}
 			break;
 		case PHP_CURL_USER: {
+			if (ch->async_event != NULL) {
+				return curl_async_write_user(data, size, nmemb, ch, false);
+			}
 			zval argv[2];
 			zval retval;
 
@@ -738,6 +749,14 @@ static int curl_prereqfunction(void *clientp, char *conn_primary_ip, char *conn_
 		}
 	}
 
+	if (EG(exception) && ch->async_event != NULL) {
+		curl_async_event_t *curl_event = (curl_async_event_t *) ch->async_event;
+		GC_ADDREF(EG(exception));
+		curl_async_event_set_callback_exception(curl_event, EG(exception));
+		zend_clear_exception();
+		rval = CURL_PREREQFUNC_ABORT;
+	}
+
 	zval_ptr_dtor(&args[0]);
 	zval_ptr_dtor(&args[1]);
 	zval_ptr_dtor(&args[2]);
@@ -796,6 +815,13 @@ static size_t curl_read(char *data, size_t size, size_t nmemb, void *ctx)
 {
 	php_curl *ch = (php_curl *)ctx;
 	php_curl_read *read_handler = ch->handlers.read;
+	const size_t requested = size * nmemb;
+
+	if (ch->async_event != NULL) {
+		return curl_async_read_dispatch(ch, data, requested);
+	}
+
+	/* Sync path */
 	size_t length = 0;
 
 	switch (read_handler->method) {
@@ -861,8 +887,14 @@ static size_t curl_write_header(char *data, size_t size, size_t nmemb, void *ctx
 			}
 			break;
 		case PHP_CURL_FILE:
+			if (ch->async_event != NULL) {
+				return curl_async_write_file(data, size, nmemb, ch, true);
+			}
 			return fwrite(data, size, nmemb, write_handler->fp);
 		case PHP_CURL_USER: {
+			if (ch->async_event != NULL) {
+				return curl_async_write_user(data, size, nmemb, ch, true);
+			}
 			zval argv[2];
 			zval retval;
 
@@ -919,6 +951,16 @@ static int curl_debug(CURL *handle, curl_infotype type, char *data, size_t size,
 		return 0;
 	}
 
+	/* If we already have a pending callback exception, skip calling the user
+	 * callback — libcurl ignores the debug callback return value so we cannot
+	 * abort the transfer from here; just avoid creating more exceptions. */
+	if (ch->async_event != NULL) {
+		curl_async_event_t *curl_event = (curl_async_event_t *) ch->async_event;
+		if (curl_event->callback_exception != NULL) {
+			return 0;
+		}
+	}
+
 	zval args[3];
 
 	GC_ADDREF(&ch->std);
@@ -929,6 +971,13 @@ static int curl_debug(CURL *handle, curl_infotype type, char *data, size_t size,
 	ch->in_callback = true;
 	zend_call_known_fcc(&ch->handlers.debug, NULL, /* param_count */ 3, args, /* named_params */ NULL);
 	ch->in_callback = false;
+
+	if (EG(exception) && ch->async_event != NULL) {
+		curl_async_event_t *curl_event = (curl_async_event_t *) ch->async_event;
+		GC_ADDREF(EG(exception));
+		curl_async_event_set_callback_exception(curl_event, EG(exception));
+		zend_clear_exception();
+	}
 
 	zval_ptr_dtor(&args[0]);
 	zval_ptr_dtor(&args[2]);
@@ -944,15 +993,10 @@ static void curl_free_post(void **post)
 }
 /* }}} */
 
-struct mime_data_cb_arg {
-	zend_string *filename;
-	php_stream *stream;
-};
-
 /* {{{ curl_free_cb_arg */
 static void curl_free_cb_arg(void **cb_arg_p)
 {
-	struct mime_data_cb_arg *cb_arg = (struct mime_data_cb_arg *) *cb_arg_p;
+	mime_data_cb_arg_t *cb_arg = (mime_data_cb_arg_t *) *cb_arg_p;
 
 	ZEND_ASSERT(cb_arg->stream == NULL);
 	zend_string_release(cb_arg->filename);
@@ -1066,7 +1110,7 @@ void init_curl_handle(php_curl *ch)
 	memset(&ch->err, 0, sizeof(struct _php_curl_error));
 
 	zend_llist_init(&ch->to_free->post,  sizeof(struct HttpPost *), (llist_dtor_func_t)curl_free_post,   0);
-	zend_llist_init(&ch->to_free->stream, sizeof(struct mime_data_cb_arg *), (llist_dtor_func_t)curl_free_cb_arg, 0);
+	zend_llist_init(&ch->to_free->stream, sizeof(mime_data_cb_arg_t *), (llist_dtor_func_t)curl_free_cb_arg, 0);
 
 	zend_hash_init(&ch->to_free->slist, 4, NULL, curl_free_slist, 0);
 	ZVAL_UNDEF(&ch->postfields);
@@ -1255,50 +1299,6 @@ zend_long php_curl_get_long(zval *zv)
 	}
 }
 
-static size_t read_cb(char *buffer, size_t size, size_t nitems, void *arg) /* {{{ */
-{
-	struct mime_data_cb_arg *cb_arg = (struct mime_data_cb_arg *) arg;
-	ssize_t numread;
-
-	if (cb_arg->stream == NULL) {
-		if (!(cb_arg->stream = php_stream_open_wrapper(ZSTR_VAL(cb_arg->filename), "rb", IGNORE_PATH, NULL))) {
-			return CURL_READFUNC_ABORT;
-		}
-	}
-	numread = php_stream_read(cb_arg->stream, buffer, nitems * size);
-	if (numread < 0) {
-		php_stream_close(cb_arg->stream);
-		cb_arg->stream = NULL;
-		return CURL_READFUNC_ABORT;
-	}
-	return numread;
-}
-/* }}} */
-
-static int seek_cb(void *arg, curl_off_t offset, int origin) /* {{{ */
-{
-	struct mime_data_cb_arg *cb_arg = (struct mime_data_cb_arg *) arg;
-	int res;
-
-	if (cb_arg->stream == NULL) {
-		return CURL_SEEKFUNC_CANTSEEK;
-	}
-	res = php_stream_seek(cb_arg->stream, offset, origin);
-	return res == SUCCESS ? CURL_SEEKFUNC_OK : CURL_SEEKFUNC_CANTSEEK;
-}
-/* }}} */
-
-static void free_cb(void *arg) /* {{{ */
-{
-	struct mime_data_cb_arg *cb_arg = (struct mime_data_cb_arg *) arg;
-
-	if (cb_arg->stream != NULL) {
-		php_stream_close(cb_arg->stream);
-		cb_arg->stream = NULL;
-	}
-}
-/* }}} */
-
 static inline CURLcode add_simple_field(curl_mime *mime, zend_string *string_key, zval *current)
 {
 	CURLcode error = CURLE_OK;
@@ -1356,10 +1356,9 @@ static inline zend_result build_mime_structure_from_hash(php_curl *ch, zval *zpo
 			/* new-style file upload */
 			zval *prop, rv;
 			char *type = NULL, *filename = NULL;
-			struct mime_data_cb_arg *cb_arg;
-			php_stream_statbuf ssb;
-			size_t filesize = -1;
-			curl_seek_callback seekfunc = seek_cb;
+			mime_data_cb_arg_t *cb_arg;
+			zend_stat_t sb;
+			curl_off_t filesize = -1;
 
 			prop = zend_read_property_ex(curl_CURLFile_class, Z_OBJ_P(current), ZSTR_KNOWN(ZEND_STR_NAME), /* silent */ false, &rv);
 			ZVAL_DEREF(prop);
@@ -1386,29 +1385,26 @@ static inline zend_result build_mime_structure_from_hash(php_curl *ch, zval *zpo
 				zval_ptr_dtor(&ch->postfields);
 				ZVAL_COPY(&ch->postfields, zpostfields);
 
-				php_stream *stream;
-				if ((stream = php_stream_open_wrapper(ZSTR_VAL(postval), "rb", STREAM_MUST_SEEK, NULL))) {
-					if (!stream->readfilters.head && !php_stream_stat(stream, &ssb)) {
-						filesize = ssb.sb.st_size;
-					}
-				} else {
-					seekfunc = NULL;
+				/* Get file size via stat (no stream needed) */
+				if (zend_stat(ZSTR_VAL(postval), &sb) == 0) {
+					filesize = sb.st_size;
 				}
 
 				part = curl_mime_addpart(mime);
 				if (part == NULL) {
-					if (stream) {
-						php_stream_close(stream);
-					}
 					goto out_string;
 				}
 
 				cb_arg = emalloc(sizeof *cb_arg);
 				cb_arg->filename = zend_string_copy(postval);
-				cb_arg->stream = stream;
+				cb_arg->stream = NULL;
+				cb_arg->curl = ch->cp;
+				cb_arg->ch = ch;
+				cb_arg->async_state = NULL;
 
 				if ((form_error = curl_mime_name(part, ZSTR_VAL(string_key))) != CURLE_OK
-					|| (form_error = curl_mime_data_cb(part, filesize, read_cb, seekfunc, free_cb, cb_arg)) != CURLE_OK
+					|| (form_error = curl_mime_data_cb(part, filesize,
+						curl_async_read_cb, NULL, curl_async_free_cb, cb_arg)) != CURLE_OK
 					|| (form_error = curl_mime_filename(part, filename ? filename : ZSTR_VAL(postval))) != CURLE_OK
 					|| (form_error = curl_mime_type(part, type ? type : "application/octet-stream")) != CURLE_OK) {
 					error = form_error;
@@ -2355,11 +2351,8 @@ PHP_FUNCTION(curl_exec)
 
 	_php_curl_cleanup_handle(ch);
 
-	if (ZEND_ASYNC_IS_ACTIVE) {
-		error = curl_async_perform(ch->cp);
-	} else {
-		error = curl_easy_perform(ch->cp);
-	}
+	//error = curl_easy_perform(ch->cp);
+	error = curl_async_perform(ch);
 	SAVE_CURL_ERROR(ch, error);
 
 	if (error != CURLE_OK) {
@@ -2798,6 +2791,20 @@ static void curl_free_obj(zend_object *object)
 	efree(ch->handlers.write);
 	efree(ch->handlers.write_header);
 	efree(ch->handlers.read);
+
+	/* Safety net: destroy per-handle async event if still alive
+	 * (e.g. easy handle freed without curl_multi_remove_handle) */
+	if (ch->async_event != NULL) {
+		curl_async_event_t *event = (curl_async_event_t *) ch->async_event;
+		event->base.stop(&event->base);
+		event->base.dispose(&event->base);
+	}
+
+	/* Safety net: normally freed by curl_async_event_stop */
+	if (ch->async_read_state != NULL) {
+		curl_async_read_state_free(ch->async_read_state);
+		ch->async_read_state = NULL;
+	}
 
 	if (ZEND_FCC_INITIALIZED(ch->handlers.progress)) {
 		zend_fcc_dtor(&ch->handlers.progress);

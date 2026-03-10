@@ -1,5 +1,9 @@
 --TEST--
 Bug #72666 (stat cache clearing inconsistent - exec)
+--SKIPIF--
+<?php
+if (PHP_OS_FAMILY === 'Windows') die('skip Not for Windows');
+?>
 --FILE--
 <?php
 $filename = __DIR__ . '/bug72666_variation4.txt';

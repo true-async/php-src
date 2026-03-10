@@ -60,10 +60,14 @@ extern int php_get_gid_by_name(const char *name, gid_t *gid);
 
 #if defined(PHP_WIN32)
 # define PLAIN_WRAP_BUF_SIZE(st) ((unsigned int)(st > INT_MAX ? INT_MAX : st))
-#define fsync _commit
-#define fdatasync fsync
+# define fsync _commit
+# define fdatasync fsync
+# define php_fd_set_nonblock(fd)	((void)0)
+# define php_fd_set_block(fd)		((void)0)
 #else
 # define PLAIN_WRAP_BUF_SIZE(st) (st)
+# define php_fd_set_nonblock(fd)	fcntl((fd), F_SETFL, fcntl((fd), F_GETFL, 0) | O_NONBLOCK)
+# define php_fd_set_block(fd)		fcntl((fd), F_SETFL, fcntl((fd), F_GETFL, 0) & ~O_NONBLOCK)
 # if !defined(HAVE_FDATASYNC)
 #  define fdatasync fsync
 # elif defined(__APPLE__)
@@ -142,7 +146,9 @@ typedef struct {
 	unsigned is_pipe_blocking:1; /* allow blocking read() on pipes, currently Windows only */
 	unsigned no_forced_fstat:1;  /* Use fstat cache even if forced */
 	unsigned is_seekable:1;		/* don't try and seek, if not set */
-	unsigned _reserved:26;
+	unsigned is_blocked:1;		/* true (default) = blocking mode; false = non-blocking */
+	unsigned sync_io_fallback:1;	/* fd temporarily set to blocking for scheduler context */
+	unsigned _reserved:24;
 
 	zend_async_io_t *async_io;
 	zend_async_poll_event_t *poll_event;
@@ -189,7 +195,7 @@ static uint32_t php_stdiop_mode_to_io_state(const char *mode)
 
 static void php_stdiop_init_async_io(php_stdio_stream_data *self, const char *mode)
 {
-	if (UNEXPECTED(zend_async_io_create_fn == NULL)) {
+	if (UNEXPECTED(ZEND_ASYNC_IS_OFF)) {
 		return;
 	}
 
@@ -206,8 +212,14 @@ static void php_stdiop_init_async_io(php_stdio_stream_data *self, const char *mo
 
 	const DWORD file_type = GetFileType((HANDLE)os_handle);
 
-	if (self->is_pipe || file_type == FILE_TYPE_PIPE) {
-		type = ZEND_ASYNC_IO_TYPE_PIPE;
+	if (file_type == FILE_TYPE_PIPE) {
+		/* GetFileType returns FILE_TYPE_PIPE for both named pipes and sockets.
+		 * GetNamedPipeInfo succeeds only for real pipes, not Winsock sockets. */
+		if (self->is_pipe || GetNamedPipeInfo((HANDLE)os_handle, NULL, NULL, NULL, NULL)) {
+			type = ZEND_ASYNC_IO_TYPE_PIPE;
+		} else {
+			type = ZEND_ASYNC_IO_TYPE_TCP;
+		}
 	} else if (file_type == FILE_TYPE_CHAR) {
 		DWORD console_mode;
 		if (GetConsoleMode((HANDLE)os_handle, &console_mode)) {
@@ -220,6 +232,7 @@ static void php_stdiop_init_async_io(php_stdio_stream_data *self, const char *mo
 	}
 
 	zend_file_descriptor_t fd = self->fd;
+
 #else
 	if (self->is_pipe) {
 		type = ZEND_ASYNC_IO_TYPE_PIPE;
@@ -229,7 +242,7 @@ static void php_stdiop_init_async_io(php_stdio_stream_data *self, const char *mo
 		type = ZEND_ASYNC_IO_TYPE_FILE;
 	}
 
-	zend_file_descriptor_t fd = self->fd;
+	const zend_file_descriptor_t fd = self->fd;
 #endif
 	const uint32_t state = php_stdiop_mode_to_io_state(mode);
 
@@ -260,6 +273,7 @@ static php_stream *_php_stream_fopen_from_fd_int(int fd, const char *mode, const
 	self->file = NULL;
 	self->is_seekable = 1;
 	self->is_pipe = 0;
+	self->is_blocked = 1;
 	self->lock_flag = LOCK_UN;
 	self->is_process_pipe = 0;
 	self->temp_name = NULL;
@@ -281,6 +295,7 @@ static php_stream *_php_stream_fopen_from_file_int(FILE *file, const char *mode 
 	self->file = file;
 	self->is_seekable = 1;
 	self->is_pipe = 0;
+	self->is_blocked = 1;
 	self->lock_flag = LOCK_UN;
 	self->is_process_pipe = 0;
 	self->temp_name = NULL;
@@ -436,6 +451,7 @@ PHPAPI php_stream *_php_stream_fopen_from_pipe(FILE *file, const char *mode STRE
 	self->file = file;
 	self->is_seekable = 0;
 	self->is_pipe = 1;
+	self->is_blocked = 1;
 	self->lock_flag = LOCK_UN;
 	self->is_process_pipe = 1;
 	self->fd = fileno(file);
@@ -448,7 +464,17 @@ PHPAPI php_stream *_php_stream_fopen_from_pipe(FILE *file, const char *mode STRE
 	stream = php_stream_alloc_rel(&php_stream_stdio_ops, self, 0, mode);
 	stream->flags |= PHP_STREAM_FLAG_NO_SEEK;
 
-	php_stdiop_init_async_io(self, mode);
+	/* TODO: popen() should be reimplemented using fork()/exec()/pipe() like proc_open()
+	 * instead of libc popen(), so the child PID is stored explicitly. This would allow
+	 * proper async waitpid() without the dup() workaround below.
+	 *
+	 * Current workaround: dup the fd so libuv owns the copy and the original stays
+	 * in FILE* for pclose() to do fclose() + waitpid(). */
+	int dup_fd = dup(self->fd);
+	if (dup_fd >= 0) {
+		self->fd = dup_fd;
+		php_stdiop_init_async_io(self, mode);
+	}
 
 	return stream;
 }
@@ -460,10 +486,15 @@ static ssize_t php_stdiop_write(php_stream *stream, const char *buf, size_t coun
 
 	assert(data != NULL);
 
-	if (data->async_io != NULL) {
+	if (data->async_io != NULL && data->is_blocked && !ZEND_ASYNC_IS_SCHEDULER_CONTEXT) {
 		ZEND_ASYNC_SCHEDULER_INIT();
 		if (UNEXPECTED(EG(exception))) {
 			return -1;
+		}
+
+		if (UNEXPECTED(data->sync_io_fallback)) {
+			php_fd_set_nonblock(data->fd);
+			data->sync_io_fallback = 0;
 		}
 
 		zend_async_io_req_t *req = ZEND_ASYNC_IO_WRITE(data->async_io, buf, count);
@@ -504,6 +535,11 @@ static ssize_t php_stdiop_write(php_stream *stream, const char *buf, size_t coun
 		const ssize_t transferred = req->transferred;
 		req->dispose(req);
 		return transferred;
+	}
+
+	if (data->async_io != NULL && data->is_blocked && !data->sync_io_fallback) {
+		php_fd_set_block(data->fd);
+		data->sync_io_fallback = 1;
 	}
 
 	if (data->fd >= 0) {
@@ -553,7 +589,10 @@ static ssize_t php_stdiop_read(php_stream *stream, char *buf, size_t count)
 
 	assert(data != NULL);
 
-	if (data->async_io != NULL) {
+	/* Scheduler context cannot suspend coroutines, so async IO is not possible.
+	 * Skip this block entirely and fall through to the sync path below,
+	 * which will set the fd to blocking mode if needed. */
+	if (data->async_io != NULL && data->is_blocked && !ZEND_ASYNC_IS_SCHEDULER_CONTEXT) {
 		ZEND_ASYNC_SCHEDULER_INIT();
 		if (UNEXPECTED(EG(exception))) {
 			return -1;
@@ -561,7 +600,14 @@ static ssize_t php_stdiop_read(php_stream *stream, char *buf, size_t count)
 
 		data->timeout_event = false;
 
-		zend_async_io_req_t *req = ZEND_ASYNC_IO_READ(data->async_io, count);
+		/* Restore non-blocking mode if a previous scheduler-context call
+		 * temporarily switched the fd to blocking. */
+		if (UNEXPECTED(data->sync_io_fallback)) {
+			php_fd_set_nonblock(data->fd);
+			data->sync_io_fallback = 0;
+		}
+
+		zend_async_io_req_t *req = ZEND_ASYNC_IO_READ(data->async_io, buf, count);
 		if (UNEXPECTED(req == NULL)) {
 			return -1;
 		}
@@ -617,18 +663,20 @@ static ssize_t php_stdiop_read(php_stream *stream, char *buf, size_t count)
 				req->exception = NULL;
 			}
 			req->dispose(req);
-			stream->eof = 1;
 			return -1;
 		}
 
 		const ssize_t transferred = req->transferred;
-		if (transferred > 0) {
-			memcpy(buf, req->buf, transferred);
-		} else if (transferred == 0) {
+		if (transferred == 0) {
 			stream->eof = 1;
 		}
 		req->dispose(req);
 		return transferred;
+	}
+
+	if (data->async_io != NULL && data->is_blocked && !data->sync_io_fallback) {
+		php_fd_set_block(data->fd);
+		data->sync_io_fallback = 1;
 	}
 
 	if (data->fd >= 0) {
@@ -649,6 +697,9 @@ static ssize_t php_stdiop_read(php_stream *stream, char *buf, size_t count)
 				}
 				/* If there's nothing to read, wait in 10us periods. */
 				if (0 == avail_read) {
+					if (!self->is_blocked) {
+						return 0;
+					}
 					usleep(10);
 				}
 			} while (0 == avail_read && retry++ < 3200000);
@@ -724,10 +775,21 @@ static int php_stdiop_close(php_stream *stream, int close_handle)
 	}
 
 	if (data->async_io != NULL) {
-		const int fd_closed = ZEND_ASYNC_IO_CLOSE(data->async_io);
+		if (!close_handle) {
+			data->async_io->state |= ZEND_ASYNC_IO_PRESERVE_FD;
+		}
+		const bool is_stream = ZEND_ASYNC_IO_IS_STREAM(data->async_io->type);
+		ZEND_ASYNC_IO_CLOSE(data->async_io);
+		data->async_io->event.dispose(&data->async_io->event);
 		data->async_io = NULL;
-		if (fd_closed) {
+		if (is_stream && !data->is_process_pipe) {
 			data->fd = -1;
+		}
+		/* If FILE* was created via fdopen(dup(fd)) in php_stdiop_cast,
+		 * it owns a separate fd copy that must be closed explicitly.
+		 * The original fd (data->fd) will be closed by normal logic below. */
+		if (data->file != NULL) {
+			fclose(data->file);
 			data->file = NULL;
 		}
 	}
@@ -815,6 +877,35 @@ static int php_stdiop_flush(php_stream *stream)
 static int php_stdiop_sync(php_stream *stream, bool dataonly)
 {
 	php_stdio_stream_data *data = (php_stdio_stream_data*)stream->abstract;
+
+	/* Async IO path: flush via async reactor, avoid fdopen() which creates
+	 * a FILE* that conflicts with reactor's fd ownership. */
+	if (data->async_io != NULL) {
+		/* fsync/fdatasync is only meaningful for regular files */
+		if (data->async_io->type == ZEND_ASYNC_IO_TYPE_PIPE
+				|| data->async_io->type == ZEND_ASYNC_IO_TYPE_TTY) {
+			return -1;
+		}
+
+		zend_async_io_req_t *req = ZEND_ASYNC_IO_FLUSH(data->async_io);
+		if (UNEXPECTED(req == NULL)) {
+			return -1;
+		}
+
+		if (!req->completed) {
+			zend_coroutine_t *const coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+			ZEND_ASYNC_WAKER_NEW(coroutine);
+			zend_async_resume_when(coroutine, &data->async_io->event, false,
+					zend_async_waker_callback_resolve, NULL);
+			ZEND_ASYNC_SUSPEND();
+			ZEND_ASYNC_WAKER_DESTROY(coroutine);
+		}
+
+		const int result = (int) req->result;
+		req->dispose(req);
+		return result;
+	}
+
 	FILE *fp;
 	int fd;
 
@@ -836,7 +927,6 @@ static int php_stdiop_sync(php_stream *stream, bool dataonly)
 static int php_stdiop_seek(php_stream *stream, zend_off_t offset, int whence, zend_off_t *newoffset)
 {
 	php_stdio_stream_data *data = (php_stdio_stream_data*)stream->abstract;
-	int ret;
 
 	assert(data != NULL);
 
@@ -846,28 +936,20 @@ static int php_stdiop_seek(php_stream *stream, zend_off_t offset, int whence, ze
 	}
 
 	if (data->fd >= 0) {
-		zend_off_t result;
+		const zend_off_t result = data->async_io != NULL
+			? ZEND_ASYNC_IO_SEEK(data->async_io, offset, whence)
+			: zend_lseek(data->fd, offset, whence);
 
-		result = zend_lseek(data->fd, offset, whence);
-		if (result == (zend_off_t)-1)
+		if (result == (zend_off_t)-1) {
 			return -1;
-
-		*newoffset = result;
-
-		if (data->async_io != NULL && zend_async_io_seek_fn != NULL) {
-			ZEND_ASYNC_IO_SEEK(data->async_io, result);
 		}
 
+		*newoffset = result;
 		return 0;
 
 	} else {
-		ret = zend_fseek(data->file, offset, whence);
+		const int ret = zend_fseek(data->file, offset, whence);
 		*newoffset = zend_ftell(data->file);
-
-		if (ret == 0 && data->async_io != NULL && zend_async_io_seek_fn != NULL) {
-			ZEND_ASYNC_IO_SEEK(data->async_io, *newoffset);
-		}
-
 		return ret;
 	}
 }
@@ -885,20 +967,48 @@ static int php_stdiop_cast(php_stream *stream, int castas, void **ret)
 	switch (castas)	{
 		case PHP_STREAM_AS_STDIO:
 			if (ret) {
-
 				if (data->file == NULL) {
-					/* we were opened as a plain file descriptor, so we
-					 * need fdopen now */
+					int fd_for_fdopen = data->fd;
+
+					/* TEMPORARY: When async IO owns the fd, dup() before fdopen()
+					 * to avoid dual ownership.  fdopen() wraps the fd, but libuv
+					 * also holds it; on close libuv calls _close(fd), orphaning
+					 * the FILE* in CRT — which crashes on Windows during exit().
+					 * With dup, FILE* gets its own fd copy.
+					 * TODO: analyze all PHP_STREAM_AS_STDIO call sites for a
+					 * proper long-term solution (see ext/async/TODO.md). */
+					if (data->async_io != NULL) {
+#ifdef PHP_WIN32
+						fd_for_fdopen = _dup(data->fd);
+#else
+						fd_for_fdopen = dup(data->fd);
+#endif
+						if (fd_for_fdopen < 0) {
+							return FAILURE;
+						}
+					}
+
 					char fixed_mode[5];
 					php_stream_mode_sanitize_fdopen_fopencookie(stream, fixed_mode);
-					data->file = fdopen(data->fd, fixed_mode);
+					data->file = fdopen(fd_for_fdopen, fixed_mode);
 					if (data->file == NULL) {
+						if (data->async_io != NULL) {
+#ifdef PHP_WIN32
+							_close(fd_for_fdopen);
+#else
+							close(fd_for_fdopen);
+#endif
+						}
 						return FAILURE;
 					}
 				}
 
 				*(FILE**)ret = data->file;
-				data->fd = SOCK_ERR;
+				/* When async IO dup'd the fd, the original fd is still valid
+				 * and must remain tracked so plain_wrapper can close it. */
+				if (data->async_io == NULL) {
+					data->fd = SOCK_ERR;
+				}
 			}
 			return SUCCESS;
 
@@ -970,9 +1080,18 @@ static int php_stdiop_set_option(php_stream *stream, int option, int value, void
 
 			if (-1 == fcntl(fd, F_SETFL, flags))
 				return -1;
+			data->is_blocked = value ? 1 : 0;
 			return oldval;
 #else
-			return -1; /* not yet implemented */
+			/* Windows has no fcntl/O_NONBLOCK, but when async IO is active
+			 * the is_blocked flag controls whether reads suspend the coroutine
+			 * (blocking) or return immediately (non-blocking). */
+			if (data->async_io != NULL) {
+				const int was_blocked = data->is_blocked;
+				data->is_blocked = value ? 1 : 0;
+				return was_blocked;
+			}
+			return -1;
 #endif
 
 		case PHP_STREAM_OPTION_WRITE_BUFFER:
@@ -1267,12 +1386,18 @@ static int php_stdiop_set_option(php_stream *stream, int option, int value, void
 			}
 
 			add_assoc_bool((zval*)ptrparam, "timed_out", data->timeout_event);
+			if (data->async_io != NULL) {
+				/* When async IO is active the fd is non-blocking at the OS level,
+				 * but the logical blocking mode is tracked in is_blocked. */
+				add_assoc_bool((zval*)ptrparam, "blocked", data->is_blocked);
+			} else {
 #ifdef O_NONBLOCK
-			flags = fcntl(fd, F_GETFL, 0);
-			add_assoc_bool((zval*)ptrparam, "blocked", (flags & O_NONBLOCK)? 0 : 1);
+				flags = fcntl(fd, F_GETFL, 0);
+				add_assoc_bool((zval*)ptrparam, "blocked", (flags & O_NONBLOCK)? 0 : 1);
 #else
-			add_assoc_bool((zval*)ptrparam, "blocked", 1);
+				add_assoc_bool((zval*)ptrparam, "blocked", 1);
 #endif
+			}
 			add_assoc_bool((zval*)ptrparam, "eof", stream->eof);
 			return PHP_STREAM_OPTION_RETURN_OK;
 		case PHP_STREAM_OPTION_ASYNC_EVENT_HANDLE:
@@ -1310,18 +1435,28 @@ static int php_stdiop_set_option(php_stream *stream, int option, int value, void
 			}
 #endif
 
+		case PHP_STREAM_OPTION_ASYNC_IO:
+			if (data->async_io != NULL && ptrparam != NULL) {
+				*(zend_async_io_t **)ptrparam = data->async_io;
+				return PHP_STREAM_OPTION_RETURN_OK;
+			}
+			return PHP_STREAM_OPTION_RETURN_NOTIMPL;
+
 		case PHP_STREAM_OPTION_ALIGN_POSITION:
 			if (data->async_io != NULL && ptrparam != NULL && zend_async_io_seek_fn != NULL) {
 				zend_off_t *pos = (zend_off_t *)ptrparam;
-				ZEND_ASYNC_IO_SEEK(data->async_io, *pos);
+				ZEND_ASYNC_IO_SEEK(data->async_io, *pos, SEEK_SET);
 				return PHP_STREAM_OPTION_RETURN_OK;
 			}
 			return PHP_STREAM_OPTION_RETURN_NOTIMPL;
 
 		case PHP_STREAM_OPTION_READ_TIMEOUT:
-			data->timeout = *(struct timeval *)ptrparam;
-			data->timeout_event = false;
-			return PHP_STREAM_OPTION_RETURN_OK;
+			if (data->is_pipe) {
+				data->timeout = *(struct timeval *)ptrparam;
+				data->timeout_event = false;
+				return PHP_STREAM_OPTION_RETURN_OK;
+			}
+			return PHP_STREAM_OPTION_RETURN_NOTIMPL;
 
 		default:
 			return PHP_STREAM_OPTION_RETURN_NOTIMPL;

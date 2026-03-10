@@ -7552,11 +7552,24 @@ ZEND_METHOD(ReflectionFiber, getFiber)
 }
 
 #define REFLECTION_CHECK_VALID_FIBER(fiber) do { \
-		if (fiber == NULL || fiber->context.status == ZEND_FIBER_STATUS_INIT || fiber->context.status == ZEND_FIBER_STATUS_DEAD) { \
+		if (fiber == NULL) { \
+			zend_throw_error(NULL, "Cannot fetch information from a fiber that has not been started or is terminated"); \
+			RETURN_THROWS(); \
+		} \
+		if (fiber->coroutine != NULL) { \
+			if (!ZEND_COROUTINE_IS_STARTED(fiber->coroutine) || ZEND_COROUTINE_IS_FINISHED(fiber->coroutine)) { \
+				zend_throw_error(NULL, "Cannot fetch information from a fiber that has not been started or is terminated"); \
+				RETURN_THROWS(); \
+			} \
+		} else if (fiber->context.status == ZEND_FIBER_STATUS_INIT || fiber->context.status == ZEND_FIBER_STATUS_DEAD) { \
 			zend_throw_error(NULL, "Cannot fetch information from a fiber that has not been started or is terminated"); \
 			RETURN_THROWS(); \
 		} \
 	} while (0)
+
+#define REFLECTION_FIBER_IS_CURRENT(fiber) \
+	(EG(active_fiber) == fiber || \
+	 (fiber->coroutine != NULL && fiber->coroutine == ZEND_ASYNC_CURRENT_COROUTINE))
 
 ZEND_METHOD(ReflectionFiber, getTrace)
 {
@@ -7574,9 +7587,11 @@ ZEND_METHOD(ReflectionFiber, getTrace)
 	prev_execute_data = fiber->stack_bottom->prev_execute_data;
 	fiber->stack_bottom->prev_execute_data = NULL;
 
-	if (EG(active_fiber) != fiber) {
+	if (!REFLECTION_FIBER_IS_CURRENT(fiber)) {
 		// No need to replace current execute data if within the current fiber.
-		EG(current_execute_data) = fiber->execute_data;
+		EG(current_execute_data) = fiber->execute_data
+			? fiber->execute_data
+			: ZEND_ASYNC_COROUTINE_GET_EXECUTE_DATA(fiber->coroutine);
 	}
 
 	zend_fetch_debug_backtrace(return_value, 0, options, 0);
@@ -7594,10 +7609,13 @@ ZEND_METHOD(ReflectionFiber, getExecutingLine)
 
 	REFLECTION_CHECK_VALID_FIBER(fiber);
 
-	if (EG(active_fiber) == fiber) {
+	if (REFLECTION_FIBER_IS_CURRENT(fiber)) {
 		prev_execute_data = execute_data->prev_execute_data;
 	} else {
-		prev_execute_data = fiber->execute_data->prev_execute_data;
+		zend_execute_data *fiber_ex = fiber->execute_data
+			? fiber->execute_data
+			: (fiber->coroutine ? ZEND_ASYNC_COROUTINE_GET_EXECUTE_DATA(fiber->coroutine) : NULL);
+		prev_execute_data = fiber_ex ? fiber_ex->prev_execute_data : NULL;
 	}
 
 	while (prev_execute_data && (!prev_execute_data->func || !ZEND_USER_CODE(prev_execute_data->func->common.type))) {
@@ -7618,10 +7636,13 @@ ZEND_METHOD(ReflectionFiber, getExecutingFile)
 
 	REFLECTION_CHECK_VALID_FIBER(fiber);
 
-	if (EG(active_fiber) == fiber) {
+	if (REFLECTION_FIBER_IS_CURRENT(fiber)) {
 		prev_execute_data = execute_data->prev_execute_data;
 	} else {
-		prev_execute_data = fiber->execute_data->prev_execute_data;
+		zend_execute_data *fiber_ex = fiber->execute_data
+			? fiber->execute_data
+			: (fiber->coroutine ? ZEND_ASYNC_COROUTINE_GET_EXECUTE_DATA(fiber->coroutine) : NULL);
+		prev_execute_data = fiber_ex ? fiber_ex->prev_execute_data : NULL;
 	}
 
 	while (prev_execute_data && (!prev_execute_data->func || !ZEND_USER_CODE(prev_execute_data->func->common.type))) {
@@ -7639,9 +7660,31 @@ ZEND_METHOD(ReflectionFiber, getCallable)
 
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	if (fiber == NULL || fiber->context.status == ZEND_FIBER_STATUS_DEAD) {
-		zend_throw_error(NULL, "Cannot fetch the callable from a fiber that has terminated"); \
+	if (fiber == NULL) {
+		zend_throw_error(NULL, "Cannot fetch the callable from a fiber that has terminated");
 		RETURN_THROWS();
+	}
+
+	if (fiber->coroutine != NULL) {
+		if (ZEND_COROUTINE_IS_FINISHED(fiber->coroutine)) {
+			zend_throw_error(NULL, "Cannot fetch the callable from a fiber that has terminated");
+			RETURN_THROWS();
+		}
+	} else if (fiber->context.status == ZEND_FIBER_STATUS_DEAD) {
+		zend_throw_error(NULL, "Cannot fetch the callable from a fiber that has terminated");
+		RETURN_THROWS();
+	}
+
+	/* In coroutine mode, callable ownership transfers:
+	 *   - Before start: fiber->fcall owns it
+	 *   - After start:  fiber->coroutine->fcall owns it (fiber->fcall is NULL)
+	 * In non-coroutine mode, fiber->fci.function_name is used. */
+	if (fiber->fcall != NULL) {
+		RETURN_COPY(&fiber->fcall->fci.function_name);
+	}
+
+	if (fiber->coroutine != NULL && fiber->coroutine->fcall != NULL) {
+		RETURN_COPY(&fiber->coroutine->fcall->fci.function_name);
 	}
 
 	RETURN_COPY(&fiber->fci.function_name);

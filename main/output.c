@@ -25,6 +25,10 @@
 #endif
 
 #include "php.h"
+#ifndef PHP_WIN32
+# include <fcntl.h>
+# include <unistd.h>
+#endif
 #include "ext/standard/head.h"
 #include "ext/standard/url_scanner_ex.h"
 #include "SAPI.h"
@@ -52,6 +56,7 @@ static HashTable php_output_handler_reverse_conflicts;
 /* }}} */
 
 /* {{{ forward declarations */
+static inline void php_output_write_blocking(int fd, FILE *fp, const char *str, size_t str_len);
 static inline bool php_output_lock_error(int op);
 static inline void php_output_op(int op, const char *str, size_t len);
 
@@ -87,14 +92,36 @@ static inline void php_output_init_globals(zend_output_globals *G)
 /* }}} */
 
 /* {{{ stderr/stdout writer if not PHP_OUTPUT_ACTIVATED */
+
+/* When the async extension is active, reactor may set O_NONBLOCK on stdout/stderr
+ * fwrite() on a non-blocking fd can silently lose data when
+ * write() returns EAGAIN.
+ * Temporarily restore blocking mode.
+ */
+static inline void php_output_write_blocking(const int fd, FILE *fp, const char *str, const size_t str_len)
+{
+#ifndef PHP_WIN32
+	const int flags = fcntl(fd, F_GETFL);
+
+	if (flags != -1 && (flags & O_NONBLOCK)) {
+		fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+		fwrite(str, 1, str_len, fp);
+		fflush(fp);
+		fcntl(fd, F_SETFL, flags);
+		return;
+	}
+#endif
+	fwrite(str, 1, str_len, fp);
+}
+
 static size_t php_output_stdout(const char *str, size_t str_len)
 {
-	fwrite(str, 1, str_len, stdout);
+	php_output_write_blocking(STDOUT_FILENO, stdout, str, str_len);
 	return str_len;
 }
 static size_t php_output_stderr(const char *str, size_t str_len)
 {
-	fwrite(str, 1, str_len, stderr);
+	php_output_write_blocking(STDERR_FILENO, stderr, str, str_len);
 /* See http://support.microsoft.com/kb/190351 */
 #ifdef PHP_WIN32
 	fflush(stderr);
@@ -257,6 +284,18 @@ PHPAPI size_t php_output_write(const char *str, size_t len)
 		return 0;
 	}
 	return php_output_direct(str, len);
+}
+/* }}} */
+
+/* {{{ size_t php_output_write_with_coroutine(const char *str, size_t len, zend_coroutine_t *coro)
+ * Buffered write in the output context of the given coroutine */
+PHPAPI size_t php_output_write_with_coroutine(const char *str, size_t len, zend_coroutine_t *coro)
+{
+	zend_coroutine_t *saved = ZEND_ASYNC_G(coroutine);
+	ZEND_ASYNC_G(coroutine) = coro;
+	const size_t result = php_output_write(str, len);
+	ZEND_ASYNC_G(coroutine) = saved;
+	return result;
 }
 /* }}} */
 
@@ -1701,6 +1740,17 @@ static void php_output_coroutine_cleanup_callback(
 	zval *ctx_zval = ZEND_ASYNC_INTERNAL_CONTEXT_FIND(coroutine, php_output_context_key);
 	if (ctx_zval && Z_TYPE_P(ctx_zval) == IS_PTR) {
 		php_output_context_t *ctx = (php_output_context_t*)Z_PTR_P(ctx_zval);
+		/* Flush all output buffers before freeing (mirrors php_output_end_all
+		 * which runs during normal request shutdown) */
+		zend_coroutine_t * previous_coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+		zend_try {
+			ZEND_ASYNC_CURRENT_COROUTINE = coroutine;
+			php_output_end_all();
+			ZEND_ASYNC_CURRENT_COROUTINE = previous_coroutine;
+		} zend_catch {
+			ZEND_ASYNC_CURRENT_COROUTINE = previous_coroutine;
+			zend_bailout();
+		} zend_end_try();
 		php_output_free_async_context(ctx);
 		efree(ctx);
 		ZEND_ASYNC_INTERNAL_CONTEXT_UNSET(coroutine, php_output_context_key);

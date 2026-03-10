@@ -54,7 +54,7 @@ array(2) {
     ["class"]=>
     string(15) "ReflectionFiber"
     ["object"]=>
-    object(ReflectionFiber)#4 (0) {
+    object(ReflectionFiber)#%d (0) {
     }
     ["type"]=>
     string(2) "->"

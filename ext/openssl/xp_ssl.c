@@ -2140,6 +2140,16 @@ static int php_openssl_sockop_close(php_stream *stream, int close_handle) /* {{{
 #endif
 	unsigned i;
 
+	if (sslsock->s.read_event) {
+		sslsock->s.read_event->base.dispose(&sslsock->s.read_event->base);
+		sslsock->s.read_event = NULL;
+	}
+
+	if (sslsock->s.write_event) {
+		sslsock->s.write_event->base.dispose(&sslsock->s.write_event->base);
+		sslsock->s.write_event = NULL;
+	}
+
 	if (close_handle) {
 		if (sslsock->ssl_active) {
 			SSL_shutdown(sslsock->ssl_handle);
@@ -2182,50 +2192,27 @@ static int php_openssl_sockop_close(php_stream *stream, int close_handle) /* {{{
 				} while (n == -1 && php_socket_errno() == EINTR);
 			}
 #endif
-			/**
-			 * If we are in an async context and there is an active EventLoop, we should not close the
-			 * socket immediately, because there might be pending operations for this socket in the loop.
-			 * Instead, we transfer the ownership of the descriptor to the EventLoop which will close it
-			 * once all pending operations are finished.
-			 */
-			/* Cleanup proxy events first */
-			if (sslsock->s.read_event) {
-				sslsock->s.read_event->base.dispose(&sslsock->s.read_event->base);
-				sslsock->s.read_event = NULL;
-			}
-			if (sslsock->s.write_event) {
-				sslsock->s.write_event->base.dispose(&sslsock->s.write_event->base);
-				sslsock->s.write_event = NULL;
-			}
-
 			if (sslsock->s.poll_event) {
+				/*
+				 * Transfer the socket descriptor to the EventLoop which will close it
+				 * once all pending operations are finished.
+				 */
 				sslsock->s.poll_event->socket = sslsock->s.socket;
-
-				/* Set flag to close descriptor after EventLoop cleanup */
 				ZEND_ASYNC_EVENT_SET_CLOSE_FD(&sslsock->s.poll_event->base);
 				sslsock->s.socket = SOCK_ERR;
 				sslsock->s.poll_event->base.dispose(&sslsock->s.poll_event->base);
 				sslsock->s.poll_event = NULL;
 			} else {
-				/* Just close the socket ourselves immediately */
 				closesocket(sslsock->s.socket);
 				sslsock->s.socket = SOCK_ERR;
 			}
 		}
-	} else {
-		/* Cleanup async event handle before freeing other resources */
-		if (sslsock->s.read_event) {
-			sslsock->s.read_event->base.dispose(&sslsock->s.read_event->base);
-			sslsock->s.read_event = NULL;
-		}
-		if (sslsock->s.write_event) {
-			sslsock->s.write_event->base.dispose(&sslsock->s.write_event->base);
-			sslsock->s.write_event = NULL;
-		}
-		if (sslsock->s.poll_event) {
-			sslsock->s.poll_event->base.dispose(&sslsock->s.poll_event->base);
-			sslsock->s.poll_event = NULL;
-		}
+	}
+
+	/* Dispose poll_event if it was not transferred to the EventLoop above */
+	if (sslsock->s.poll_event) {
+		sslsock->s.poll_event->base.dispose(&sslsock->s.poll_event->base);
+		sslsock->s.poll_event = NULL;
 	}
 
 	if (sslsock->sni_certs) {

@@ -9,19 +9,19 @@ simplexml
     var_dump($simple);
     echo "Done";
 ?>
---EXPECT--
-object(SimpleXMLElement)#1 (1) {
+--EXPECTF--
+object(SimpleXMLElement)#%d (1) {
   ["book"]=>
   array(2) {
     [0]=>
-    object(SimpleXMLElement)#2 (2) {
+    object(SimpleXMLElement)#%d (2) {
       ["title"]=>
       string(19) "The Grapes of Wrath"
       ["author"]=>
       string(14) "John Steinbeck"
     }
     [1]=>
-    object(SimpleXMLElement)#3 (2) {
+    object(SimpleXMLElement)#%d (2) {
       ["title"]=>
       string(9) "The Pearl"
       ["author"]=>
