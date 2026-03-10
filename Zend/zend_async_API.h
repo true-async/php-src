@@ -111,6 +111,9 @@ typedef enum {
 	ZEND_ASYNC_IO_TYPE_TTY
 } zend_async_io_type;
 
+#define ZEND_ASYNC_IO_IS_STREAM(type) \
+	((type) == ZEND_ASYNC_IO_TYPE_PIPE || (type) == ZEND_ASYNC_IO_TYPE_TTY || (type) == ZEND_ASYNC_IO_TYPE_TCP)
+
 #define ZEND_ASYNC_IO_READABLE    (1 << 0)
 #define ZEND_ASYNC_IO_WRITABLE    (1 << 1)
 #define ZEND_ASYNC_IO_CLOSED      (1 << 2)

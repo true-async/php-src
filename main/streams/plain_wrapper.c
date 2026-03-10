@@ -212,8 +212,14 @@ static void php_stdiop_init_async_io(php_stdio_stream_data *self, const char *mo
 
 	const DWORD file_type = GetFileType((HANDLE)os_handle);
 
-	if (self->is_pipe || file_type == FILE_TYPE_PIPE) {
-		type = ZEND_ASYNC_IO_TYPE_PIPE;
+	if (file_type == FILE_TYPE_PIPE) {
+		/* GetFileType returns FILE_TYPE_PIPE for both named pipes and sockets.
+		 * GetNamedPipeInfo succeeds only for real pipes, not Winsock sockets. */
+		if (self->is_pipe || GetNamedPipeInfo((HANDLE)os_handle, NULL, NULL, NULL, NULL)) {
+			type = ZEND_ASYNC_IO_TYPE_PIPE;
+		} else {
+			type = ZEND_ASYNC_IO_TYPE_TCP;
+		}
 	} else if (file_type == FILE_TYPE_CHAR) {
 		DWORD console_mode;
 		if (GetConsoleMode((HANDLE)os_handle, &console_mode)) {
