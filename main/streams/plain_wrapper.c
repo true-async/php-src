@@ -193,6 +193,14 @@ static uint32_t php_stdiop_mode_to_io_state(const char *mode)
 	return state;
 }
 
+/* Called by the reactor during shutdown to detach async IO from this stream.
+ * After this, the stream continues working synchronously. */
+static void php_stdiop_on_async_detach(zend_async_io_t *io, void *arg)
+{
+	php_stdio_stream_data *data = (php_stdio_stream_data *) arg;
+	data->async_io = NULL;
+}
+
 static void php_stdiop_init_async_io(php_stdio_stream_data *self, const char *mode)
 {
 	if (UNEXPECTED(ZEND_ASYNC_IS_OFF)) {
@@ -247,6 +255,11 @@ static void php_stdiop_init_async_io(php_stdio_stream_data *self, const char *mo
 	const uint32_t state = php_stdiop_mode_to_io_state(mode);
 
 	self->async_io = ZEND_ASYNC_IO_CREATE(fd, type, state);
+
+	if (self->async_io != NULL) {
+		self->async_io->on_detach = php_stdiop_on_async_detach;
+		self->async_io->on_detach_arg = self;
+	}
 }
 
 static int do_fstat(php_stdio_stream_data *d, int force)
@@ -486,7 +499,7 @@ static ssize_t php_stdiop_write(php_stream *stream, const char *buf, size_t coun
 
 	assert(data != NULL);
 
-	if (data->async_io != NULL && data->is_blocked && !ZEND_ASYNC_IS_SCHEDULER_CONTEXT) {
+	if (data->async_io != NULL && !ZEND_ASYNC_IS_OFF && data->is_blocked && !ZEND_ASYNC_IS_SCHEDULER_CONTEXT) {
 		ZEND_ASYNC_SCHEDULER_INIT();
 		if (UNEXPECTED(EG(exception))) {
 			return -1;
@@ -592,7 +605,7 @@ static ssize_t php_stdiop_read(php_stream *stream, char *buf, size_t count)
 	/* Scheduler context cannot suspend coroutines, so async IO is not possible.
 	 * Skip this block entirely and fall through to the sync path below,
 	 * which will set the fd to blocking mode if needed. */
-	if (data->async_io != NULL && data->is_blocked && !ZEND_ASYNC_IS_SCHEDULER_CONTEXT) {
+	if (data->async_io != NULL && !ZEND_ASYNC_IS_OFF && data->is_blocked && !ZEND_ASYNC_IS_SCHEDULER_CONTEXT) {
 		ZEND_ASYNC_SCHEDULER_INIT();
 		if (UNEXPECTED(EG(exception))) {
 			return -1;
@@ -778,6 +791,8 @@ static int php_stdiop_close(php_stream *stream, int close_handle)
 		if (!close_handle) {
 			data->async_io->state |= ZEND_ASYNC_IO_PRESERVE_FD;
 		}
+		/* Clear on_detach before dispose — data is about to be freed. */
+		data->async_io->on_detach = NULL;
 		const bool is_stream = ZEND_ASYNC_IO_IS_STREAM(data->async_io->type);
 		ZEND_ASYNC_IO_CLOSE(data->async_io);
 		data->async_io->event.dispose(&data->async_io->event);
