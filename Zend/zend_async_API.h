@@ -630,6 +630,12 @@ struct _zend_async_io_s {
 	} descriptor;
 	zend_async_io_type type;
 	uint32_t state;
+
+	/* Called when the reactor detaches this IO handle during shutdown.
+	 * The owner (e.g. plain_wrapper) sets this to clear its async_io pointer
+	 * so the stream continues working synchronously. */
+	void (*on_detach)(zend_async_io_t *io, void *arg);
+	void *on_detach_arg;
 };
 
 /* Async IO request — one-shot operation request */
@@ -2034,6 +2040,7 @@ END_EXTERN_C()
 
 #define ZEND_ASYNC_SCHEDULER_INIT() \
 	do { \
+		ZEND_ASSERT(!ZEND_ASYNC_IS_OFF && "ZEND_ASYNC_SCHEDULER_INIT called after async shutdown"); \
 		if (UNEXPECTED(ZEND_ASYNC_CURRENT_COROUTINE == NULL)) { \
 			zend_async_scheduler_launch_fn(); \
 		} \
