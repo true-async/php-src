@@ -868,7 +868,16 @@ static int do_cli(int argc, char **argv) /* {{{ */
 			fflush(stdout);
 		}
 
+	} zend_end_try();
+
 do_repeat:
+	/* Each repeat iteration needs its own SETJMP so that zend_bailout()
+	 * is caught here rather than propagating to the outer handler.
+	 * Without this, goto do_repeat re-enters the outer zend_try block
+	 * without reinitializing its jump buffer, so a bailout on repeat
+	 * iterations would skip php_request_shutdown() entirely. */
+	zend_try {
+
 		/* only set script_file if not set already and not in direct mode and not at end of parameter list */
 		if (argc > php_optind
 		  && !script_file
