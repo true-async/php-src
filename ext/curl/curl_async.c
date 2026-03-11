@@ -1056,13 +1056,6 @@ CURLMcode curl_async_multi_perform(php_curlm * curl_m, int *running_handles)
 				zend_object *const exception = event->callback_exception;
 				event->callback_exception = NULL;
 
-				/* Save error on the easy handle so curl_errno() works.
-				 * curl_easy_pause may return the error without generating
-				 * CURLMSG_DONE, so curl_multi_info_read won't set it. */
-				if (event->done_result != CURLE_OK) {
-					SAVE_CURL_ERROR(easy_handle, event->done_result);
-				}
-
 				zval exception_zv;
 				ZVAL_OBJ(&exception_zv, exception);
 				zend_throw_exception_object(&exception_zv);
@@ -1898,6 +1891,7 @@ static void curl_async_write_user_complete(
 		ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(event);
 		GC_ADDREF(exception);
 		curl_async_event_set_callback_exception(curl_event, exception);
+		SAVE_CURL_ERROR(curl_event->ch, CURLE_WRITE_ERROR);
 		state->has_pending_result = true;
 		state->pending_result = (size_t) -1;
 	} else {
@@ -2015,6 +2009,7 @@ size_t curl_async_write_user(char *data, const size_t size, const size_t nmemb, 
 				curl_async_event_set_callback_exception(curl_event, ex);
 				zend_clear_exception();
 			}
+			SAVE_CURL_ERROR(ch, CURLE_WRITE_ERROR);
 			zval_ptr_dtor(&retval);
 			zval_ptr_dtor(&argv[0]);
 			zval_ptr_dtor(&argv[1]);
