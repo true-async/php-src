@@ -178,6 +178,7 @@ void list_entry_destructor(zval *zv)
 	ZVAL_UNDEF(zv);
 	if (res->type >= 0) {
 		zend_resource_dtor(res);
+	} else {
 	}
 	efree_size(res, sizeof(zend_resource));
 }
