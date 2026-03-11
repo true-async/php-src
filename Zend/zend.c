@@ -863,9 +863,11 @@ static void executor_globals_persistent_list_dtor(void *storage)
 
 static void executor_globals_dtor(zend_executor_globals *executor_globals) /* {{{ */
 {
+	fprintf(stderr, "[SHUTDOWN] executor_globals_dtor entered\n");
 	zend_ini_dtor(executor_globals->ini_directives);
 
 	if (executor_globals->zend_constants != GLOBAL_CONSTANTS_TABLE) {
+		fprintf(stderr, "[SHUTDOWN] executor_globals_dtor: destroying zend_constants\n");
 		zend_hash_destroy(executor_globals->zend_constants);
 		free(executor_globals->zend_constants);
 	}
@@ -1353,10 +1355,14 @@ ZEND_API void zend_deactivate(void) /* {{{ */
 	} zend_end_try();
 
 	/* shutdown_executor() takes care of its own bailout handling */
+	fprintf(stderr, "[SHUTDOWN] before shutdown_executor\n");
 	shutdown_executor();
+	fprintf(stderr, "[SHUTDOWN] after shutdown_executor\n");
 
 	/* All objects are destroyed — safe to shut down the reactor. */
+	fprintf(stderr, "[SHUTDOWN] before ENGINE_SHUTDOWN\n");
 	ZEND_ASYNC_ENGINE_SHUTDOWN();
+	fprintf(stderr, "[SHUTDOWN] after ENGINE_SHUTDOWN\n");
 
 	zend_try {
 		zend_ini_deactivate();

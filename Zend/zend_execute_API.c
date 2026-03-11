@@ -371,7 +371,10 @@ void shutdown_destructors(void) /* {{{ */
 ZEND_API void zend_shutdown_executor_values(bool fast_shutdown)
 {
 	EG(flags) |= EG_FLAGS_IN_RESOURCE_SHUTDOWN;
+	fprintf(stderr, "[SHUTDOWN] before zend_close_rsrc_list (regular_list has %d entries)\n",
+		zend_hash_num_elements(&EG(regular_list)));
 	zend_close_rsrc_list(&EG(regular_list));
+	fprintf(stderr, "[SHUTDOWN] after zend_close_rsrc_list\n");
 
 	/* No PHP callback functions should be called after this point. */
 	EG(active) = 0;
@@ -546,10 +549,13 @@ void shutdown_executor(void) /* {{{ */
 	bool fast_shutdown = is_zend_mm() && !EG(full_tables_cleanup);
 #endif
 
+	fprintf(stderr, "[SHUTDOWN] shutdown_executor: fast_shutdown=%d\n", fast_shutdown);
+
 	zend_try {
 		zend_stream_shutdown();
 	} zend_end_try();
 
+	fprintf(stderr, "[SHUTDOWN] before zend_shutdown_executor_values\n");
 	zend_shutdown_executor_values(fast_shutdown);
 
 	zend_weakrefs_shutdown();

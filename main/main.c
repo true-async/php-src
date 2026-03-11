@@ -1994,7 +1994,9 @@ void php_request_shutdown(void *dummy)
 
 	// Detach async IO from all streams (they become sync-only).
 	// The reactor stays alive until zend_deactivate() for object destructors.
+	fprintf(stderr, "[SHUTDOWN] before REACTOR_DETACH_IO\n");
 	ZEND_ASYNC_REACTOR_DETACH_IO();
+	fprintf(stderr, "[SHUTDOWN] before DEACTIVATE\n");
 	ZEND_ASYNC_DEACTIVATE;
 
 	/* 3. Flush all output buffers */
