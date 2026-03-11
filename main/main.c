@@ -1995,6 +1995,7 @@ void php_request_shutdown(void *dummy)
 	// Detach async IO from all streams (they become sync-only).
 	// The reactor stays alive until zend_deactivate() for object destructors.
 	ZEND_ASYNC_REACTOR_DETACH_IO();
+	// After that, all functions must work synchronously and follow only the synchronous path.
 	ZEND_ASYNC_DEACTIVATE;
 
 	/* 3. Flush all output buffers */
@@ -2668,7 +2669,6 @@ PHPAPI bool php_execute_script_ex(zend_file_handle *primary_file, zval *retval)
 		}
 
 		ZEND_ASYNC_RUN_SCHEDULER_AFTER_MAIN(false);
-		ZEND_ASYNC_INITIALIZE;
 	} zend_catch {
 		// We provide the ability to correctly handle a bailout in the main coroutine.
 		ZEND_ASYNC_RUN_SCHEDULER_AFTER_MAIN(true);
