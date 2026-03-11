@@ -1992,9 +1992,9 @@ void php_request_shutdown(void *dummy)
 		ZEND_ASYNC_RUN_SCHEDULER_AFTER_MAIN(false);
 	} zend_end_try();
 
-	// Shut down the async engine: detach IO from streams (making them sync-only),
-	// destroy the reactor, free scheduler structures.
-	ZEND_ASYNC_ENGINE_SHUTDOWN();
+	// Detach async IO from all streams (they become sync-only).
+	// The reactor stays alive until zend_deactivate() for object destructors.
+	ZEND_ASYNC_REACTOR_DETACH_IO();
 	ZEND_ASYNC_DEACTIVATE;
 
 	/* 3. Flush all output buffers */
