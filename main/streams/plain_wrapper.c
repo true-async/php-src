@@ -787,6 +787,8 @@ static int php_stdiop_close(php_stream *stream, int close_handle)
 		data->poll_event = NULL;
 	}
 
+	fprintf(stderr, "[STDIOP_CLOSE] fd=%d async_io=%p close_handle=%d\n",
+		data->fd, data->async_io, close_handle);
 	if (data->async_io != NULL) {
 		if (!close_handle) {
 			data->async_io->state |= ZEND_ASYNC_IO_PRESERVE_FD;
