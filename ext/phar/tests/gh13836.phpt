@@ -25,7 +25,7 @@ unlink(__DIR__ . '/gh13836.phar');
 --EXPECTF--
 bool(true)
 bool(false)
-object(PharFileInfo)#2 (2) {
+object(PharFileInfo)#%d (2) {
   ["pathName":"SplFileInfo":private]=>
   string(%d) "phar://%sgh13836.phar/y"
   ["fileName":"SplFileInfo":private]=>
