@@ -787,8 +787,10 @@ static int php_stdiop_close(php_stream *stream, int close_handle)
 		}
 		/* If FILE* was created via fdopen(dup(fd)) in php_stdiop_cast,
 		 * it owns a separate fd copy that must be closed explicitly.
-		 * The original fd (data->fd) will be closed by normal logic below. */
-		if (data->file != NULL) {
+		 * The original fd (data->fd) will be closed by normal logic below.
+		 * When close_handle is 0 (preserve mode), do NOT close the C FILE*
+		 * as it may be stdout/stderr/stdin needed for error display during shutdown. */
+		if (data->file != NULL && close_handle) {
 			fclose(data->file);
 			data->file = NULL;
 		}
