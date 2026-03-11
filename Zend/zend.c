@@ -1355,6 +1355,9 @@ ZEND_API void zend_deactivate(void) /* {{{ */
 	/* shutdown_executor() takes care of its own bailout handling */
 	shutdown_executor();
 
+	/* All objects are destroyed — safe to shut down the reactor. */
+	ZEND_ASYNC_ENGINE_SHUTDOWN();
+
 	zend_try {
 		zend_ini_deactivate();
 	} zend_end_try();
