@@ -177,10 +177,8 @@ void list_entry_destructor(zval *zv)
 
 	ZVAL_UNDEF(zv);
 	if (res->type >= 0) {
-		fprintf(stderr, "[SHUTDOWN] list_entry_destructor: res=%p type=%d calling dtor\n", res, res->type);
 		zend_resource_dtor(res);
 	} else {
-		fprintf(stderr, "[SHUTDOWN] list_entry_destructor: res=%p type=%d skipping dtor\n", res, res->type);
 	}
 	efree_size(res, sizeof(zend_resource));
 }
@@ -240,7 +238,6 @@ retry:
 			}
 		}
 	} zend_catch {
-		fprintf(stderr, "[SHUTDOWN] zend_close_rsrc_list: BAILOUT caught at i=%u num=%u\n", i, num);
 		if (UNEXPECTED(ht->nNumUsed != num)) {
 			/* See above */
 			i = num = ht->nNumUsed;
