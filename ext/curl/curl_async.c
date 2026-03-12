@@ -1401,6 +1401,17 @@ static size_t curl_async_read_callback_spawn(curl_async_read_state_t *state, con
 	zend_fcall_t *fcall = ecalloc(1, sizeof(zend_fcall_t));
 	fcall->fci.size = sizeof(zend_fcall_info);
 	fcall->fci_cache = read_handler->fcc;
+
+	/* Trampolines (__call/__callStatic) are freed by the VM after execution.
+	 * Copy the function_handler so the original FCC in the curl handle
+	 * is not corrupted — same as zend_call_known_fcc() does. */
+	if (UNEXPECTED(fcall->fci_cache.function_handler->common.fn_flags & ZEND_ACC_CALL_VIA_TRAMPOLINE)) {
+		zend_function *copy = (zend_function *) emalloc(sizeof(zend_function));
+		memcpy(copy, fcall->fci_cache.function_handler, sizeof(zend_function));
+		zend_string_addref(copy->op_array.function_name);
+		fcall->fci_cache.function_handler = copy;
+	}
+
 	ZVAL_UNDEF(&fcall->fci.function_name);
 
 	fcall->fci.param_count = 3;
@@ -1929,7 +1940,9 @@ static void curl_async_write_user_complete(
 	/* User aborted — finish now, skip unpause */
 	if (user_abort) {
 		if (curl_event->mh == NULL) {
-			/* Single mode: remove from global multi, stop event, notify waker */
+			/* Single mode: remove from global multi, stop event, notify waker.
+			 * Note: CALLBACKS_NOTIFY may trigger curl_async_event_dtor which
+			 * frees curl_event, so we must return immediately after. */
 			curl_event->done_deferred = false;
 			if (curl_event->curl != NULL) {
 				curl_multi_remove_handle(curl_multi_handle, curl_event->curl);
@@ -1939,6 +1952,7 @@ static void curl_async_write_user_complete(
 			ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(&curl_event->base);
 			curl_event->base.stop(&curl_event->base);
 			ZEND_ASYNC_CALLBACKS_NOTIFY(&curl_event->base, &done_result, curl_event->callback_exception);
+			return;
 		}
 		/* Multi mode: unpause so curl re-invokes the write callback,
 		 * which returns the stored error result → CURLE_WRITE_ERROR in CURLMSG_DONE.
@@ -1950,14 +1964,19 @@ static void curl_async_write_user_complete(
 	}
 
 	/* Unpause and drive — even when done_deferred, curl may still have
-	 * buffered headers/body that need to be delivered via callbacks. */
+	 * buffered headers/body that need to be delivered via callbacks.
+	 * Note: unpause can trigger process_curl_completed_handles →
+	 * curl_async_event_dtor, which frees curl_event. Save done_deferred
+	 * before the call to avoid use-after-free. */
+	const bool done_deferred = curl_event->done_deferred;
+
 	if (curl_event->curl != NULL) {
 		curl_async_unpause_transfer(curl_event);
 	}
 
 	/* If curl finished (deferred) and no more async IO is pending,
 	 * all callbacks have been delivered — finalize now. */
-	if (curl_event->done_deferred && !curl_has_pending_async_io(curl_event)) {
+	if (done_deferred && !curl_has_pending_async_io(curl_event)) {
 		curl_async_write_finish_deferred(curl_event);
 	}
 }
@@ -2077,6 +2096,17 @@ size_t curl_async_write_user(char *data, const size_t size, const size_t nmemb, 
 	zend_fcall_t *fcall = ecalloc(1, sizeof(zend_fcall_t));
 	fcall->fci.size = sizeof(zend_fcall_info);
 	fcall->fci_cache = write_handler->fcc;
+
+	/* Trampolines (__call/__callStatic) are freed by the VM after execution.
+	 * Copy the function_handler so the original FCC in the curl handle
+	 * is not corrupted — same as zend_call_known_fcc() does. */
+	if (UNEXPECTED(fcall->fci_cache.function_handler->common.fn_flags & ZEND_ACC_CALL_VIA_TRAMPOLINE)) {
+		zend_function *copy = (zend_function *) emalloc(sizeof(zend_function));
+		memcpy(copy, fcall->fci_cache.function_handler, sizeof(zend_function));
+		zend_string_addref(copy->op_array.function_name);
+		fcall->fci_cache.function_handler = copy;
+	}
+
 	ZVAL_UNDEF(&fcall->fci.function_name);
 
 	fcall->fci.param_count = 2;
