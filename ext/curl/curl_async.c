@@ -1081,10 +1081,6 @@ CURLMcode curl_async_multi_perform(php_curlm * curl_m, int *running_handles)
 			ZEND_ASYNC_SCHEDULER_CONTEXT = false;
 			zend_bailout();
 		}  zend_end_try();
-		ZEND_ASYNC_ENQUEUE_COROUTINE(ZEND_ASYNC_CURRENT_COROUTINE);
-		if (UNEXPECTED(!ZEND_ASYNC_SUSPEND())) {
-			return CURLM_INTERNAL_ERROR;
-		}
 
 		curl_multi_socket_action(curl_m->multi, CURL_SOCKET_TIMEOUT, 0, &running_handles_internal);
 	}

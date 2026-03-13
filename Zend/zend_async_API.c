@@ -884,6 +884,10 @@ void coroutine_event_callback_dispose(
 		}
 	}
 
+	if (event != NULL && event->del_callback != NULL) {
+		event->del_callback(event, callback);
+	}
+
 	efree(callback);
 }
 
