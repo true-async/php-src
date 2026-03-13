@@ -2140,16 +2140,6 @@ static int php_openssl_sockop_close(php_stream *stream, int close_handle) /* {{{
 #endif
 	unsigned i;
 
-	if (sslsock->s.read_event) {
-		sslsock->s.read_event->base.dispose(&sslsock->s.read_event->base);
-		sslsock->s.read_event = NULL;
-	}
-
-	if (sslsock->s.write_event) {
-		sslsock->s.write_event->base.dispose(&sslsock->s.write_event->base);
-		sslsock->s.write_event = NULL;
-	}
-
 	if (close_handle) {
 		if (sslsock->ssl_active) {
 			SSL_shutdown(sslsock->ssl_handle);
@@ -2207,6 +2197,18 @@ static int php_openssl_sockop_close(php_stream *stream, int close_handle) /* {{{
 				sslsock->s.socket = SOCK_ERR;
 			}
 		}
+	}
+
+	/* Dispose proxies first — they hold references to poll_event.
+	 * Must happen after the close_handle block which may transfer fd to poll_event. */
+	if (sslsock->s.read_event) {
+		sslsock->s.read_event->base.dispose(&sslsock->s.read_event->base);
+		sslsock->s.read_event = NULL;
+	}
+
+	if (sslsock->s.write_event) {
+		sslsock->s.write_event->base.dispose(&sslsock->s.write_event->base);
+		sslsock->s.write_event = NULL;
 	}
 
 	/* Dispose poll_event if it was not transferred to the EventLoop above */

@@ -568,6 +568,10 @@ static void curl_multi_free_obj(zend_object *object)
 	php_curlm *mh = curl_multi_from_obj(object);
 
 	curl_async_dtor(mh);
+	if (mh->multi) {
+		curl_multi_setopt(mh->multi, CURLMOPT_SOCKETDATA, NULL);
+		curl_multi_setopt(mh->multi, CURLMOPT_TIMERDATA, NULL);
+	}
 
 	zend_llist_position pos;
 	php_curl *ch;

@@ -340,7 +340,6 @@ typedef bool (*zend_async_scheduler_launch_t)(void);
 
 typedef bool (*zend_async_reactor_startup_t)(void);
 typedef bool (*zend_async_reactor_shutdown_t)(void);
-typedef void (*zend_async_reactor_detach_io_t)(void);
 typedef bool (*zend_async_reactor_execute_t)(bool no_wait);
 typedef bool (*zend_async_reactor_loop_alive_t)(void);
 
@@ -1762,7 +1761,6 @@ ZEND_API void zend_async_coroutine_internal_context_init(zend_coroutine_t *corou
 ZEND_API bool zend_async_reactor_is_enabled(void);
 ZEND_API extern zend_async_reactor_startup_t zend_async_reactor_startup_fn;
 ZEND_API extern zend_async_reactor_shutdown_t zend_async_reactor_shutdown_fn;
-ZEND_API extern zend_async_reactor_detach_io_t zend_async_reactor_detach_io_fn;
 ZEND_API extern zend_async_reactor_execute_t zend_async_reactor_execute_fn;
 ZEND_API extern zend_async_reactor_loop_alive_t zend_async_reactor_loop_alive_fn;
 ZEND_API extern zend_async_new_socket_event_t zend_async_new_socket_event_fn;
@@ -1838,7 +1836,6 @@ ZEND_API bool zend_async_scheduler_register(char *module, bool allow_override,
 ZEND_API bool zend_async_reactor_register(char *module, bool allow_override,
 		zend_async_reactor_startup_t reactor_startup_fn,
 		zend_async_reactor_shutdown_t reactor_shutdown_fn,
-		zend_async_reactor_detach_io_t reactor_detach_io_fn,
 		zend_async_reactor_execute_t reactor_execute_fn,
 		zend_async_reactor_loop_alive_t reactor_loop_alive_fn,
 		zend_async_new_socket_event_t new_socket_event_fn,
@@ -2052,7 +2049,6 @@ END_EXTERN_C()
 #define ZEND_ASYNC_REACTOR_IS_ENABLED() zend_async_reactor_is_enabled()
 #define ZEND_ASYNC_REACTOR_STARTUP() zend_async_reactor_startup_fn()
 #define ZEND_ASYNC_REACTOR_SHUTDOWN() zend_async_reactor_shutdown_fn()
-#define ZEND_ASYNC_REACTOR_DETACH_IO() zend_async_reactor_detach_io_fn()
 
 #define ZEND_ASYNC_REACTOR_EXECUTE(no_wait) zend_async_reactor_execute_fn(no_wait)
 #define ZEND_ASYNC_REACTOR_LOOP_ALIVE() zend_async_reactor_loop_alive_fn()

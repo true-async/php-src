@@ -57,13 +57,20 @@ ZEND_TLS CURLM * curl_multi_handle = NULL;
  */
 ZEND_TLS HashTable * curl_multi_event_list = NULL;
 ZEND_TLS zend_async_timer_event_t * timer = NULL;
+#if LIBCURL_VERSION_NUM < 0x080e00
+/* curl < 8.14: socket callback cannot be called during curl_multi_cleanup
+ * (see curl/curl#15201), so we track poll events ourselves for manual dispose. */
+ZEND_TLS HashTable curl_socket_poll_list;
+ZEND_TLS bool curl_socket_poll_list_initialized = false;
+#endif
 
 // Struct definitions
 struct curl_async_multi_event_s {
 	zend_async_event_t base;
 	HashTable poll_list;
 	php_curlm *curl_m;
-	zend_async_timer_event_t *timer; // Timer for the multi event
+	zend_async_timer_event_t *timer;
+	int last_running_handles;
 };
 
 typedef struct curl_async_multi_event_s curl_async_multi_event_t;
@@ -172,6 +179,11 @@ void curl_async_setup(void)
 
 	zend_hash_init(curl_multi_event_list, 8, NULL, NULL, false);
 
+#if LIBCURL_VERSION_NUM < 0x080e00
+	zend_hash_init(&curl_socket_poll_list, 4, NULL, NULL, false);
+	curl_socket_poll_list_initialized = true;
+#endif
+
 	timer = NULL;
 }
 
@@ -183,13 +195,35 @@ void curl_async_shutdown(void)
 	}
 
 	if (curl_multi_handle != NULL) {
-		// Pre-cleanup. Bug in CURL prior to 8.14.
+#if LIBCURL_VERSION_NUM >= 0x080e00
+		/* curl >= 8.14: socket callback is safe during cleanup.
+		 * curl_multi_cleanup will fire CURL_POLL_REMOVE for each socket,
+		 * and curl_socket_cb will dispose the poll events. */
+		curl_multi_cleanup(curl_multi_handle);
+#else
+		/* curl < 8.14: socket callback during curl_multi_cleanup crashes
+		 * (curl/curl#15201). Nullify callbacks, then manually dispose
+		 * all tracked socket poll events. */
 		curl_multi_setopt(curl_multi_handle, CURLMOPT_SOCKETFUNCTION, NULL);
 		curl_multi_setopt(curl_multi_handle, CURLMOPT_TIMERFUNCTION,  NULL);
 		curl_multi_setopt(curl_multi_handle, CURLMOPT_SOCKETDATA,     NULL);
 		curl_multi_setopt(curl_multi_handle, CURLMOPT_TIMERDATA,      NULL);
 
 		curl_multi_cleanup(curl_multi_handle);
+
+		if (curl_socket_poll_list_initialized) {
+			zend_async_poll_event_t *socket_event;
+			ZEND_HASH_FOREACH_PTR(&curl_socket_poll_list, socket_event) {
+				if (socket_event != NULL) {
+					socket_event->base.stop(&socket_event->base);
+					socket_event->base.dispose(&socket_event->base);
+				}
+			} ZEND_HASH_FOREACH_END();
+
+			zend_hash_destroy(&curl_socket_poll_list);
+			curl_socket_poll_list_initialized = false;
+		}
+#endif
 		curl_multi_handle = NULL;
 	}
 
@@ -500,6 +534,10 @@ static int curl_socket_cb(CURL *curl, const curl_socket_t socket_fd, const int w
 			zend_async_poll_event_t *socket_event = socket_poll;
 			socket_event->base.stop(&socket_event->base);
 			socket_event->base.dispose(&socket_event->base);
+
+			if (curl_socket_poll_list_initialized) {
+				zend_hash_index_del(&curl_socket_poll_list, (zend_ulong) socket_fd);
+			}
 		}
 
 		return 0;
@@ -533,6 +571,11 @@ static int curl_socket_cb(CURL *curl, const curl_socket_t socket_fd, const int w
 		}
 
 		curl_multi_assign(curl_multi_handle, socket_fd, socket_event);
+#if LIBCURL_VERSION_NUM < 0x080e00
+		if (curl_socket_poll_list_initialized) {
+			zend_hash_index_update_ptr(&curl_socket_poll_list, (zend_ulong) socket_fd, socket_event);
+		}
+#endif
 	} else {
 		// Update existing socket event
 		zend_async_poll_event_t *socket_event = socket_poll;
@@ -811,6 +854,11 @@ static void multi_timer_callback(
 	curl_multi_socket_action(
 		async_event_callback->curl_m_event->curl_m->multi, CURL_SOCKET_TIMEOUT, 0, &running_handles
 	);
+
+	if (running_handles < async_event_callback->curl_m_event->last_running_handles) {
+		async_event_callback->curl_m_event->last_running_handles = running_handles;
+		ZEND_ASYNC_CALLBACKS_NOTIFY(&async_event_callback->curl_m_event->base, NULL, NULL);
+	}
 }
 
 static int multi_timer_cb(CURLM *multi, const long timeout_ms, void *user_p)
@@ -819,7 +867,7 @@ static int multi_timer_cb(CURLM *multi, const long timeout_ms, void *user_p)
 	zend_async_timer_event_t *timer_event = NULL;
 
 	if (async_event == NULL) {
-        return CURLM_INTERNAL_ERROR;
+        return 0;
     }
 
 	// Remove previous timer if it exists
@@ -891,6 +939,14 @@ static void curl_multi_poll_callback(
 	curl_multi_socket_action(
 		poll_callback->curl_m_event->curl_m->multi, socket_event->socket, action, &running_handles
 	);
+
+	/* Only wake the coroutine when a transfer completes (running_handles decreased).
+	 * This avoids unnecessary fiber switches on intermediate I/O events,
+	 * especially with HTTP/2 multiplexing where many events share one connection. */
+	if (running_handles < poll_callback->curl_m_event->last_running_handles) {
+		poll_callback->curl_m_event->last_running_handles = running_handles;
+		ZEND_ASYNC_CALLBACKS_NOTIFY(&poll_callback->curl_m_event->base, NULL, NULL);
+	}
 }
 
 static int multi_socket_cb(CURL *curl, const curl_socket_t socket_fd, const int what, void *user_p, void *data)
@@ -898,7 +954,7 @@ static int multi_socket_cb(CURL *curl, const curl_socket_t socket_fd, const int 
 	curl_async_multi_event_t *async_event = user_p;
 
 	if (async_event == NULL) {
-        return -1;
+        return 0;
     }
 
 	if (what == CURL_POLL_REMOVE) {
@@ -1025,10 +1081,6 @@ CURLMcode curl_async_multi_perform(php_curlm * curl_m, int *running_handles)
 			ZEND_ASYNC_SCHEDULER_CONTEXT = false;
 			zend_bailout();
 		}  zend_end_try();
-		ZEND_ASYNC_ENQUEUE_COROUTINE(ZEND_ASYNC_CURRENT_COROUTINE);
-		if (UNEXPECTED(!ZEND_ASYNC_SUSPEND())) {
-			return CURLM_INTERNAL_ERROR;
-		}
 
 		curl_multi_socket_action(curl_m->multi, CURL_SOCKET_TIMEOUT, 0, &running_handles_internal);
 	}
@@ -1121,6 +1173,7 @@ CURLMcode curl_async_select(php_curlm * curl_m, int timeout_ms, int* numfds)
 	// Initiate execution of the transfer
 	int running_handles = 0;
 	curl_multi_socket_action(multi_handle, CURL_SOCKET_TIMEOUT, 0, &running_handles);
+	async_event->last_running_handles = running_handles;
 
 	// Suspend coroutine until events are ready
 	if (!ZEND_ASYNC_SUSPEND()) {
@@ -1401,6 +1454,17 @@ static size_t curl_async_read_callback_spawn(curl_async_read_state_t *state, con
 	zend_fcall_t *fcall = ecalloc(1, sizeof(zend_fcall_t));
 	fcall->fci.size = sizeof(zend_fcall_info);
 	fcall->fci_cache = read_handler->fcc;
+
+	/* Trampolines (__call/__callStatic) are freed by the VM after execution.
+	 * Copy the function_handler so the original FCC in the curl handle
+	 * is not corrupted — same as zend_call_known_fcc() does. */
+	if (UNEXPECTED(fcall->fci_cache.function_handler->common.fn_flags & ZEND_ACC_CALL_VIA_TRAMPOLINE)) {
+		zend_function *copy = (zend_function *) emalloc(sizeof(zend_function));
+		memcpy(copy, fcall->fci_cache.function_handler, sizeof(zend_function));
+		zend_string_addref(copy->op_array.function_name);
+		fcall->fci_cache.function_handler = copy;
+	}
+
 	ZVAL_UNDEF(&fcall->fci.function_name);
 
 	fcall->fci.param_count = 3;
@@ -1929,7 +1993,9 @@ static void curl_async_write_user_complete(
 	/* User aborted — finish now, skip unpause */
 	if (user_abort) {
 		if (curl_event->mh == NULL) {
-			/* Single mode: remove from global multi, stop event, notify waker */
+			/* Single mode: remove from global multi, stop event, notify waker.
+			 * Note: CALLBACKS_NOTIFY may trigger curl_async_event_dtor which
+			 * frees curl_event, so we must return immediately after. */
 			curl_event->done_deferred = false;
 			if (curl_event->curl != NULL) {
 				curl_multi_remove_handle(curl_multi_handle, curl_event->curl);
@@ -1939,6 +2005,7 @@ static void curl_async_write_user_complete(
 			ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(&curl_event->base);
 			curl_event->base.stop(&curl_event->base);
 			ZEND_ASYNC_CALLBACKS_NOTIFY(&curl_event->base, &done_result, curl_event->callback_exception);
+			return;
 		}
 		/* Multi mode: unpause so curl re-invokes the write callback,
 		 * which returns the stored error result → CURLE_WRITE_ERROR in CURLMSG_DONE.
@@ -1950,14 +2017,19 @@ static void curl_async_write_user_complete(
 	}
 
 	/* Unpause and drive — even when done_deferred, curl may still have
-	 * buffered headers/body that need to be delivered via callbacks. */
+	 * buffered headers/body that need to be delivered via callbacks.
+	 * Note: unpause can trigger process_curl_completed_handles →
+	 * curl_async_event_dtor, which frees curl_event. Save done_deferred
+	 * before the call to avoid use-after-free. */
+	const bool done_deferred = curl_event->done_deferred;
+
 	if (curl_event->curl != NULL) {
 		curl_async_unpause_transfer(curl_event);
 	}
 
 	/* If curl finished (deferred) and no more async IO is pending,
 	 * all callbacks have been delivered — finalize now. */
-	if (curl_event->done_deferred && !curl_has_pending_async_io(curl_event)) {
+	if (done_deferred && !curl_has_pending_async_io(curl_event)) {
 		curl_async_write_finish_deferred(curl_event);
 	}
 }
@@ -2077,6 +2149,17 @@ size_t curl_async_write_user(char *data, const size_t size, const size_t nmemb, 
 	zend_fcall_t *fcall = ecalloc(1, sizeof(zend_fcall_t));
 	fcall->fci.size = sizeof(zend_fcall_info);
 	fcall->fci_cache = write_handler->fcc;
+
+	/* Trampolines (__call/__callStatic) are freed by the VM after execution.
+	 * Copy the function_handler so the original FCC in the curl handle
+	 * is not corrupted — same as zend_call_known_fcc() does. */
+	if (UNEXPECTED(fcall->fci_cache.function_handler->common.fn_flags & ZEND_ACC_CALL_VIA_TRAMPOLINE)) {
+		zend_function *copy = (zend_function *) emalloc(sizeof(zend_function));
+		memcpy(copy, fcall->fci_cache.function_handler, sizeof(zend_function));
+		zend_string_addref(copy->op_array.function_name);
+		fcall->fci_cache.function_handler = copy;
+	}
+
 	ZVAL_UNDEF(&fcall->fci.function_name);
 
 	fcall->fci.param_count = 2;

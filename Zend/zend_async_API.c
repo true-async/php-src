@@ -212,8 +212,6 @@ static zend_atomic_bool reactor_lock = { 0 };
 static char *reactor_module_name = NULL;
 zend_async_reactor_startup_t zend_async_reactor_startup_fn = NULL;
 zend_async_reactor_shutdown_t zend_async_reactor_shutdown_fn = NULL;
-static void detach_io_noop(void) {}
-zend_async_reactor_detach_io_t zend_async_reactor_detach_io_fn = detach_io_noop;
 zend_async_reactor_execute_t zend_async_reactor_execute_fn = NULL;
 zend_async_reactor_loop_alive_t zend_async_reactor_loop_alive_fn = NULL;
 zend_async_new_socket_event_t zend_async_new_socket_event_fn = NULL;
@@ -428,7 +426,6 @@ ZEND_API bool zend_async_scheduler_register(char *module, bool allow_override,
 ZEND_API bool zend_async_reactor_register(char *module, bool allow_override,
 		zend_async_reactor_startup_t reactor_startup_fn,
 		zend_async_reactor_shutdown_t reactor_shutdown_fn,
-		zend_async_reactor_detach_io_t reactor_detach_io_fn,
 		zend_async_reactor_execute_t reactor_execute_fn,
 		zend_async_reactor_loop_alive_t reactor_loop_alive_fn,
 		zend_async_new_socket_event_t new_socket_event_fn,
@@ -463,7 +460,6 @@ ZEND_API bool zend_async_reactor_register(char *module, bool allow_override,
 
 	zend_async_reactor_startup_fn = reactor_startup_fn;
 	zend_async_reactor_shutdown_fn = reactor_shutdown_fn;
-	zend_async_reactor_detach_io_fn = reactor_detach_io_fn;
 	zend_async_reactor_execute_fn = reactor_execute_fn;
 	zend_async_reactor_loop_alive_fn = reactor_loop_alive_fn;
 
@@ -886,6 +882,10 @@ void coroutine_event_callback_dispose(
 				}
 			}
 		}
+	}
+
+	if (event != NULL && event->del_callback != NULL) {
+		event->del_callback(event, callback);
 	}
 
 	efree(callback);
