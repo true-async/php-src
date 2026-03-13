@@ -249,18 +249,9 @@ ZEND_GET_MODULE(sockets)
 static bool php_open_listen_sock(php_socket *sock, unsigned short port, int backlog) /* {{{ */
 {
 	struct sockaddr_in  la = {0};
-	struct hostent	    *hp;
 
-#ifndef PHP_WIN32
-	if ((hp = php_network_gethostbyname("0.0.0.0")) == NULL) {
-#else
-	if ((hp = php_network_gethostbyname("localhost")) == NULL) {
-#endif
-		return false;
-	}
-
-	memcpy((char *) &la.sin_addr, hp->h_addr, hp->h_length);
-	la.sin_family = hp->h_addrtype;
+	la.sin_addr.s_addr = htonl(INADDR_ANY);
+	la.sin_family = AF_INET;
 	la.sin_port = htons(port);
 
 	sock->bsd_socket = socket(PF_INET, SOCK_STREAM, 0);
@@ -1606,8 +1597,6 @@ PHP_FUNCTION(socket_connect)
 				RETURN_THROWS();
 			}
 
-			memset(&sin6, 0, sizeof(struct sockaddr_in6));
-
 			sin6.sin6_family = AF_INET6;
 			sin6.sin6_port   = htons((unsigned short int)port);
 
@@ -2025,7 +2014,6 @@ PHP_FUNCTION(socket_recvfrom)
 			ZSTR_LEN(recv_buf) = retval;
 			ZSTR_VAL(recv_buf)[ZSTR_LEN(recv_buf)] = '\0';
 
-			memset(addrbuf, 0, INET6_ADDRSTRLEN);
 			inet_ntop(AF_INET6, &sin6.sin6_addr,  addrbuf, sizeof(addrbuf));
 
 			ZEND_TRY_ASSIGN_REF_NEW_STR(arg2, recv_buf);
@@ -2128,7 +2116,7 @@ PHP_FUNCTION(socket_sendto)
 			}
 
 			s_un.sun_family = AF_UNIX;
-			snprintf(s_un.sun_path, sizeof(s_un.sun_path), "%s", ZSTR_VAL(addr));
+			memcpy(s_un.sun_path, ZSTR_VAL(addr), ZSTR_LEN(addr) + 1);
 
 			if (php_sock->blocking && ZEND_ASYNC_IS_ACTIVE && ensure_socket_nonblocking(php_sock)) {
 				retval = sendto_async(php_sock, buf, ((size_t)len > buf_len) ? buf_len : (size_t)len, flags, (struct sockaddr *) &s_un, SUN_LEN(&s_un));
