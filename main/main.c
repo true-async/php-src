@@ -1994,7 +1994,7 @@ void php_request_shutdown(void *dummy)
 
 	// Detach async IO from all streams (they become sync-only).
 	// The reactor stays alive until zend_deactivate() for object destructors.
-	ZEND_ASYNC_REACTOR_DETACH_IO();
+	php_stream_detach_async_io();
 	// After that, all functions must work synchronously and follow only the synchronous path.
 	ZEND_ASYNC_DEACTIVATE;
 

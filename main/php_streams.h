@@ -438,6 +438,8 @@ PHPAPI int _php_stream_set_option(php_stream *stream, int option, int value, voi
 
 #define php_stream_set_chunk_size(stream, size) _php_stream_set_option((stream), PHP_STREAM_OPTION_SET_CHUNK_SIZE, (size), NULL)
 
+PHPAPI void php_stream_detach_async_io(void);
+
 END_EXTERN_C()
 
 
@@ -523,6 +525,10 @@ END_EXTERN_C()
 /* Retrieve the async IO handle from a stream.
  * ptrparam = zend_async_io_t** (output) */
 #define PHP_STREAM_OPTION_ASYNC_IO				17
+
+/* Detach all async IO resources from this stream.
+ * The stream becomes synchronous-only. No parameters. */
+#define PHP_STREAM_OPTION_DETACH_ASYNC_IO		18
 
 #define PHP_STREAM_OPTION_RETURN_OK			 0 /* option set OK */
 #define PHP_STREAM_OPTION_RETURN_ERR		-1 /* problem setting option */

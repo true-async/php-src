@@ -604,6 +604,29 @@ static int php_sockop_set_option(php_stream *stream, int option, int value, void
 
 			break;
 
+		case PHP_STREAM_OPTION_DETACH_ASYNC_IO:
+			if (!sock) {
+				return PHP_STREAM_OPTION_RETURN_NOTIMPL;
+			}
+
+			if (sock->read_event) {
+				sock->read_event->base.dispose(&sock->read_event->base);
+				sock->read_event = NULL;
+			}
+
+			if (sock->write_event) {
+				sock->write_event->base.dispose(&sock->write_event->base);
+				sock->write_event = NULL;
+			}
+
+			if (sock->poll_event) {
+				sock->poll_event->base.dispose(&sock->poll_event->base);
+				sock->poll_event = NULL;
+			}
+
+			sock->is_sync = 1;
+			return PHP_STREAM_OPTION_RETURN_OK;
+
 		case PHP_STREAM_OPTION_ASYNC_EVENT_HANDLE:
 			if (!sock) {
 				return PHP_STREAM_OPTION_RETURN_NOTIMPL;

@@ -1459,6 +1459,22 @@ static int php_stdiop_set_option(php_stream *stream, int option, int value, void
 			}
 			return PHP_STREAM_OPTION_RETURN_NOTIMPL;
 
+		case PHP_STREAM_OPTION_DETACH_ASYNC_IO:
+			if (data->poll_event) {
+				data->poll_event->base.dispose(&data->poll_event->base);
+				data->poll_event = NULL;
+			}
+
+			if (data->async_io != NULL) {
+				data->async_io->on_detach = NULL;
+				data->async_io->state |= ZEND_ASYNC_IO_PRESERVE_FD;
+				ZEND_ASYNC_IO_CLOSE(data->async_io);
+				data->async_io->event.dispose(&data->async_io->event);
+				data->async_io = NULL;
+			}
+
+			return PHP_STREAM_OPTION_RETURN_OK;
+
 		case PHP_STREAM_OPTION_ALIGN_POSITION:
 			if (data->async_io != NULL && ptrparam != NULL && zend_async_io_seek_fn != NULL) {
 				zend_off_t *pos = (zend_off_t *)ptrparam;

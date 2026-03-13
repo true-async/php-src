@@ -57,6 +57,12 @@ ZEND_TLS CURLM * curl_multi_handle = NULL;
  */
 ZEND_TLS HashTable * curl_multi_event_list = NULL;
 ZEND_TLS zend_async_timer_event_t * timer = NULL;
+#if LIBCURL_VERSION_NUM < 0x080e00
+/* curl < 8.14: socket callback cannot be called during curl_multi_cleanup
+ * (see curl/curl#15201), so we track poll events ourselves for manual dispose. */
+ZEND_TLS HashTable curl_socket_poll_list;
+ZEND_TLS bool curl_socket_poll_list_initialized = false;
+#endif
 
 // Struct definitions
 struct curl_async_multi_event_s {
@@ -173,6 +179,11 @@ void curl_async_setup(void)
 
 	zend_hash_init(curl_multi_event_list, 8, NULL, NULL, false);
 
+#if LIBCURL_VERSION_NUM < 0x080e00
+	zend_hash_init(&curl_socket_poll_list, 4, NULL, NULL, false);
+	curl_socket_poll_list_initialized = true;
+#endif
+
 	timer = NULL;
 }
 
@@ -184,13 +195,35 @@ void curl_async_shutdown(void)
 	}
 
 	if (curl_multi_handle != NULL) {
-		// Pre-cleanup. Bug in CURL prior to 8.14.
+#if LIBCURL_VERSION_NUM >= 0x080e00
+		/* curl >= 8.14: socket callback is safe during cleanup.
+		 * curl_multi_cleanup will fire CURL_POLL_REMOVE for each socket,
+		 * and curl_socket_cb will dispose the poll events. */
+		curl_multi_cleanup(curl_multi_handle);
+#else
+		/* curl < 8.14: socket callback during curl_multi_cleanup crashes
+		 * (curl/curl#15201). Nullify callbacks, then manually dispose
+		 * all tracked socket poll events. */
 		curl_multi_setopt(curl_multi_handle, CURLMOPT_SOCKETFUNCTION, NULL);
 		curl_multi_setopt(curl_multi_handle, CURLMOPT_TIMERFUNCTION,  NULL);
 		curl_multi_setopt(curl_multi_handle, CURLMOPT_SOCKETDATA,     NULL);
 		curl_multi_setopt(curl_multi_handle, CURLMOPT_TIMERDATA,      NULL);
 
 		curl_multi_cleanup(curl_multi_handle);
+
+		if (curl_socket_poll_list_initialized) {
+			zend_async_poll_event_t *socket_event;
+			ZEND_HASH_FOREACH_PTR(&curl_socket_poll_list, socket_event) {
+				if (socket_event != NULL) {
+					socket_event->base.stop(&socket_event->base);
+					socket_event->base.dispose(&socket_event->base);
+				}
+			} ZEND_HASH_FOREACH_END();
+
+			zend_hash_destroy(&curl_socket_poll_list);
+			curl_socket_poll_list_initialized = false;
+		}
+#endif
 		curl_multi_handle = NULL;
 	}
 
@@ -501,6 +534,10 @@ static int curl_socket_cb(CURL *curl, const curl_socket_t socket_fd, const int w
 			zend_async_poll_event_t *socket_event = socket_poll;
 			socket_event->base.stop(&socket_event->base);
 			socket_event->base.dispose(&socket_event->base);
+
+			if (curl_socket_poll_list_initialized) {
+				zend_hash_index_del(&curl_socket_poll_list, (zend_ulong) socket_fd);
+			}
 		}
 
 		return 0;
@@ -534,6 +571,11 @@ static int curl_socket_cb(CURL *curl, const curl_socket_t socket_fd, const int w
 		}
 
 		curl_multi_assign(curl_multi_handle, socket_fd, socket_event);
+#if LIBCURL_VERSION_NUM < 0x080e00
+		if (curl_socket_poll_list_initialized) {
+			zend_hash_index_update_ptr(&curl_socket_poll_list, (zend_ulong) socket_fd, socket_event);
+		}
+#endif
 	} else {
 		// Update existing socket event
 		zend_async_poll_event_t *socket_event = socket_poll;
