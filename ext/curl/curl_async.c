@@ -535,9 +535,11 @@ static int curl_socket_cb(CURL *curl, const curl_socket_t socket_fd, const int w
 			socket_event->base.stop(&socket_event->base);
 			socket_event->base.dispose(&socket_event->base);
 
+	#if LIBCURL_VERSION_NUM < 0x080e00
 			if (curl_socket_poll_list_initialized) {
 				zend_hash_index_del(&curl_socket_poll_list, (zend_ulong) socket_fd);
 			}
+#endif
 		}
 
 		return 0;
