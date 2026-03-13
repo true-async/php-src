@@ -103,19 +103,15 @@ PHP_RSHUTDOWN_FUNCTION(streams)
 PHPAPI void php_stream_detach_async_io(void)
 {
 	zend_resource *res;
-	int total = 0, streams = 0;
 
 	ZEND_HASH_FOREACH_PTR(&EG(regular_list), res) {
-		total++;
 		if (res->type == le_stream || res->type == le_pstream) {
 			php_stream *stream = (php_stream *)res->ptr;
 			if (stream != NULL) {
-				streams++;
 				php_stream_set_option(stream, PHP_STREAM_OPTION_DETACH_ASYNC_IO, 0, NULL);
 			}
 		}
 	} ZEND_HASH_FOREACH_END();
-
 }
 
 PHPAPI php_stream *php_stream_encloses(php_stream *enclosing, php_stream *enclosed)
