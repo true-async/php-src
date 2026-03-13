@@ -63,7 +63,8 @@ struct curl_async_multi_event_s {
 	zend_async_event_t base;
 	HashTable poll_list;
 	php_curlm *curl_m;
-	zend_async_timer_event_t *timer; // Timer for the multi event
+	zend_async_timer_event_t *timer;
+	int last_running_handles;
 };
 
 typedef struct curl_async_multi_event_s curl_async_multi_event_t;
@@ -811,6 +812,11 @@ static void multi_timer_callback(
 	curl_multi_socket_action(
 		async_event_callback->curl_m_event->curl_m->multi, CURL_SOCKET_TIMEOUT, 0, &running_handles
 	);
+
+	if (running_handles < async_event_callback->curl_m_event->last_running_handles) {
+		async_event_callback->curl_m_event->last_running_handles = running_handles;
+		ZEND_ASYNC_CALLBACKS_NOTIFY(&async_event_callback->curl_m_event->base, NULL, NULL);
+	}
 }
 
 static int multi_timer_cb(CURLM *multi, const long timeout_ms, void *user_p)
@@ -819,7 +825,7 @@ static int multi_timer_cb(CURLM *multi, const long timeout_ms, void *user_p)
 	zend_async_timer_event_t *timer_event = NULL;
 
 	if (async_event == NULL) {
-        return CURLM_INTERNAL_ERROR;
+        return 0;
     }
 
 	// Remove previous timer if it exists
@@ -891,6 +897,14 @@ static void curl_multi_poll_callback(
 	curl_multi_socket_action(
 		poll_callback->curl_m_event->curl_m->multi, socket_event->socket, action, &running_handles
 	);
+
+	/* Only wake the coroutine when a transfer completes (running_handles decreased).
+	 * This avoids unnecessary fiber switches on intermediate I/O events,
+	 * especially with HTTP/2 multiplexing where many events share one connection. */
+	if (running_handles < poll_callback->curl_m_event->last_running_handles) {
+		poll_callback->curl_m_event->last_running_handles = running_handles;
+		ZEND_ASYNC_CALLBACKS_NOTIFY(&poll_callback->curl_m_event->base, NULL, NULL);
+	}
 }
 
 static int multi_socket_cb(CURL *curl, const curl_socket_t socket_fd, const int what, void *user_p, void *data)
@@ -898,7 +912,7 @@ static int multi_socket_cb(CURL *curl, const curl_socket_t socket_fd, const int 
 	curl_async_multi_event_t *async_event = user_p;
 
 	if (async_event == NULL) {
-        return -1;
+        return 0;
     }
 
 	if (what == CURL_POLL_REMOVE) {
@@ -1121,6 +1135,7 @@ CURLMcode curl_async_select(php_curlm * curl_m, int timeout_ms, int* numfds)
 	// Initiate execution of the transfer
 	int running_handles = 0;
 	curl_multi_socket_action(multi_handle, CURL_SOCKET_TIMEOUT, 0, &running_handles);
+	async_event->last_running_handles = running_handles;
 
 	// Suspend coroutine until events are ready
 	if (!ZEND_ASYNC_SUSPEND()) {
