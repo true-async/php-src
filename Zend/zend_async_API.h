@@ -342,6 +342,7 @@ typedef bool (*zend_async_reactor_startup_t)(void);
 typedef bool (*zend_async_reactor_shutdown_t)(void);
 typedef bool (*zend_async_reactor_execute_t)(bool no_wait);
 typedef bool (*zend_async_reactor_loop_alive_t)(void);
+typedef void (*zend_async_reactor_tick_t)(void);
 
 typedef zend_async_poll_event_t *(*zend_async_new_socket_event_t)(
 		zend_socket_t socket, async_poll_event events, size_t extra_size);
@@ -1763,6 +1764,7 @@ ZEND_API extern zend_async_reactor_startup_t zend_async_reactor_startup_fn;
 ZEND_API extern zend_async_reactor_shutdown_t zend_async_reactor_shutdown_fn;
 ZEND_API extern zend_async_reactor_execute_t zend_async_reactor_execute_fn;
 ZEND_API extern zend_async_reactor_loop_alive_t zend_async_reactor_loop_alive_fn;
+ZEND_API extern zend_async_reactor_tick_t zend_async_reactor_tick_fn;
 ZEND_API extern zend_async_new_socket_event_t zend_async_new_socket_event_fn;
 ZEND_API extern zend_async_new_poll_event_t zend_async_new_poll_event_fn;
 ZEND_API extern zend_async_new_poll_proxy_event_t zend_async_new_poll_proxy_event_fn;
@@ -2052,6 +2054,7 @@ END_EXTERN_C()
 
 #define ZEND_ASYNC_REACTOR_EXECUTE(no_wait) zend_async_reactor_execute_fn(no_wait)
 #define ZEND_ASYNC_REACTOR_LOOP_ALIVE() zend_async_reactor_loop_alive_fn()
+#define ZEND_ASYNC_REACTOR_TICK() zend_async_reactor_tick_fn()
 
 #define ZEND_ASYNC_NEW_SOCKET_EVENT(socket, events) \
 	zend_async_new_socket_event_fn(socket, events, 0)

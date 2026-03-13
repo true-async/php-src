@@ -1076,9 +1076,7 @@ CURLMcode curl_async_multi_perform(php_curlm * curl_m, int *running_handles)
 	curl_multi_socket_action(curl_m->multi, CURL_SOCKET_TIMEOUT, 0, &running_handles_internal);
 	if (running_handles_internal > 0) {
 		zend_try {
-			ZEND_ASYNC_SCHEDULER_CONTEXT = true;
-			ZEND_ASYNC_REACTOR_EXECUTE(true);
-			ZEND_ASYNC_SCHEDULER_CONTEXT = false;
+			ZEND_ASYNC_REACTOR_TICK();
 		} zend_catch {
 			ZEND_ASYNC_SCHEDULER_CONTEXT = false;
 			zend_bailout();
