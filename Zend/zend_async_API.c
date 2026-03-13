@@ -214,6 +214,7 @@ zend_async_reactor_startup_t zend_async_reactor_startup_fn = NULL;
 zend_async_reactor_shutdown_t zend_async_reactor_shutdown_fn = NULL;
 zend_async_reactor_execute_t zend_async_reactor_execute_fn = NULL;
 zend_async_reactor_loop_alive_t zend_async_reactor_loop_alive_fn = NULL;
+zend_async_reactor_tick_t zend_async_reactor_tick_fn = NULL;
 zend_async_new_socket_event_t zend_async_new_socket_event_fn = NULL;
 zend_async_new_poll_event_t zend_async_new_poll_event_fn = NULL;
 zend_async_new_poll_proxy_event_t zend_async_new_poll_proxy_event_fn = NULL;
