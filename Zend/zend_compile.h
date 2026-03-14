@@ -1317,6 +1317,30 @@ END_EXTERN_C()
 /* The default value for CG(compiler_options) during eval() */
 #define ZEND_COMPILE_DEFAULT_FOR_EVAL			0
 
+/* When enabled, all compiler output (opcodes, class entries, strings) is allocated
+ * with persistent memory (pemalloc) instead of per-request memory (emalloc).
+ * This allows compiled data to be safely shared between threads and freed from any thread.
+ * Lifetime is managed via refcounting. */
+#define ZEND_COMPILE_PERSISTENT 1
+
+#if ZEND_COMPILE_PERSISTENT
+# define ZEND_COMP_ALLOC(size)                      pemalloc(size, 1)
+# define ZEND_COMP_CALLOC(nmemb, size)              pecalloc(nmemb, size, 1)
+# define ZEND_COMP_REALLOC(ptr, size)               perealloc(ptr, size, 1)
+# define ZEND_COMP_SAFE_ALLOC(n, size, off)         safe_pemalloc(n, size, off, 1)
+# define ZEND_COMP_SAFE_REALLOC(ptr, n, size, off)  safe_perealloc(ptr, n, size, off, 1)
+# define ZEND_COMP_FREE(ptr)                        pefree(ptr, 1)
+# define ZEND_COMP_STRFLAG                          1
+#else
+# define ZEND_COMP_ALLOC(size)                      emalloc(size)
+# define ZEND_COMP_CALLOC(nmemb, size)              ecalloc(nmemb, size)
+# define ZEND_COMP_REALLOC(ptr, size)               erealloc(ptr, size)
+# define ZEND_COMP_SAFE_ALLOC(n, size, off)         safe_emalloc(n, size, off)
+# define ZEND_COMP_SAFE_REALLOC(ptr, n, size, off)  safe_erealloc(ptr, n, size, off)
+# define ZEND_COMP_FREE(ptr)                        efree(ptr)
+# define ZEND_COMP_STRFLAG                          0
+#endif
+
 ZEND_API bool zend_is_op_long_compatible(const zval *op);
 ZEND_API bool zend_binary_op_produces_error(uint32_t opcode, const zval *op1, const zval *op2);
 ZEND_API bool zend_unary_op_produces_error(uint32_t opcode, const zval *op);

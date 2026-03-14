@@ -1995,7 +1995,7 @@ ZEND_API zend_result zend_execute_script(int type, zval *retval, zend_file_handl
 		}
 		zend_destroy_static_vars(op_array);
 		destroy_op_array(op_array);
-		efree_size(op_array, sizeof(zend_op_array));
+		ZEND_COMP_FREE(op_array);
 	} else if (type == ZEND_REQUIRE) {
 		ret = FAILURE;
 	}

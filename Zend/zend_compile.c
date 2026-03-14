@@ -156,7 +156,7 @@ static zend_op *get_next_op(void)
 
 	if (UNEXPECTED(next_op_num >= CG(context).opcodes_size)) {
 		CG(context).opcodes_size *= 4;
-		op_array->opcodes = erealloc(op_array->opcodes, CG(context).opcodes_size * sizeof(zend_op));
+		op_array->opcodes = ZEND_COMP_REALLOC(op_array->opcodes, CG(context).opcodes_size * sizeof(zend_op));
 	}
 
 	next_op = &(op_array->opcodes[next_op_num]);
@@ -169,7 +169,7 @@ static zend_op *get_next_op(void)
 static zend_brk_cont_element *get_next_brk_cont_element(void)
 {
 	CG(context).last_brk_cont++;
-	CG(context).brk_cont_array = erealloc(CG(context).brk_cont_array, sizeof(zend_brk_cont_element) * CG(context).last_brk_cont);
+	CG(context).brk_cont_array = ZEND_COMP_REALLOC(CG(context).brk_cont_array, sizeof(zend_brk_cont_element) * CG(context).last_brk_cont);
 	return &CG(context).brk_cont_array[CG(context).last_brk_cont-1];
 }
 
@@ -553,7 +553,7 @@ static uint32_t lookup_cv(zend_string *name) /* {{{ */{
 	op_array->last_var++;
 	if (op_array->last_var > CG(context).vars_size) {
 		CG(context).vars_size += 16; /* FIXME */
-		op_array->vars = erealloc(op_array->vars, CG(context).vars_size * sizeof(zend_string*));
+		op_array->vars = ZEND_COMP_REALLOC(op_array->vars, CG(context).vars_size * sizeof(zend_string*));
 	}
 
 	op_array->vars[i] = zend_string_copy(name);
@@ -595,7 +595,7 @@ static int zend_add_literal(zval *zv) /* {{{ */
 		while (i >= CG(context).literals_size) {
 			CG(context).literals_size += 16; /* FIXME */
 		}
-		op_array->literals = (zval*)erealloc(op_array->literals, CG(context).literals_size * sizeof(zval));
+		op_array->literals = (zval*) ZEND_COMP_REALLOC(op_array->literals, CG(context).literals_size * sizeof(zval));
 	}
 	zend_insert_literal(op_array, zv, i);
 	return i;
@@ -619,7 +619,7 @@ static int zend_add_func_name_literal(zend_string *name) /* {{{ */
 	int ret = zend_add_literal_string(&name);
 
 	/* Lowercased name */
-	zend_string *lc_name = zend_string_tolower(name);
+	zend_string *lc_name = zend_string_tolower_ex(name, ZEND_COMP_STRFLAG);
 	zend_add_literal_string(&lc_name);
 
 	return ret;
@@ -635,12 +635,12 @@ static int zend_add_ns_func_name_literal(zend_string *name) /* {{{ */
 	int ret = zend_add_literal_string(&name);
 
 	/* Lowercased name */
-	zend_string *lc_name = zend_string_tolower(name);
+	zend_string *lc_name = zend_string_tolower_ex(name, ZEND_COMP_STRFLAG);
 	zend_add_literal_string(&lc_name);
 
 	/* Lowercased unqualified name */
 	if (zend_get_unqualified_name(name, &unqualified_name, &unqualified_name_len)) {
-		lc_name = zend_string_alloc(unqualified_name_len, 0);
+		lc_name = zend_string_alloc(unqualified_name_len, ZEND_COMP_STRFLAG);
 		zend_str_tolower_copy(ZSTR_VAL(lc_name), unqualified_name, unqualified_name_len);
 		zend_add_literal_string(&lc_name);
 	}
@@ -655,7 +655,7 @@ static int zend_add_class_name_literal(zend_string *name) /* {{{ */
 	int ret = zend_add_literal_string(&name);
 
 	/* Lowercased name */
-	zend_string *lc_name = zend_string_tolower(name);
+	zend_string *lc_name = zend_string_tolower_ex(name, ZEND_COMP_STRFLAG);
 	zend_add_literal_string(&lc_name);
 
 	return ret;
@@ -676,7 +676,7 @@ static int zend_add_const_name_literal(zend_string *name, bool unqualified) /* {
 		after_ns_len = ZSTR_LEN(name) - ns_len - 1;
 
 		/* lowercased namespace name & original constant name */
-		tmp_name = zend_string_init(ZSTR_VAL(name), ZSTR_LEN(name), 0);
+		tmp_name = zend_string_init(ZSTR_VAL(name), ZSTR_LEN(name), ZEND_COMP_STRFLAG);
 		zend_str_tolower(ZSTR_VAL(tmp_name), ns_len);
 		zend_add_literal_string(&tmp_name);
 
@@ -688,7 +688,7 @@ static int zend_add_const_name_literal(zend_string *name, bool unqualified) /* {
 	}
 
 	/* original unqualified constant name */
-	tmp_name = zend_string_init(after_ns, after_ns_len, 0);
+	tmp_name = zend_string_init(after_ns, after_ns_len, ZEND_COMP_STRFLAG);
 	zend_add_literal_string(&tmp_name);
 
 	return ret;
@@ -1077,7 +1077,17 @@ ZEND_API zend_string *zend_create_member_string(const zend_string *class_name, c
 }
 
 static zend_string *zend_concat_names(const char *name1, size_t name1_len, const char *name2, size_t name2_len) {
+#if ZEND_COMPILE_PERSISTENT
+	size_t len = name1_len + 1 + name2_len;
+	zend_string *res = zend_string_alloc(len, 1);
+	memcpy(ZSTR_VAL(res), name1, name1_len);
+	ZSTR_VAL(res)[name1_len] = '\\';
+	memcpy(ZSTR_VAL(res) + name1_len + 1, name2, name2_len);
+	ZSTR_VAL(res)[len] = '\0';
+	return res;
+#else
 	return zend_string_concat3(name1, name1_len, "\\", 1, name2, name2_len);
+#endif
 }
 
 static zend_string *zend_prefix_with_ns(zend_string *name) {
@@ -1099,7 +1109,7 @@ static zend_string *zend_resolve_non_class_name(
 	if (ZSTR_VAL(name)[0] == '\\') {
 		/* Remove \ prefix (only relevant if this is a string rather than a label) */
 		*is_fully_qualified = true;
-		return zend_string_init(ZSTR_VAL(name) + 1, ZSTR_LEN(name) - 1, 0);
+		return zend_string_init(ZSTR_VAL(name) + 1, ZSTR_LEN(name) - 1, ZEND_COMP_STRFLAG);
 	}
 
 	if (type == ZEND_NAME_FQ) {
@@ -1183,7 +1193,7 @@ static zend_string *zend_resolve_class_name(zend_string *name, uint32_t type) /*
 	if (type == ZEND_NAME_FQ) {
 		if (ZSTR_VAL(name)[0] == '\\') {
 			/* Remove \ prefix (only relevant if this is a string rather than a label) */
-			name = zend_string_init(ZSTR_VAL(name) + 1, ZSTR_LEN(name) - 1, 0);
+			name = zend_string_init(ZSTR_VAL(name) + 1, ZSTR_LEN(name) - 1, ZEND_COMP_STRFLAG);
 			if (ZEND_FETCH_CLASS_DEFAULT != zend_get_class_fetch_type(name)) {
 				zend_error_noreturn(E_COMPILE_ERROR,
 					"'\\%s' is an invalid class name", ZSTR_VAL(name));
@@ -1249,7 +1259,7 @@ static uint32_t zend_add_try_element(uint32_t try_op) /* {{{ */
 	uint32_t try_catch_offset = op_array->last_try_catch++;
 	zend_try_catch_element *elem;
 
-	op_array->try_catch_array = safe_erealloc(
+	op_array->try_catch_array = ZEND_COMP_SAFE_REALLOC(
 		op_array->try_catch_array, sizeof(zend_try_catch_element), op_array->last_try_catch, 0);
 
 	elem = &op_array->try_catch_array[try_catch_offset];
@@ -1929,7 +1939,7 @@ static void zend_add_to_list(void *result, void *item) /* {{{ */
 		}
 	}
 
-	list = erealloc(list, sizeof(void*) * (n+2));
+	list = ZEND_COMP_REALLOC(list, sizeof(void*) * (n+2));
 
 	list[n]   = item;
 	list[n+1] = NULL;
@@ -2060,7 +2070,7 @@ int ZEND_FASTCALL zendlex(zend_parser_stack_elem *elem) /* {{{ */
 
 ZEND_API void zend_initialize_class_data(zend_class_entry *ce, bool nullify_handlers) /* {{{ */
 {
-	bool persistent_hashes = ce->type == ZEND_INTERNAL_CLASS;
+	bool persistent_hashes = (ce->type == ZEND_INTERNAL_CLASS) || ZEND_COMPILE_PERSISTENT;
 
 	ce->refcount = 1;
 	ce->ce_flags = ZEND_ACC_CONSTANTS_UPDATED;
@@ -7641,8 +7651,12 @@ static zend_type zend_compile_typename_ex(
 		}
 
 		if (type_list->num_types) {
+#if ZEND_COMPILE_PERSISTENT
+			zend_type_list *list = ZEND_COMP_ALLOC(ZEND_TYPE_LIST_SIZE(type_list->num_types));
+#else
 			zend_type_list *list = zend_arena_alloc(
 				&CG(arena), ZEND_TYPE_LIST_SIZE(type_list->num_types));
+#endif
 			memcpy(list, type_list, ZEND_TYPE_LIST_SIZE(type_list->num_types));
 			ZEND_TYPE_SET_LIST(type, list);
 			ZEND_TYPE_FULL_MASK(type) |= _ZEND_TYPE_ARENA_BIT;
@@ -7666,7 +7680,11 @@ static zend_type zend_compile_typename_ex(
 
 		/* Allocate the type list directly on the arena as it must be a type
 		 * list of the same number of elements as the AST list has children */
+#if ZEND_COMPILE_PERSISTENT
+		type_list = ZEND_COMP_ALLOC(ZEND_TYPE_LIST_SIZE(list->children));
+#else
 		type_list = zend_arena_alloc(&CG(arena), ZEND_TYPE_LIST_SIZE(list->children));
+#endif
 		type_list->num_types = 0;
 
 		ZEND_ASSERT(list->children > 1);
@@ -7713,7 +7731,11 @@ static zend_type zend_compile_typename_ex(
 			ZEND_TYPE_FULL_MASK(intersection_type) |= _ZEND_TYPE_INTERSECTION_BIT;
 			ZEND_TYPE_FULL_MASK(intersection_type) |= _ZEND_TYPE_ARENA_BIT;
 
+#if ZEND_COMPILE_PERSISTENT
+			zend_type_list *dnf_type_list = ZEND_COMP_ALLOC(ZEND_TYPE_LIST_SIZE(1));
+#else
 			zend_type_list *dnf_type_list = zend_arena_alloc(&CG(arena), ZEND_TYPE_LIST_SIZE(1));
+#endif
 			dnf_type_list->num_types = 1;
 			dnf_type_list->types[0] = intersection_type;
 			ZEND_TYPE_SET_LIST(type, dnf_type_list);
@@ -8015,7 +8037,7 @@ static void zend_compile_params(zend_ast *ast, zend_ast *return_type_ast, uint32
 
 	if (return_type_ast || fallback_return_type) {
 		/* Use op_array->arg_info[-1] for return type */
-		arg_infos = safe_emalloc(sizeof(zend_arg_info), list->children + 1, 0);
+		arg_infos = ZEND_COMP_SAFE_ALLOC(list->children + 1, sizeof(zend_arg_info), 0);
 		arg_infos->name = NULL;
 		if (return_type_ast) {
 			arg_infos->type = zend_compile_typename(return_type_ast);
@@ -8037,7 +8059,7 @@ static void zend_compile_params(zend_ast *ast, zend_ast *return_type_ast, uint32
 		if (list->children == 0) {
 			return;
 		}
-		arg_infos = safe_emalloc(sizeof(zend_arg_info), list->children, 0);
+		arg_infos = ZEND_COMP_SAFE_ALLOC(list->children, sizeof(zend_arg_info), 0);
 	}
 
 	/* Find last required parameter number for deprecation message. */
@@ -8526,12 +8548,12 @@ static void add_stringable_interface(zend_class_entry *ce) {
 
 	ce->num_interfaces++;
 	ce->interface_names =
-		erealloc(ce->interface_names, sizeof(zend_class_name) * ce->num_interfaces);
+		ZEND_COMP_REALLOC(ce->interface_names, sizeof(zend_class_name) * ce->num_interfaces);
 	// TODO: Add known interned strings instead?
 	ce->interface_names[ce->num_interfaces - 1].name =
-		ZSTR_INIT_LITERAL("Stringable", 0);
+		ZSTR_INIT_LITERAL("Stringable", ZEND_COMP_STRFLAG);
 	ce->interface_names[ce->num_interfaces - 1].lc_name =
-		ZSTR_INIT_LITERAL("stringable", 0);
+		ZSTR_INIT_LITERAL("stringable", ZEND_COMP_STRFLAG);
 }
 
 static zend_string *zend_begin_method_decl(zend_op_array *op_array, zend_string *name, bool has_body) /* {{{ */
@@ -8619,7 +8641,7 @@ static zend_string *zend_begin_method_decl(zend_op_array *op_array, zend_string 
 static uint32_t zend_add_dynamic_func_def(zend_op_array *def) {
 	zend_op_array *op_array = CG(active_op_array);
 	uint32_t def_offset = op_array->num_dynamic_func_defs++;
-	op_array->dynamic_func_defs = erealloc(
+	op_array->dynamic_func_defs = ZEND_COMP_REALLOC(
 		op_array->dynamic_func_defs, op_array->num_dynamic_func_defs * sizeof(zend_op_array *));
 	op_array->dynamic_func_defs[def_offset] = def;
 	return def_offset;
@@ -8741,7 +8763,11 @@ static zend_op_array *zend_compile_func_decl_ex(
 
 	zend_class_entry *orig_class_entry = CG(active_class_entry);
 	zend_op_array *orig_op_array = CG(active_op_array);
+#if ZEND_COMPILE_PERSISTENT
+	zend_op_array *op_array = ZEND_COMP_ALLOC(sizeof(zend_op_array));
+#else
 	zend_op_array *op_array = zend_arena_alloc(&CG(arena), sizeof(zend_op_array));
+#endif
 	zend_oparray_context orig_oparray_context;
 	closure_info info;
 
@@ -9072,7 +9098,11 @@ static void zend_compile_property_hooks(
 		func->common.prop_info = prop_info;
 
 		if (!prop_info->hooks) {
+#if ZEND_COMPILE_PERSISTENT
+			prop_info->hooks = ZEND_COMP_ALLOC(ZEND_PROPERTY_HOOK_STRUCT_SIZE);
+#else
 			prop_info->hooks = zend_arena_alloc(&CG(arena), ZEND_PROPERTY_HOOK_STRUCT_SIZE);
+#endif
 			memset(prop_info->hooks, 0, ZEND_PROPERTY_HOOK_STRUCT_SIZE);
 		}
 
@@ -9385,7 +9415,7 @@ static void zend_compile_trait_precedence(const zend_ast *ast) /* {{{ */
 	const zend_ast_list *insteadof_list = zend_ast_get_list(insteadof_ast);
 	uint32_t i;
 
-	zend_trait_precedence *precedence = emalloc(sizeof(zend_trait_precedence) + (insteadof_list->children - 1) * sizeof(zend_string*));
+	zend_trait_precedence *precedence = ZEND_COMP_ALLOC(sizeof(zend_trait_precedence) + (insteadof_list->children - 1) * sizeof(zend_string*));
 	zend_compile_method_ref(method_ref_ast, &precedence->trait_method);
 	precedence->num_excludes = insteadof_list->children;
 
@@ -9409,7 +9439,7 @@ static void zend_compile_trait_alias(const zend_ast *ast) /* {{{ */
 
 	zend_check_trait_alias_modifiers(modifiers);
 
-	alias = emalloc(sizeof(zend_trait_alias));
+	alias = ZEND_COMP_ALLOC(sizeof(zend_trait_alias));
 	zend_compile_method_ref(method_ref_ast, &alias->trait_method);
 	alias->modifiers = modifiers;
 
@@ -9430,7 +9460,7 @@ static void zend_compile_use_trait(const zend_ast *ast) /* {{{ */
 	zend_class_entry *ce = CG(active_class_entry);
 	uint32_t i;
 
-	ce->trait_names = erealloc(ce->trait_names, sizeof(zend_class_name) * (ce->num_traits + traits->children));
+	ce->trait_names = ZEND_COMP_REALLOC(ce->trait_names, sizeof(zend_class_name) * (ce->num_traits + traits->children));
 
 	for (i = 0; i < traits->children; ++i) {
 		zend_ast *trait_ast = traits->child[i];
@@ -9443,7 +9473,7 @@ static void zend_compile_use_trait(const zend_ast *ast) /* {{{ */
 
 		ce->trait_names[ce->num_traits].name =
 			zend_resolve_const_class_name_reference(trait_ast, "trait name");
-		ce->trait_names[ce->num_traits].lc_name = zend_string_tolower(ce->trait_names[ce->num_traits].name);
+		ce->trait_names[ce->num_traits].lc_name = zend_string_tolower_ex(ce->trait_names[ce->num_traits].name, ZEND_COMP_STRFLAG);
 		ce->num_traits++;
 	}
 
@@ -9473,13 +9503,13 @@ static void zend_compile_implements(zend_ast *ast) /* {{{ */
 	zend_class_name *interface_names;
 	uint32_t i;
 
-	interface_names = emalloc(sizeof(zend_class_name) * list->children);
+	interface_names = ZEND_COMP_ALLOC(sizeof(zend_class_name) * list->children);
 
 	for (i = 0; i < list->children; ++i) {
 		zend_ast *class_ast = list->child[i];
 		interface_names[i].name =
 			zend_resolve_const_class_name_reference(class_ast, "interface name");
-		interface_names[i].lc_name = zend_string_tolower(interface_names[i].name);
+		interface_names[i].lc_name = zend_string_tolower_ex(interface_names[i].name, ZEND_COMP_STRFLAG);
 	}
 
 	ce->num_interfaces = list->children;
@@ -9535,7 +9565,11 @@ static void zend_compile_class_decl(znode *result, const zend_ast *ast, bool top
 	zend_ast *stmt_ast = decl->child[2];
 	zend_ast *enum_backing_type_ast = decl->child[4];
 	zend_string *name, *lcname;
+#if ZEND_COMPILE_PERSISTENT
+	zend_class_entry *ce = ZEND_COMP_ALLOC(sizeof(zend_class_entry));
+#else
 	zend_class_entry *ce = zend_arena_alloc(&CG(arena), sizeof(zend_class_entry));
+#endif
 	zend_op *opline;
 
 	zend_class_entry *original_ce = CG(active_class_entry);

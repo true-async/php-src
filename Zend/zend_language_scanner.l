@@ -606,7 +606,7 @@ static zend_op_array *zend_compile(zend_function_type type)
 		zend_oparray_context original_oparray_context;
 		zend_op_array *original_active_op_array = CG(active_op_array);
 
-		op_array = emalloc(sizeof(zend_op_array));
+		op_array = ZEND_COMP_ALLOC(sizeof(zend_op_array));
 		init_op_array(op_array, type, INITIAL_OP_ARRAY_SIZE);
 		CG(active_op_array) = op_array;
 

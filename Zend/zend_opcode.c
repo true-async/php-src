@@ -52,10 +52,10 @@ void init_op_array(zend_op_array *op_array, zend_function_type type, int initial
 	op_array->arg_flags[1] = 0;
 	op_array->arg_flags[2] = 0;
 
-	op_array->refcount = (uint32_t *) emalloc(sizeof(uint32_t));
+	op_array->refcount = (uint32_t *) ZEND_COMP_ALLOC(sizeof(uint32_t));
 	*op_array->refcount = 1;
 	op_array->last = 0;
-	op_array->opcodes = emalloc(initial_ops_size * sizeof(zend_op));
+	op_array->opcodes = ZEND_COMP_ALLOC(initial_ops_size * sizeof(zend_op));
 
 	op_array->last_var = 0;
 	op_array->vars = NULL;
@@ -120,7 +120,7 @@ ZEND_API void zend_type_release(zend_type type, bool persistent) {
 			pefree(ZEND_TYPE_LIST(type), persistent);
 		}
 	} else if (ZEND_TYPE_HAS_NAME(type)) {
-		zend_string_release(ZEND_TYPE_NAME(type));
+		zend_string_release_ex(ZEND_TYPE_NAME(type), persistent);
 	}
 }
 
@@ -216,30 +216,30 @@ static void _destroy_zend_class_traits_info(zend_class_entry *ce)
 	uint32_t i;
 
 	for (i = 0; i < ce->num_traits; i++) {
-		zend_string_release_ex(ce->trait_names[i].name, 0);
-		zend_string_release_ex(ce->trait_names[i].lc_name, 0);
+		zend_string_release_ex(ce->trait_names[i].name, ZEND_COMP_STRFLAG);
+		zend_string_release_ex(ce->trait_names[i].lc_name, ZEND_COMP_STRFLAG);
 	}
-	efree(ce->trait_names);
+	ZEND_COMP_FREE(ce->trait_names);
 
 	if (ce->trait_aliases) {
 		i = 0;
 		while (ce->trait_aliases[i]) {
 			if (ce->trait_aliases[i]->trait_method.method_name) {
-				zend_string_release_ex(ce->trait_aliases[i]->trait_method.method_name, 0);
+				zend_string_release_ex(ce->trait_aliases[i]->trait_method.method_name, ZEND_COMP_STRFLAG);
 			}
 			if (ce->trait_aliases[i]->trait_method.class_name) {
-				zend_string_release_ex(ce->trait_aliases[i]->trait_method.class_name, 0);
+				zend_string_release_ex(ce->trait_aliases[i]->trait_method.class_name, ZEND_COMP_STRFLAG);
 			}
 
 			if (ce->trait_aliases[i]->alias) {
-				zend_string_release_ex(ce->trait_aliases[i]->alias, 0);
+				zend_string_release_ex(ce->trait_aliases[i]->alias, ZEND_COMP_STRFLAG);
 			}
 
-			efree(ce->trait_aliases[i]);
+			ZEND_COMP_FREE(ce->trait_aliases[i]);
 			i++;
 		}
 
-		efree(ce->trait_aliases);
+		ZEND_COMP_FREE(ce->trait_aliases);
 	}
 
 	if (ce->trait_precedences) {
@@ -247,16 +247,16 @@ static void _destroy_zend_class_traits_info(zend_class_entry *ce)
 
 		i = 0;
 		while (ce->trait_precedences[i]) {
-			zend_string_release_ex(ce->trait_precedences[i]->trait_method.method_name, 0);
-			zend_string_release_ex(ce->trait_precedences[i]->trait_method.class_name, 0);
+			zend_string_release_ex(ce->trait_precedences[i]->trait_method.method_name, ZEND_COMP_STRFLAG);
+			zend_string_release_ex(ce->trait_precedences[i]->trait_method.class_name, ZEND_COMP_STRFLAG);
 
 			for (j = 0; j < ce->trait_precedences[i]->num_excludes; j++) {
-				zend_string_release_ex(ce->trait_precedences[i]->exclude_class_names[j], 0);
+				zend_string_release_ex(ce->trait_precedences[i]->exclude_class_names[j], ZEND_COMP_STRFLAG);
 			}
-			efree(ce->trait_precedences[i]);
+			ZEND_COMP_FREE(ce->trait_precedences[i]);
 			i++;
 		}
-		efree(ce->trait_precedences);
+		ZEND_COMP_FREE(ce->trait_precedences);
 	}
 }
 
@@ -349,14 +349,14 @@ ZEND_API void destroy_zend_class(zval *zv)
 		case ZEND_USER_CLASS:
 			if (!(ce->ce_flags & ZEND_ACC_CACHED)) {
 				if (ce->parent_name && !(ce->ce_flags & ZEND_ACC_RESOLVED_PARENT)) {
-					zend_string_release_ex(ce->parent_name, 0);
+					zend_string_release_ex(ce->parent_name, ZEND_COMP_STRFLAG);
 				}
 
-				zend_string_release_ex(ce->name, 0);
-				zend_string_release_ex(ce->info.user.filename, 0);
+				zend_string_release_ex(ce->name, ZEND_COMP_STRFLAG);
+				zend_string_release_ex(ce->info.user.filename, ZEND_COMP_STRFLAG);
 
 				if (ce->doc_comment) {
-					zend_string_release_ex(ce->doc_comment, 0);
+					zend_string_release_ex(ce->doc_comment, ZEND_COMP_STRFLAG);
 				}
 
 				if (ce->attributes) {
@@ -367,10 +367,10 @@ ZEND_API void destroy_zend_class(zval *zv)
 					uint32_t i;
 
 					for (i = 0; i < ce->num_interfaces; i++) {
-						zend_string_release_ex(ce->interface_names[i].name, 0);
-						zend_string_release_ex(ce->interface_names[i].lc_name, 0);
+						zend_string_release_ex(ce->interface_names[i].name, ZEND_COMP_STRFLAG);
+						zend_string_release_ex(ce->interface_names[i].lc_name, ZEND_COMP_STRFLAG);
 					}
-					efree(ce->interface_names);
+					ZEND_COMP_FREE(ce->interface_names);
 				}
 
 				if (ce->num_traits > 0) {
@@ -401,20 +401,23 @@ ZEND_API void destroy_zend_class(zval *zv)
 			}
 			ZEND_HASH_MAP_FOREACH_PTR(&ce->properties_info, prop_info) {
 				if (prop_info->ce == ce) {
-					zend_string_release_ex(prop_info->name, 0);
+					zend_string_release_ex(prop_info->name, ZEND_COMP_STRFLAG);
 					if (prop_info->doc_comment) {
-						zend_string_release_ex(prop_info->doc_comment, 0);
+						zend_string_release_ex(prop_info->doc_comment, ZEND_COMP_STRFLAG);
 					}
 					if (prop_info->attributes) {
 						zend_hash_release(prop_info->attributes);
 					}
-					zend_type_release(prop_info->type, /* persistent */ false);
+					zend_type_release(prop_info->type, /* persistent */ ZEND_COMP_STRFLAG);
 					if (prop_info->hooks) {
 						for (uint32_t i = 0; i < ZEND_PROPERTY_HOOK_COUNT; i++) {
 							if (prop_info->hooks[i]) {
 								destroy_op_array(&prop_info->hooks[i]->op_array);
 							}
 						}
+#if ZEND_COMPILE_PERSISTENT
+						ZEND_COMP_FREE(prop_info->hooks);
+#endif
 					}
 				}
 			} ZEND_HASH_FOREACH_END();
@@ -427,7 +430,7 @@ ZEND_API void destroy_zend_class(zval *zv)
 					if (c->ce == ce || (Z_CONSTANT_FLAGS(c->value) & CONST_OWNED)) {
 						zval_ptr_dtor_nogc(&c->value);
 						if (c->doc_comment) {
-							zend_string_release_ex(c->doc_comment, 0);
+							zend_string_release_ex(c->doc_comment, ZEND_COMP_STRFLAG);
 						}
 						if (c->attributes) {
 							zend_hash_release(c->attributes);
@@ -442,6 +445,9 @@ ZEND_API void destroy_zend_class(zval *zv)
 			if (ce->backed_enum_table) {
 				zend_hash_release(ce->backed_enum_table);
 			}
+#if ZEND_COMPILE_PERSISTENT
+			ZEND_COMP_FREE(ce);
+#endif
 			break;
 		case ZEND_INTERNAL_CLASS:
 			if (ce->doc_comment) {
@@ -571,22 +577,22 @@ ZEND_API void destroy_op_array(zend_op_array *op_array)
 	}
 
 	if (op_array->function_name) {
-		zend_string_release_ex(op_array->function_name, 0);
+		zend_string_release_ex(op_array->function_name, ZEND_COMP_STRFLAG);
 	}
 
 	if (!op_array->refcount || --(*op_array->refcount) > 0) {
 		return;
 	}
 
-	efree_size(op_array->refcount, sizeof(*(op_array->refcount)));
+	ZEND_COMP_FREE(op_array->refcount);
 
 	if (op_array->vars) {
 		i = op_array->last_var;
 		while (i > 0) {
 			i--;
-			zend_string_release_ex(op_array->vars[i], 0);
+			zend_string_release_ex(op_array->vars[i], ZEND_COMP_STRFLAG);
 		}
-		efree(op_array->vars);
+		ZEND_COMP_FREE(op_array->vars);
 	}
 
 	/* ZEND_ACC_PTR_OPS and ZEND_ACC_OVERRIDE use the same value */
@@ -610,23 +616,23 @@ ZEND_API void destroy_op_array(zend_op_array *op_array)
 		}
 		if (ZEND_USE_ABS_CONST_ADDR
 		 || !(op_array->fn_flags & ZEND_ACC_DONE_PASS_TWO)) {
-			efree(op_array->literals);
+			ZEND_COMP_FREE(op_array->literals);
 		}
 	}
-	efree(op_array->opcodes);
+	ZEND_COMP_FREE(op_array->opcodes);
 
-	zend_string_release_ex(op_array->filename, 0);
+	zend_string_release_ex(op_array->filename, ZEND_COMP_STRFLAG);
 	if (op_array->doc_comment) {
-		zend_string_release_ex(op_array->doc_comment, 0);
+		zend_string_release_ex(op_array->doc_comment, ZEND_COMP_STRFLAG);
 	}
 	if (op_array->attributes) {
 		zend_hash_release(op_array->attributes);
 	}
 	if (op_array->live_range) {
-		efree(op_array->live_range);
+		ZEND_COMP_FREE(op_array->live_range);
 	}
 	if (op_array->try_catch_array) {
-		efree(op_array->try_catch_array);
+		ZEND_COMP_FREE(op_array->try_catch_array);
 	}
 	if (zend_extension_flags & ZEND_EXTENSIONS_HAVE_OP_ARRAY_DTOR) {
 		if (op_array->fn_flags & ZEND_ACC_DONE_PASS_TWO) {
@@ -646,11 +652,11 @@ ZEND_API void destroy_op_array(zend_op_array *op_array)
 		}
 		for (i = 0 ; i < num_args; i++) {
 			if (arg_info[i].name) {
-				zend_string_release_ex(arg_info[i].name, 0);
+				zend_string_release_ex(arg_info[i].name, ZEND_COMP_STRFLAG);
 			}
-			zend_type_release(arg_info[i].type, /* persistent */ false);
+			zend_type_release(arg_info[i].type, /* persistent */ ZEND_COMP_STRFLAG);
 		}
-		efree(arg_info);
+		ZEND_COMP_FREE(arg_info);
 	}
 	if (op_array->static_variables) {
 		zend_array_destroy(op_array->static_variables);
@@ -659,7 +665,7 @@ ZEND_API void destroy_op_array(zend_op_array *op_array)
 		for (i = 0; i < op_array->num_dynamic_func_defs; i++) {
 			destroy_op_array(op_array->dynamic_func_defs[i]);
 		}
-		efree(op_array->dynamic_func_defs);
+		ZEND_COMP_FREE(op_array->dynamic_func_defs);
 	}
 }
 
@@ -735,7 +741,7 @@ static void emit_live_range_raw(
 	zend_live_range *range;
 
 	op_array->last_live_range++;
-	op_array->live_range = erealloc(op_array->live_range,
+	op_array->live_range = ZEND_COMP_REALLOC(op_array->live_range,
 		sizeof(zend_live_range) * op_array->last_live_range);
 
 	ZEND_ASSERT(start < end);
@@ -1080,7 +1086,7 @@ ZEND_API void zend_recalc_live_ranges(
 		zend_op_array *op_array, zend_needs_live_range_cb needs_live_range) {
 	/* We assume that we never create live-ranges where there were none before. */
 	ZEND_ASSERT(op_array->live_range);
-	efree(op_array->live_range);
+	ZEND_COMP_FREE(op_array->live_range);
 	op_array->live_range = NULL;
 	op_array->last_live_range = 0;
 	zend_calc_live_ranges(op_array, needs_live_range);
@@ -1103,27 +1109,27 @@ ZEND_API void pass_two(zend_op_array *op_array)
 	}
 
 	if (CG(context).vars_size != op_array->last_var) {
-		op_array->vars = (zend_string**) erealloc(op_array->vars, sizeof(zend_string*)*op_array->last_var);
+		op_array->vars = (zend_string**) ZEND_COMP_REALLOC(op_array->vars, sizeof(zend_string*)*op_array->last_var);
 		CG(context).vars_size = op_array->last_var;
 	}
 
 #if ZEND_USE_ABS_CONST_ADDR
 	if (CG(context).opcodes_size != op_array->last) {
-		op_array->opcodes = (zend_op *) erealloc(op_array->opcodes, sizeof(zend_op)*op_array->last);
+		op_array->opcodes = (zend_op *) ZEND_COMP_REALLOC(op_array->opcodes, sizeof(zend_op)*op_array->last);
 		CG(context).opcodes_size = op_array->last;
 	}
 	if (CG(context).literals_size != op_array->last_literal) {
-		op_array->literals = (zval*)erealloc(op_array->literals, sizeof(zval) * op_array->last_literal);
+		op_array->literals = (zval*) ZEND_COMP_REALLOC(op_array->literals, sizeof(zval) * op_array->last_literal);
 		CG(context).literals_size = op_array->last_literal;
 	}
 #else
-	op_array->opcodes = (zend_op *) erealloc(op_array->opcodes,
+	op_array->opcodes = (zend_op *) ZEND_COMP_REALLOC(op_array->opcodes,
 		ZEND_MM_ALIGNED_SIZE_EX(sizeof(zend_op) * op_array->last, 16) +
 		sizeof(zval) * op_array->last_literal);
 	if (op_array->literals) {
 		memcpy(((char*)op_array->opcodes) + ZEND_MM_ALIGNED_SIZE_EX(sizeof(zend_op) * op_array->last, 16),
 			op_array->literals, sizeof(zval) * op_array->last_literal);
-		efree(op_array->literals);
+		ZEND_COMP_FREE(op_array->literals);
 		op_array->literals = (zval*)(((char*)op_array->opcodes) + ZEND_MM_ALIGNED_SIZE_EX(sizeof(zend_op) * op_array->last, 16));
 	}
 	CG(context).opcodes_size = op_array->last;
