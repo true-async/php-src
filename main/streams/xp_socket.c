@@ -452,7 +452,6 @@ static int php_sockop_set_option(php_stream *stream, int option, int value, void
 		case PHP_STREAM_OPTION_CHECK_LIVENESS:
 			{
 				struct timeval tv;
-				char buf;
 				int alive = 1;
 
 				if (value == -1) {
@@ -472,31 +471,13 @@ static int php_sockop_set_option(php_stream *stream, int option, int value, void
 				} else if (
 					(
 						value == 0 &&
-						!(stream->flags & PHP_STREAM_FLAG_NO_IO) &&
-						((MSG_DONTWAIT != 0) || !sock->is_blocked)
+						!(stream->flags & PHP_STREAM_FLAG_NO_IO)
 					) ||
 					(ZEND_ASYNC_IS_ACTIVE && !sock->is_sync ?
 						network_async_await_stream_socket(sock, PHP_POLLREADABLE|POLLPRI, &tv) > 0 :
 						php_pollfd_for(sock->socket, PHP_POLLREADABLE|POLLPRI, &tv) > 0)
 				) {
-					/* the poll() call was skipped if the socket is non-blocking (or MSG_DONTWAIT is available) and if the timeout is zero */
-#ifdef PHP_WIN32
-					int ret;
-#else
-					ssize_t ret;
-#endif
-
-					ret = recv(sock->socket, &buf, sizeof(buf), MSG_PEEK|MSG_DONTWAIT);
-					if (0 == ret) {
-						/* the counterpart did properly shutdown */
-						alive = 0;
-					} else if (0 > ret) {
-						int err = php_socket_errno();
-						if (err != EWOULDBLOCK && err != EMSGSIZE && err != EAGAIN) {
-							/* there was an unrecoverable error */
-							alive = 0;
-						}
-					}
+					alive = php_socket_check_liveness(sock->socket, sock->is_blocked, sock->nonblocking_applied);
 				}
 				return alive ? PHP_STREAM_OPTION_RETURN_OK : PHP_STREAM_OPTION_RETURN_ERR;
 			}

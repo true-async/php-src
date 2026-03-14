@@ -26,6 +26,7 @@ ZEND_API void network_async_wait_socket(php_socket_t socket, const zend_ulong ev
 ZEND_API int network_async_await_stream_socket(php_netstream_data_t *netdata, async_poll_event events, struct timeval *timeout);
 ZEND_API zend_async_poll_proxy_t* php_netstream_get_async_event(php_netstream_data_t *netdata, async_poll_event events);
 
+ZEND_API int php_socket_check_liveness(php_socket_t socket, bool is_blocked, bool nonblocking_applied);
 ZEND_API int php_poll2_async(php_pollfd *ufds, unsigned int nfds, int timeout);
 ZEND_API int php_select_async(php_socket_t max_fd, fd_set *rfds, fd_set *wfds, fd_set *efds, struct timeval *tv);
 ZEND_API int network_async_stream_select(zval *read_streams, zval *write_streams, zval *except_streams, struct timeval *tv);
