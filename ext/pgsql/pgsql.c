@@ -3262,15 +3262,11 @@ PHP_FUNCTION(pg_lo_tell)
 	pgsql = Z_PGSQL_LOB_P(pgsql_id);
 	CHECK_PGSQL_LOB(pgsql);
 
-#ifdef VE_PG_LO64
 	if (PQserverVersion((PGconn *)pgsql->conn) >= 90300) {
 		offset = lo_tell64((PGconn *)pgsql->conn, pgsql->lofd);
 	} else {
 		offset = lo_tell((PGconn *)pgsql->conn, pgsql->lofd);
 	}
-#else
-	offset = lo_tell((PGconn *)pgsql->conn, pgsql->lofd);
-#endif
 	RETURN_LONG(offset);
 }
 /* }}} */
@@ -3291,15 +3287,11 @@ PHP_FUNCTION(pg_lo_truncate)
 	pgsql = Z_PGSQL_LOB_P(pgsql_id);
 	CHECK_PGSQL_LOB(pgsql);
 
-#ifdef VE_PG_LO64
 	if (PQserverVersion((PGconn *)pgsql->conn) >= 90300) {
 		result = lo_truncate64((PGconn *)pgsql->conn, pgsql->lofd, size);
 	} else {
 		result = lo_truncate((PGconn *)pgsql->conn, pgsql->lofd, size);
 	}
-#else
-	result = lo_truncate((PGconn *)pgsql->conn, pgsql->lofd, size);
-#endif
 	if (!result) {
 		RETURN_TRUE;
 	} else {
