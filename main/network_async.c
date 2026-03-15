@@ -265,10 +265,16 @@ ZEND_API int network_async_await_stream_socket(php_netstream_data_t *netdata, as
 		return -1;
 	}
 
-	// Convert timeval timeout to milliseconds for async waker
-	zend_ulong timeout_ms = 0;  // 0 means infinite timeout for async waker
+	// Convert timeval timeout to milliseconds for async waker.
+	// For async waker, 0 means infinite timeout. But a zero timeval {0,0}
+	// means "poll immediately without waiting" (e.g. feof() liveness check).
+	// Fall back to synchronous poll for zero-timeout to avoid infinite suspend.
+	zend_ulong timeout_ms = 0;
 	if (timeout != NULL) {
 		timeout_ms = timeout->tv_sec * 1000 + timeout->tv_usec / 1000;
+		if (timeout_ms == 0) {
+			return php_pollfd_for(netdata->socket, events, timeout);
+		}
 	}
 
 	// Initialize waker with timeout
@@ -461,6 +467,54 @@ static zend_always_inline void handle_exception_and_errno(void)
 }
 
 /**
+ * Non-blocking socket liveness check via recv(MSG_PEEK).
+ *
+ * Determines whether a TCP socket's peer has closed the connection
+ * by peeking at incoming data without consuming it.
+ *
+ * On Linux, MSG_DONTWAIT makes recv non-blocking regardless of socket mode.
+ * On Windows, MSG_DONTWAIT is unavailable, so we temporarily toggle the socket
+ * to non-blocking mode if needed. The errno is captured before restoring
+ * blocking mode, because ioctlsocket() clears WSAGetLastError().
+ *
+ * @return 1 if socket is alive, 0 if peer has closed or fatal error occurred
+ */
+ZEND_API int php_socket_check_liveness(const php_socket_t socket, const bool is_blocked, const bool nonblocking_applied)
+{
+	char buf;
+
+#ifdef PHP_WIN32
+	const bool need_nb_toggle = (is_blocked && !nonblocking_applied);
+
+	if (need_nb_toggle) {
+		u_long nb = 1;
+		ioctlsocket(socket, FIONBIO, &nb);
+	}
+
+	const int ret = recv(socket, &buf, sizeof(buf), MSG_PEEK);
+	const int recv_errno = php_socket_errno();
+
+	if (need_nb_toggle) {
+		u_long nb = 0;
+		ioctlsocket(socket, FIONBIO, &nb);
+	}
+#else
+	ssize_t ret = recv(socket, &buf, sizeof(buf), MSG_PEEK|MSG_DONTWAIT);
+	int recv_errno = php_socket_errno();
+#endif
+
+	if (ret == 0) {
+		return 0;
+	}
+
+	if (ret < 0 && recv_errno != EWOULDBLOCK && recv_errno != EMSGSIZE && recv_errno != EAGAIN) {
+		return 0;
+	}
+
+	return 1;
+}
+
+/**
  * Asynchronous poll() implementation for coroutine contexts.
  *
  * This function provides an async-compatible version of the standard poll()
@@ -495,6 +549,16 @@ static zend_always_inline void handle_exception_and_errno(void)
  */
 ZEND_API int php_poll2_async(php_pollfd *ufds, unsigned int nfds, int timeout)
 {
+	/* Zero timeout means non-blocking check — use synchronous poll
+	 * to avoid unnecessary coroutine suspend/resume overhead. */
+	if (timeout == 0) {
+#ifdef PHP_WIN32
+		return WSAPoll((WSAPOLLFD *) ufds, nfds, 0);
+#else
+		return poll(ufds, nfds, 0);
+#endif
+	}
+
 	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 
 	if (coroutine == NULL) {

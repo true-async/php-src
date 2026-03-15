@@ -2435,15 +2435,11 @@ static int php_openssl_sockop_set_option(php_stream *stream, int option, int val
 					alive = 0;
 				} else if (
 					(
-						!sslsock->ssl_active &&
 						value == 0 &&
-						!(stream->flags & PHP_STREAM_FLAG_NO_IO) &&
-						((MSG_DONTWAIT != 0) || !sslsock->s.is_blocked)
+						!(stream->flags & PHP_STREAM_FLAG_NO_IO)
 					) ||
 					php_pollfd_for(sslsock->s.socket, PHP_POLLREADABLE|POLLPRI, &tv) > 0
 				) {
-					/* the poll() call was skipped if the socket is non-blocking (or MSG_DONTWAIT is available) and if the timeout is zero */
-					/* additionally, we don't use this optimization if SSL is active because in that case, we're not using MSG_DONTWAIT */
 					if (sslsock->ssl_active) {
 						int retry = 1;
 						struct timeval start_time;
@@ -2535,23 +2531,7 @@ static int php_openssl_sockop_set_option(php_stream *stream, int option, int val
 							php_openssl_set_blocking(sslsock, 1);
 						}
 					} else {
-#ifdef PHP_WIN32
-						int ret;
-#else
-						ssize_t ret;
-#endif
-
-						ret = recv(sslsock->s.socket, &buf, sizeof(buf), MSG_PEEK|MSG_DONTWAIT);
-						if (0 == ret) {
-							/* the counterpart did properly shutdown */
-							alive = 0;
-						} else if (0 > ret) {
-							int err = php_socket_errno();
-							if (err != EWOULDBLOCK && err != EMSGSIZE && err != EAGAIN) {
-								/* there was an unrecoverable error */
-								alive = 0;
-							}
-						}
+						alive = php_socket_check_liveness(sslsock->s.socket, sslsock->s.is_blocked, sslsock->s.nonblocking_applied);
 					}
 				}
 				return alive ? PHP_STREAM_OPTION_RETURN_OK : PHP_STREAM_OPTION_RETURN_ERR;
