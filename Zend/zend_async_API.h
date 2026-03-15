@@ -21,7 +21,7 @@
 #include "zend_globals.h"
 #include "zend_stream.h"
 
-#define ZEND_ASYNC_API "TrueAsync ABI v0.9.0"
+#define ZEND_ASYNC_API "TrueAsync ABI v0.9.1"
 #define ZEND_ASYNC_API_VERSION_MAJOR 0
 #define ZEND_ASYNC_API_VERSION_MINOR 9
 #define ZEND_ASYNC_API_VERSION_PATCH 0
