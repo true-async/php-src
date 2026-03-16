@@ -4686,6 +4686,7 @@ ZEND_VM_HANDLER(139, ZEND_GENERATOR_CREATE, ANY, ANY)
 		generator->execute_fake.opline = NULL;
 		generator->execute_fake.func = NULL;
 		generator->execute_fake.prev_execute_data = NULL;
+		generator->execute_fake.backtrace_frame = NULL;
 		ZVAL_OBJ(&generator->execute_fake.This, (zend_object *) generator);
 
 		gen_execute_data->opline = opline;
@@ -4761,6 +4762,10 @@ ZEND_VM_HANDLER(161, ZEND_GENERATOR_RETURN, CONST|TMP|VAR|CV, ANY, SPEC(OBSERVER
 	}
 
 	ZEND_OBSERVER_FCALL_END(generator->execute_data, &generator->retval);
+
+	/* Populate backtrace frame while the full call chain is still valid:
+	 * gen() -> execute_fake -> current()/send()/etc -> caller -> ... */
+	zend_backtrace_frame_on_leave(execute_data);
 
 	EG(current_execute_data) = EX(prev_execute_data);
 

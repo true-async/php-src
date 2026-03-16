@@ -139,6 +139,15 @@ ZEND_API void zend_generator_close(zend_generator *generator, bool finished_exec
 		 * already cleaning up execute_data. */
 		generator->execute_data = NULL;
 
+		/* Detach backtrace_frame from execute_data before cleanup.
+		 * If populated (by on_leave in ZEND_GENERATOR_RETURN), it's already
+		 * detached (owner=NULL). If not populated, null owner so release
+		 * won't follow a dangling pointer after efree. */
+		if (execute_data->backtrace_frame) {
+			execute_data->backtrace_frame->owner = NULL;
+			execute_data->backtrace_frame = NULL;
+		}
+
 		if (EX_CALL_INFO() & ZEND_CALL_HAS_SYMBOL_TABLE) {
 			zend_clean_and_cache_symbol_table(execute_data->symbol_table);
 		}

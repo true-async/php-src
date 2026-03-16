@@ -2211,7 +2211,7 @@ ZEND_API void zend_fetch_debug_backtrace(zval *return_value, int skip_last, int 
 ZEND_API void zend_fetch_debug_backtrace_from_frame(zval *return_value, zend_backtrace_frame *frame, int options, int limit) /* {{{ */
 {
 	zend_execute_data *start = frame->populated
-		? (zend_execute_data*)frame
+		? &frame->execute_data
 		: frame->owner;
 	zend_fetch_debug_backtrace_from(return_value, start, 0, options, limit);
 }

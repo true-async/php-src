@@ -29,6 +29,7 @@
 #include "zend_smart_str.h"
 #include "zend_exceptions_arginfo.h"
 #include "zend_observer.h"
+#include "zend_closures.h"
 
 #define ZEND_EXCEPTION_MESSAGE_OFF 0
 #define ZEND_EXCEPTION_CODE_OFF 2
@@ -263,13 +264,23 @@ static HashTable *zend_exception_get_gc(zend_object *object, zval **table, int *
 
 		/* Walk the frame chain and report held objects */
 		zend_backtrace_frame *frame = exc->backtrace_frame;
-		while (frame) {
-			if (frame->populated) {
-				if (ZEND_CALL_INFO(&frame->execute_data) & ZEND_CALL_RELEASE_THIS) {
-					zend_get_gc_buffer_add_obj(gc_buffer, Z_OBJ(frame->execute_data.This));
+		while (frame && frame->populated) {
+			if (ZEND_CALL_INFO(&frame->execute_data) & ZEND_CALL_RELEASE_THIS) {
+				zend_get_gc_buffer_add_obj(gc_buffer, Z_OBJ(frame->execute_data.This));
+			}
+			if (ZEND_CALL_INFO(&frame->execute_data) & ZEND_CALL_CLOSURE) {
+				zend_get_gc_buffer_add_obj(gc_buffer, ZEND_CLOSURE_OBJECT(frame->execute_data.func));
+			}
+			/* Report args as GC roots */
+			if (!frame->ignore_args && frame->execute_data.func
+					&& ZEND_USER_CODE(frame->execute_data.func->type)) {
+				uint32_t num_args = ZEND_CALL_NUM_ARGS(&frame->execute_data);
+				zval *args = ZEND_CALL_ARG(&frame->execute_data, 1);
+				for (uint32_t i = 0; i < num_args; i++) {
+					zend_get_gc_buffer_add_zval(gc_buffer, &args[i]);
 				}
 			}
-			frame = frame->prev;
+			frame = (zend_backtrace_frame *)frame->execute_data.backtrace_frame;
 		}
 
 		zend_get_gc_buffer_use(gc_buffer, table, n);
@@ -303,7 +314,7 @@ static zend_object *zend_default_exception_new(zend_class_entry *class_type) /* 
 	zend_object_std_init(object, class_type);
 	object_properties_init(object, class_type);
 
-	exc->backtrace_frame = zend_backtrace_acquire_frame();
+	exc->backtrace_frame = zend_backtrace_acquire_frame(EG(exception_ignore_args));
 
 	/* Trace property starts as empty — will be materialized lazily in getTrace() */
 	zval trace;

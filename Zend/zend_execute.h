@@ -30,27 +30,61 @@
 #include <stdint.h>
 
 /* Lazy backtrace frame — created empty, populated when its execute_data is destroyed.
- * Binary compatible: (zend_execute_data*)frame is valid.
  *
- * Chain maintenance:
- *   prev               — next zend_backtrace_frame (deeper in stack)
- *   parent             — previous zend_backtrace_frame (shallower, points to us via prev)
- *   execute_data.prev_execute_data:
- *     - if prev is populated: points to (zend_execute_data*)prev
- *     - if prev is not populated: points to the live stack frame (owner of prev)
- *   The chain is maintained in on_leave so it's always walkable. */
+ * Extra fields are BEFORE execute_data so that args copied after execute_data
+ * are at the correct offset for ZEND_CALL_ARG().
+ *
+ * Chain pointers (inside embedded execute_data):
+ *   execute_data.backtrace_frame   — next saved frame (deeper in stack)
+ *   execute_data.prev_execute_data — live stack frame (transition to live stack)
+ *   parent — previous saved frame (shallower), updated on populate */
 struct _zend_backtrace_frame {
-	zend_execute_data        execute_data;
-	uint32_t                 ref_count;
-	bool                     populated;
-	zend_backtrace_frame    *prev;      /* next saved frame (deeper) */
-	zend_backtrace_frame    *parent;    /* prev saved frame (shallower, has prev == this) */
-	zend_execute_data       *owner;     /* live execute_data this frame belongs to */
+	uint32_t             ref_count;
+	bool                 populated : 1;
+	bool                 ignore_args : 1;
+	zend_backtrace_frame *parent;
+	zend_execute_data   *owner;      /* live execute_data owning this frame (NULL when populated) */
+	zend_execute_data    execute_data;
+	/* if !ignore_args: zval args[num_args] follow here */
 };
 
-ZEND_API zend_backtrace_frame *zend_backtrace_create_frame(void);
-ZEND_API zend_backtrace_frame *zend_backtrace_acquire_frame(void);
+ZEND_API zend_backtrace_frame *zend_backtrace_create_frame(bool ignore_args);
+ZEND_API zend_backtrace_frame *zend_backtrace_acquire_frame(bool ignore_args);
 ZEND_API void zend_backtrace_frame_release(zend_backtrace_frame *frame);
+
+/* Populate a backtrace frame from a live execute_data:
+ * copy header, args (with addref), $this and closure. */
+static zend_always_inline void zend_backtrace_frame_copy(
+	zend_backtrace_frame *bt_frame, zend_execute_data *execute_data)
+{
+	bt_frame->execute_data = *execute_data;
+	bt_frame->populated = 1;
+	bt_frame->owner = NULL;
+
+	/* Copy and addref args (space was pre-allocated) */
+	if (!bt_frame->ignore_args && execute_data->func
+			&& ZEND_USER_CODE(execute_data->func->type)) {
+		const uint32_t num_args = ZEND_CALL_NUM_ARGS(execute_data);
+		if (num_args > 0) {
+			const zval *src = ZEND_CALL_ARG(execute_data, 1);
+			zval *dst = ZEND_CALL_ARG(&bt_frame->execute_data, 1);
+			for (uint32_t i = 0; i < num_args; i++) {
+				ZVAL_COPY(&dst[i], &src[i]);
+			}
+		}
+	}
+
+	/* Addref $this — zend_leave_helper will release the original */
+	if (ZEND_CALL_INFO(execute_data) & ZEND_CALL_RELEASE_THIS) {
+		GC_ADDREF(Z_OBJ(bt_frame->execute_data.This));
+	}
+
+	/* Addref closure — zend_leave_helper will release the original */
+	if (ZEND_CALL_INFO(execute_data) & ZEND_CALL_CLOSURE) {
+		zend_object *closure_obj = (zend_object*)((char*)(bt_frame->execute_data.func) - sizeof(zend_object));
+		GC_ADDREF(closure_obj);
+	}
+}
 
 /* Called before a stack frame is destroyed.
  * If this frame has a backtrace_frame, populate it and propagate to prev. */
@@ -60,39 +94,37 @@ static zend_always_inline void zend_backtrace_frame_on_leave(zend_execute_data *
 	if (UNEXPECTED(bt_frame != NULL)) {
 		zend_execute_data *prev = execute_data->prev_execute_data;
 
-		/* Copy execute_data fields into the saved frame */
-		bt_frame->execute_data = *execute_data;
-		bt_frame->execute_data.backtrace_frame = NULL;
-		bt_frame->populated = true;
+		zend_backtrace_frame_copy(bt_frame, execute_data);
 
-		/* Addref $this — zend_leave_helper will release the original after us */
-		if (ZEND_CALL_INFO(execute_data) & ZEND_CALL_RELEASE_THIS) {
-			GC_ADDREF(Z_OBJ(bt_frame->execute_data.This));
-		}
-
-		/* If parent exists, update its prev_execute_data to point to us (now populated) */
+		/* Update parent's prev_execute_data to point to us (now populated) */
 		if (bt_frame->parent) {
-			bt_frame->parent->execute_data.prev_execute_data = (zend_execute_data*)bt_frame;
+			bt_frame->parent->execute_data.prev_execute_data = &bt_frame->execute_data;
 		}
 
-		/* Propagate: ensure prev has a backtrace_frame */
+		/* prev_execute_data = live prev (transition to live stack) */
+		bt_frame->execute_data.prev_execute_data = prev;
+
+		/* Propagate: ensure prev has a backtrace_frame.
+		 * Pre-allocate space for prev's args. */
 		if (prev) {
 			if (prev->backtrace_frame == NULL) {
-				zend_backtrace_frame *prev_bt = emalloc(sizeof(zend_backtrace_frame));
-				prev_bt->ref_count = bt_frame->ref_count;
-				prev_bt->populated = false;
-				prev_bt->prev = NULL;
+				size_t prev_alloc = offsetof(zend_backtrace_frame, execute_data)
+					+ ZEND_CALL_FRAME_SLOT * sizeof(zval);
+				if (!bt_frame->ignore_args && prev->func && ZEND_USER_CODE(prev->func->type)) {
+					prev_alloc += ZEND_CALL_NUM_ARGS(prev) * sizeof(zval);
+				}
+				zend_backtrace_frame *prev_bt = emalloc(prev_alloc);
+				prev_bt->ref_count = 1;
+				prev_bt->populated = 0;
+				prev_bt->ignore_args = bt_frame->ignore_args;
 				prev_bt->parent = bt_frame;
 				prev_bt->owner = prev;
 				memset(&prev_bt->execute_data, 0, sizeof(zend_execute_data));
 				prev->backtrace_frame = prev_bt;
 			}
-			bt_frame->prev = prev->backtrace_frame;
-			/* prev is not populated yet — point to live stack frame */
-			bt_frame->execute_data.prev_execute_data = prev;
+			bt_frame->execute_data.backtrace_frame = prev->backtrace_frame;
 		} else {
-			bt_frame->prev = NULL;
-			bt_frame->execute_data.prev_execute_data = NULL;
+			bt_frame->execute_data.backtrace_frame = NULL;
 		}
 	}
 }

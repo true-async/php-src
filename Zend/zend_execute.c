@@ -49,43 +49,92 @@
 /* Virtual current working directory support */
 #include "zend_virtual_cwd.h"
 
-ZEND_API zend_backtrace_frame *zend_backtrace_create_frame(void)
+ZEND_API zend_backtrace_frame *zend_backtrace_create_frame(bool ignore_args)
 {
-	zend_backtrace_frame *frame = emalloc(sizeof(zend_backtrace_frame));
-	frame->ref_count = 1;
-	frame->populated = false;
-	frame->prev = NULL;
-	frame->parent = NULL;
-	frame->owner = EG(current_execute_data);
-	memset(&frame->execute_data, 0, sizeof(zend_execute_data));
+	/* Base size: fields before execute_data + ZEND_CALL_FRAME_SLOT (not sizeof(execute_data),
+	 * because ZEND_CALL_ARG uses FRAME_SLOT which rounds up to zval alignment) */
+	size_t alloc_size = offsetof(zend_backtrace_frame, execute_data) + ZEND_CALL_FRAME_SLOT * sizeof(zval);
 
-	if (EG(current_execute_data)) {
-		EG(current_execute_data)->backtrace_frame = frame;
+	/* Pre-allocate space for args so on_leave doesn't need to reallocate */
+	zend_execute_data *ex = EG(current_execute_data);
+	if (!ignore_args && ex && ex->func && ZEND_USER_CODE(ex->func->type)) {
+		alloc_size += ZEND_CALL_NUM_ARGS(ex) * sizeof(zval);
+	}
+
+	zend_backtrace_frame *frame = ecalloc(1, alloc_size);
+	frame->ref_count = 1;
+	frame->ignore_args = ignore_args ? 1 : 0;
+	frame->owner = ex;
+
+if (ex) {
+		ex->backtrace_frame = frame;
 	}
 
 	return frame;
 }
 
+static void zend_backtrace_frame_free_one(zend_backtrace_frame *frame)
+{
+	if (frame->populated) {
+		/* Release copied args */
+		if (!frame->ignore_args && frame->execute_data.func
+				&& ZEND_USER_CODE(frame->execute_data.func->type)) {
+			const uint32_t num_args = ZEND_CALL_NUM_ARGS(&frame->execute_data);
+			zval *args = ZEND_CALL_ARG(&frame->execute_data, 1);
+			for (uint32_t i = 0; i < num_args; i++) {
+				zval_ptr_dtor(&args[i]);
+			}
+		}
+
+		/* Release $this */
+		if (ZEND_CALL_INFO(&frame->execute_data) & ZEND_CALL_RELEASE_THIS) {
+			OBJ_RELEASE(Z_OBJ(frame->execute_data.This));
+		}
+
+		/* Release closure */
+		if (ZEND_CALL_INFO(&frame->execute_data) & ZEND_CALL_CLOSURE) {
+			OBJ_RELEASE(ZEND_CLOSURE_OBJECT(frame->execute_data.func));
+		}
+	}
+
+	efree(frame);
+}
+
 ZEND_API void zend_backtrace_frame_release(zend_backtrace_frame *frame)
 {
-	if (frame && --frame->ref_count == 0) {
-		/* Walk the chain and free all frames */
-		zend_backtrace_frame *current = frame;
-		while (current) {
-			zend_backtrace_frame *next = current->prev;
-			if (current->populated) {
-				/* Release $this if we addref'd it in on_leave */
-				if (ZEND_CALL_INFO(&current->execute_data) & ZEND_CALL_RELEASE_THIS) {
-					OBJ_RELEASE(Z_OBJ(current->execute_data.This));
-				}
-			}
-			efree(current);
-			current = next;
+	if (!frame || --frame->ref_count > 0) {
+		return;
+	}
+
+	while (frame) {
+		zend_backtrace_frame *next = frame->execute_data.backtrace_frame;
+
+		if (next != NULL) {
+			next->parent = NULL;
 		}
+
+		/* Not populated — frame is still on the live stack.
+		 * Detach from the live frame and free. */
+		if (!frame->populated) {
+			if (frame->owner) {
+				frame->owner->backtrace_frame = NULL;
+			}
+			efree(frame);
+			return;
+		}
+
+		zend_backtrace_frame_free_one(frame);
+
+		/* Continue to next only if we were the sole owner */
+		if (!next || --next->ref_count > 0) {
+			break;
+		}
+
+		frame = next;
 	}
 }
 
-ZEND_API zend_backtrace_frame *zend_backtrace_acquire_frame(void)
+ZEND_API zend_backtrace_frame *zend_backtrace_acquire_frame(bool ignore_args)
 {
 	if (!EG(current_execute_data)) {
 		return NULL;
@@ -97,7 +146,7 @@ ZEND_API zend_backtrace_frame *zend_backtrace_acquire_frame(void)
 		return ex->backtrace_frame;
 	}
 
-	return zend_backtrace_create_frame();
+	return zend_backtrace_create_frame(ignore_args);
 }
 
 #ifdef HAVE_GCC_GLOBAL_REGS
