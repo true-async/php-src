@@ -28,6 +28,8 @@ zend_result zend_startup_builtin_functions(void);
 
 BEGIN_EXTERN_C()
 ZEND_API void zend_fetch_debug_backtrace(zval *return_value, int skip_last, int options, int limit);
+ZEND_API void zend_fetch_debug_backtrace_from(zval *return_value, zend_execute_data *call, int skip_last, int options, int limit);
+ZEND_API void zend_fetch_debug_backtrace_from_frame(zval *return_value, zend_backtrace_frame *frame, int options, int limit);
 END_EXTERN_C()
 
 #endif /* ZEND_BUILTIN_FUNCTIONS_H */

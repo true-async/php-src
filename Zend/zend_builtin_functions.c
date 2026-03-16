@@ -1886,9 +1886,9 @@ ZEND_FUNCTION(debug_print_backtrace)
 
 /* }}} */
 
-ZEND_API void zend_fetch_debug_backtrace(zval *return_value, int skip_last, int options, int limit) /* {{{ */
+ZEND_API void zend_fetch_debug_backtrace_from(zval *return_value, zend_execute_data *call, int skip_last, int options, int limit) /* {{{ */
 {
-	zend_execute_data *call, *last_call = NULL;
+	zend_execute_data *last_call = NULL;
 	zend_object *object;
 	bool fake_frame = false;
 	int lineno, frameno = 0;
@@ -1900,8 +1900,7 @@ ZEND_API void zend_fetch_debug_backtrace(zval *return_value, int skip_last, int 
 
 	array_init(return_value);
 
-	call = EG(current_execute_data);
-	if (!call) {
+	if (UNEXPECTED(!call)) {
 		return;
 	}
 
@@ -2200,6 +2199,21 @@ skip_frame:
 			call = prev;
 		}
 	}
+}
+/* }}} */
+
+ZEND_API void zend_fetch_debug_backtrace(zval *return_value, int skip_last, int options, int limit) /* {{{ */
+{
+	zend_fetch_debug_backtrace_from(return_value, EG(current_execute_data), skip_last, options, limit);
+}
+/* }}} */
+
+ZEND_API void zend_fetch_debug_backtrace_from_frame(zval *return_value, zend_backtrace_frame *frame, int options, int limit) /* {{{ */
+{
+	zend_execute_data *start = frame->populated
+		? (zend_execute_data*)frame
+		: frame->owner;
+	zend_fetch_debug_backtrace_from(return_value, start, 0, options, limit);
 }
 /* }}} */
 

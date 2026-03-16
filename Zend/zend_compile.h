@@ -645,6 +645,7 @@ struct _zend_execute_data {
 	zend_array          *symbol_table;
 	void               **run_time_cache;   /* cache op_array->run_time_cache */
 	zend_array          *extra_named_params;
+	zend_backtrace_frame *backtrace_frame; /* lazy backtrace frame           */
 };
 
 #define ZEND_CALL_HAS_THIS           IS_OBJECT_EX

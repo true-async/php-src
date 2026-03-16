@@ -255,23 +255,59 @@ static void zend_update_property_num_checked(zend_class_entry *scope, zend_objec
 	ZVAL_COPY_VALUE(zv, value);
 }
 
+static HashTable *zend_exception_get_gc(zend_object *object, zval **table, int *n) /* {{{ */
+{
+	zend_exception_object *exc = zend_exception_from_obj(object);
+	if (exc->backtrace_frame) {
+		zend_get_gc_buffer *gc_buffer = zend_get_gc_buffer_create();
+
+		/* Walk the frame chain and report held objects */
+		zend_backtrace_frame *frame = exc->backtrace_frame;
+		while (frame) {
+			if (frame->populated) {
+				if (ZEND_CALL_INFO(&frame->execute_data) & ZEND_CALL_RELEASE_THIS) {
+					zend_get_gc_buffer_add_obj(gc_buffer, Z_OBJ(frame->execute_data.This));
+				}
+			}
+			frame = frame->prev;
+		}
+
+		zend_get_gc_buffer_use(gc_buffer, table, n);
+		return zend_std_get_properties(object);
+	}
+
+	*table = NULL;
+	*n = 0;
+	return zend_std_get_properties(object);
+}
+/* }}} */
+
+static void zend_exception_free_obj(zend_object *object) /* {{{ */
+{
+	zend_exception_object *exc = zend_exception_from_obj(object);
+	if (exc->backtrace_frame) {
+		zend_backtrace_frame_release(exc->backtrace_frame);
+		exc->backtrace_frame = NULL;
+	}
+	zend_object_std_dtor(object);
+}
+/* }}} */
+
 static zend_object *zend_default_exception_new(zend_class_entry *class_type) /* {{{ */
 {
 	zval tmp;
-	zval trace;
 	zend_string *filename;
 
-	zend_object *object = zend_objects_new(class_type);
+	zend_exception_object *exc = zend_object_alloc(sizeof(zend_exception_object), class_type);
+	zend_object *object = &exc->std;
+	zend_object_std_init(object, class_type);
 	object_properties_init(object, class_type);
 
-	if (EG(current_execute_data)) {
-		zend_fetch_debug_backtrace(&trace,
-			0,
-			EG(exception_ignore_args) ? DEBUG_BACKTRACE_IGNORE_ARGS : 0, 0);
-	} else {
-		ZVAL_EMPTY_ARRAY(&trace);
-	}
+	exc->backtrace_frame = zend_backtrace_acquire_frame();
 
+	/* Trace property starts as empty — will be materialized lazily in getTrace() */
+	zval trace;
+	ZVAL_EMPTY_ARRAY(&trace);
 	zend_update_property_num_checked(i_get_exception_base(object), object, ZEND_EXCEPTION_TRACE_OFF, ZSTR_KNOWN(ZEND_STR_TRACE), &trace);
 
 	if (EXPECTED((class_type != zend_ce_parse_error && class_type != zend_ce_compile_error)
@@ -468,12 +504,32 @@ ZEND_METHOD(Exception, getCode)
 }
 /* }}} */
 
+/* Materialize the lazy backtrace if needed */
+static zend_always_inline void zend_exception_materialize_trace(zend_object *object)
+{
+	zend_exception_object *exc = zend_exception_from_obj(object);
+	if (exc->backtrace_frame) {
+		zval trace;
+		zend_fetch_debug_backtrace_from_frame(&trace, exc->backtrace_frame,
+			EG(exception_ignore_args) ? DEBUG_BACKTRACE_IGNORE_ARGS : 0, 0);
+
+		zend_update_property_num_checked(
+			i_get_exception_base(object), object,
+			ZEND_EXCEPTION_TRACE_OFF, ZSTR_KNOWN(ZEND_STR_TRACE), &trace);
+
+		zend_backtrace_frame_release(exc->backtrace_frame);
+		exc->backtrace_frame = NULL;
+	}
+}
+
 /* {{{ Get the stack trace for the location in which the exception occurred */
 ZEND_METHOD(Exception, getTrace)
 {
 	zval *prop, rv;
 
 	ZEND_PARSE_PARAMETERS_NONE();
+
+	zend_exception_materialize_trace(Z_OBJ_P(ZEND_THIS));
 
 	prop = GET_PROPERTY(ZEND_THIS, ZEND_STR_TRACE);
 	ZVAL_DEREF(prop);
@@ -634,6 +690,8 @@ ZEND_METHOD(Exception, getTraceAsString)
 
 	ZEND_PARSE_PARAMETERS_NONE();
 
+	zend_exception_materialize_trace(Z_OBJ_P(ZEND_THIS));
+
 	zval *object = ZEND_THIS;
 	zend_class_entry *base_ce = i_get_exception_base(Z_OBJ_P(object));
 	zval rv;
@@ -781,6 +839,9 @@ void zend_register_default_exception(void) /* {{{ */
 
 	memcpy(&default_exception_handlers, &std_object_handlers, sizeof(zend_object_handlers));
 	default_exception_handlers.clone_obj = NULL;
+	default_exception_handlers.offset = XtOffsetOf(zend_exception_object, std);
+	default_exception_handlers.free_obj = zend_exception_free_obj;
+	default_exception_handlers.get_gc = zend_exception_get_gc;
 
 	zend_ce_exception = register_class_Exception(zend_ce_throwable);
 	zend_init_exception_class_entry(zend_ce_exception);

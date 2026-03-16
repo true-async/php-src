@@ -29,6 +29,74 @@
 
 #include <stdint.h>
 
+/* Lazy backtrace frame — created empty, populated when its execute_data is destroyed.
+ * Binary compatible: (zend_execute_data*)frame is valid.
+ *
+ * Chain maintenance:
+ *   prev               — next zend_backtrace_frame (deeper in stack)
+ *   parent             — previous zend_backtrace_frame (shallower, points to us via prev)
+ *   execute_data.prev_execute_data:
+ *     - if prev is populated: points to (zend_execute_data*)prev
+ *     - if prev is not populated: points to the live stack frame (owner of prev)
+ *   The chain is maintained in on_leave so it's always walkable. */
+struct _zend_backtrace_frame {
+	zend_execute_data        execute_data;
+	uint32_t                 ref_count;
+	bool                     populated;
+	zend_backtrace_frame    *prev;      /* next saved frame (deeper) */
+	zend_backtrace_frame    *parent;    /* prev saved frame (shallower, has prev == this) */
+	zend_execute_data       *owner;     /* live execute_data this frame belongs to */
+};
+
+ZEND_API zend_backtrace_frame *zend_backtrace_create_frame(void);
+ZEND_API zend_backtrace_frame *zend_backtrace_acquire_frame(void);
+ZEND_API void zend_backtrace_frame_release(zend_backtrace_frame *frame);
+
+/* Called before a stack frame is destroyed.
+ * If this frame has a backtrace_frame, populate it and propagate to prev. */
+static zend_always_inline void zend_backtrace_frame_on_leave(zend_execute_data *execute_data)
+{
+	zend_backtrace_frame *bt_frame = execute_data->backtrace_frame;
+	if (UNEXPECTED(bt_frame != NULL)) {
+		zend_execute_data *prev = execute_data->prev_execute_data;
+
+		/* Copy execute_data fields into the saved frame */
+		bt_frame->execute_data = *execute_data;
+		bt_frame->execute_data.backtrace_frame = NULL;
+		bt_frame->populated = true;
+
+		/* Addref $this — zend_leave_helper will release the original after us */
+		if (ZEND_CALL_INFO(execute_data) & ZEND_CALL_RELEASE_THIS) {
+			GC_ADDREF(Z_OBJ(bt_frame->execute_data.This));
+		}
+
+		/* If parent exists, update its prev_execute_data to point to us (now populated) */
+		if (bt_frame->parent) {
+			bt_frame->parent->execute_data.prev_execute_data = (zend_execute_data*)bt_frame;
+		}
+
+		/* Propagate: ensure prev has a backtrace_frame */
+		if (prev) {
+			if (prev->backtrace_frame == NULL) {
+				zend_backtrace_frame *prev_bt = emalloc(sizeof(zend_backtrace_frame));
+				prev_bt->ref_count = bt_frame->ref_count;
+				prev_bt->populated = false;
+				prev_bt->prev = NULL;
+				prev_bt->parent = bt_frame;
+				prev_bt->owner = prev;
+				memset(&prev_bt->execute_data, 0, sizeof(zend_execute_data));
+				prev->backtrace_frame = prev_bt;
+			}
+			bt_frame->prev = prev->backtrace_frame;
+			/* prev is not populated yet — point to live stack frame */
+			bt_frame->execute_data.prev_execute_data = prev;
+		} else {
+			bt_frame->prev = NULL;
+			bt_frame->execute_data.prev_execute_data = NULL;
+		}
+	}
+}
+
 BEGIN_EXTERN_C()
 struct _zend_fcall_info;
 ZEND_API extern void (*zend_execute_ex)(zend_execute_data *execute_data);
@@ -339,6 +407,7 @@ static zend_always_inline void zend_vm_init_call_frame(zend_execute_data *call, 
 	Z_PTR(call->This) = object_or_called_scope;
 	ZEND_CALL_INFO(call) = call_info;
 	ZEND_CALL_NUM_ARGS(call) = num_args;
+	call->backtrace_frame = NULL;
 }
 
 static zend_always_inline zend_execute_data *zend_vm_stack_push_call_frame_ex(uint32_t used_stack, uint32_t call_info, zend_function *func, uint32_t num_args, void *object_or_called_scope)

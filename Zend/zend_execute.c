@@ -49,6 +49,57 @@
 /* Virtual current working directory support */
 #include "zend_virtual_cwd.h"
 
+ZEND_API zend_backtrace_frame *zend_backtrace_create_frame(void)
+{
+	zend_backtrace_frame *frame = emalloc(sizeof(zend_backtrace_frame));
+	frame->ref_count = 1;
+	frame->populated = false;
+	frame->prev = NULL;
+	frame->parent = NULL;
+	frame->owner = EG(current_execute_data);
+	memset(&frame->execute_data, 0, sizeof(zend_execute_data));
+
+	if (EG(current_execute_data)) {
+		EG(current_execute_data)->backtrace_frame = frame;
+	}
+
+	return frame;
+}
+
+ZEND_API void zend_backtrace_frame_release(zend_backtrace_frame *frame)
+{
+	if (frame && --frame->ref_count == 0) {
+		/* Walk the chain and free all frames */
+		zend_backtrace_frame *current = frame;
+		while (current) {
+			zend_backtrace_frame *next = current->prev;
+			if (current->populated) {
+				/* Release $this if we addref'd it in on_leave */
+				if (ZEND_CALL_INFO(&current->execute_data) & ZEND_CALL_RELEASE_THIS) {
+					OBJ_RELEASE(Z_OBJ(current->execute_data.This));
+				}
+			}
+			efree(current);
+			current = next;
+		}
+	}
+}
+
+ZEND_API zend_backtrace_frame *zend_backtrace_acquire_frame(void)
+{
+	if (!EG(current_execute_data)) {
+		return NULL;
+	}
+
+	zend_execute_data *ex = EG(current_execute_data);
+	if (ex->backtrace_frame) {
+		ex->backtrace_frame->ref_count++;
+		return ex->backtrace_frame;
+	}
+
+	return zend_backtrace_create_frame();
+}
+
 #ifdef HAVE_GCC_GLOBAL_REGS
 # if defined(__GNUC__) && ZEND_GCC_VERSION >= 4008 && defined(i386)
 #  define ZEND_VM_FP_GLOBAL_REG "%esi"

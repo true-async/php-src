@@ -24,6 +24,15 @@
 
 #include "zend_types.h"
 
+typedef struct _zend_exception_object {
+	zend_backtrace_frame *backtrace_frame;
+	zend_object           std;
+} zend_exception_object;
+
+static zend_always_inline zend_exception_object *zend_exception_from_obj(zend_object *obj) {
+	return (zend_exception_object*)((char*)obj - XtOffsetOf(zend_exception_object, std));
+}
+
 BEGIN_EXTERN_C()
 
 extern ZEND_API zend_class_entry *zend_ce_throwable;
