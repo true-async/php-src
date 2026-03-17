@@ -1373,6 +1373,7 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_D
 	ZEND_VM_FCALL_INTERRUPT_CHECK(call);
 
 	EG(current_execute_data) = execute_data;
+	zend_backtrace_frame_on_leave(call);
 	zend_vm_stack_free_args(call);
 
 	uint32_t call_info = ZEND_CALL_INFO(call);
@@ -1439,6 +1440,7 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_D
 	ZEND_VM_FCALL_INTERRUPT_CHECK(call);
 
 	EG(current_execute_data) = execute_data;
+	zend_backtrace_frame_on_leave(call);
 	zend_vm_stack_free_args(call);
 
 	uint32_t call_info = ZEND_CALL_INFO(call);
@@ -1504,6 +1506,7 @@ static ZEND_VM_COLD ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_
 	ZEND_VM_FCALL_INTERRUPT_CHECK(call);
 
 	EG(current_execute_data) = execute_data;
+	zend_backtrace_frame_on_leave(call);
 	zend_vm_stack_free_args(call);
 
 	uint32_t call_info = ZEND_CALL_INFO(call);
@@ -1694,6 +1697,7 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_D
 	if (0) {
 fcall_by_name_end:
 
+		zend_backtrace_frame_on_leave(call);
 		zend_vm_stack_free_args(call);
 
 		uint32_t call_info = ZEND_CALL_INFO(call);
@@ -1807,6 +1811,7 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_D
 	if (0) {
 fcall_by_name_end:
 
+		zend_backtrace_frame_on_leave(call);
 		zend_vm_stack_free_args(call);
 
 		uint32_t call_info = ZEND_CALL_INFO(call);
@@ -1918,6 +1923,7 @@ static ZEND_VM_COLD ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_
 	if (0) {
 fcall_by_name_end:
 
+		zend_backtrace_frame_on_leave(call);
 		zend_vm_stack_free_args(call);
 
 		uint32_t call_info = ZEND_CALL_INFO(call);
@@ -2050,6 +2056,7 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_D
 	if (0) {
 fcall_end:
 
+		zend_backtrace_frame_on_leave(call);
 		zend_vm_stack_free_args(call);
 		if (UNEXPECTED(ZEND_CALL_INFO(call) & ZEND_CALL_HAS_EXTRA_NAMED_PARAMS)) {
 			zend_free_extra_named_params(call->extra_named_params);
@@ -2180,6 +2187,7 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_D
 	if (0) {
 fcall_end:
 
+		zend_backtrace_frame_on_leave(call);
 		zend_vm_stack_free_args(call);
 		if (UNEXPECTED(ZEND_CALL_INFO(call) & ZEND_CALL_HAS_EXTRA_NAMED_PARAMS)) {
 			zend_free_extra_named_params(call->extra_named_params);
@@ -2306,6 +2314,7 @@ static ZEND_VM_COLD ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_
 	if (0) {
 fcall_end:
 
+		zend_backtrace_frame_on_leave(call);
 		zend_vm_stack_free_args(call);
 		if (UNEXPECTED(ZEND_CALL_INFO(call) & ZEND_CALL_HAS_EXTRA_NAMED_PARAMS)) {
 			zend_free_extra_named_params(call->extra_named_params);
@@ -3370,6 +3379,7 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV_
 	if (zend_observer_fcall_op_array_extension != -1) {
 		zend_observer_fcall_end(execute_data, NULL);
 	}
+	zend_backtrace_frame_on_leave(execute_data);
 	cleanup_live_vars(execute_data, op_num, 0);
 	if (UNEXPECTED((EX_CALL_INFO() & ZEND_CALL_GENERATOR) != 0)) {
 		zend_generator *generator = zend_get_running_generator(EXECUTE_DATA_C);
@@ -3460,6 +3470,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_USER_OPCODE_S
 		case ZEND_USER_OPCODE_RETURN:
 			if (UNEXPECTED((EX_CALL_INFO() & ZEND_CALL_GENERATOR) != 0)) {
 				zend_generator *generator = zend_get_running_generator(EXECUTE_DATA_C);
+				zend_backtrace_frame_on_leave(execute_data);
 				EG(current_execute_data) = EX(prev_execute_data);
 				zend_generator_close(generator, 1);
 				ZEND_VM_RETURN();
@@ -3680,6 +3691,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_CALL_TRAMPOLI
 
 		EG(current_execute_data) = call->prev_execute_data;
 
+		zend_backtrace_frame_on_leave(call);
 		zend_vm_stack_free_args(call);
 		if (UNEXPECTED(call_info & ZEND_CALL_HAS_EXTRA_NAMED_PARAMS)) {
 			zend_free_extra_named_params(call->extra_named_params);
@@ -3824,6 +3836,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_CALL_TRAMPOLI
 
 		EG(current_execute_data) = call->prev_execute_data;
 
+		zend_backtrace_frame_on_leave(call);
 		zend_vm_stack_free_args(call);
 		if (UNEXPECTED(call_info & ZEND_CALL_HAS_EXTRA_NAMED_PARAMS)) {
 			zend_free_extra_named_params(call->extra_named_params);
@@ -57196,6 +57209,7 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_DO_ICA
 	ZEND_VM_FCALL_INTERRUPT_CHECK(call);
 
 	EG(current_execute_data) = execute_data;
+	zend_backtrace_frame_on_leave(call);
 	zend_vm_stack_free_args(call);
 
 	uint32_t call_info = ZEND_CALL_INFO(call);
@@ -57262,6 +57276,7 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_DO_ICA
 	ZEND_VM_FCALL_INTERRUPT_CHECK(call);
 
 	EG(current_execute_data) = execute_data;
+	zend_backtrace_frame_on_leave(call);
 	zend_vm_stack_free_args(call);
 
 	uint32_t call_info = ZEND_CALL_INFO(call);
@@ -57327,6 +57342,7 @@ static ZEND_VM_COLD ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_DO_IC
 	ZEND_VM_FCALL_INTERRUPT_CHECK(call);
 
 	EG(current_execute_data) = execute_data;
+	zend_backtrace_frame_on_leave(call);
 	zend_vm_stack_free_args(call);
 
 	uint32_t call_info = ZEND_CALL_INFO(call);
@@ -57517,6 +57533,7 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_DO_FCA
 	if (0) {
 fcall_by_name_end:
 
+		zend_backtrace_frame_on_leave(call);
 		zend_vm_stack_free_args(call);
 
 		uint32_t call_info = ZEND_CALL_INFO(call);
@@ -57630,6 +57647,7 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_DO_FCA
 	if (0) {
 fcall_by_name_end:
 
+		zend_backtrace_frame_on_leave(call);
 		zend_vm_stack_free_args(call);
 
 		uint32_t call_info = ZEND_CALL_INFO(call);
@@ -57741,6 +57759,7 @@ static ZEND_VM_COLD ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_DO_FC
 	if (0) {
 fcall_by_name_end:
 
+		zend_backtrace_frame_on_leave(call);
 		zend_vm_stack_free_args(call);
 
 		uint32_t call_info = ZEND_CALL_INFO(call);
@@ -57873,6 +57892,7 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_DO_FCA
 	if (0) {
 fcall_end:
 
+		zend_backtrace_frame_on_leave(call);
 		zend_vm_stack_free_args(call);
 		if (UNEXPECTED(ZEND_CALL_INFO(call) & ZEND_CALL_HAS_EXTRA_NAMED_PARAMS)) {
 			zend_free_extra_named_params(call->extra_named_params);
@@ -58003,6 +58023,7 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_DO_FCA
 	if (0) {
 fcall_end:
 
+		zend_backtrace_frame_on_leave(call);
 		zend_vm_stack_free_args(call);
 		if (UNEXPECTED(ZEND_CALL_INFO(call) & ZEND_CALL_HAS_EXTRA_NAMED_PARAMS)) {
 			zend_free_extra_named_params(call->extra_named_params);
@@ -58129,6 +58150,7 @@ static ZEND_VM_COLD ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_DO_FC
 	if (0) {
 fcall_end:
 
+		zend_backtrace_frame_on_leave(call);
 		zend_vm_stack_free_args(call);
 		if (UNEXPECTED(ZEND_CALL_INFO(call) & ZEND_CALL_HAS_EXTRA_NAMED_PARAMS)) {
 			zend_free_extra_named_params(call->extra_named_params);
@@ -59167,6 +59189,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_USER_OPCODE_SPEC_T
 		case ZEND_USER_OPCODE_RETURN:
 			if (UNEXPECTED((EX_CALL_INFO() & ZEND_CALL_GENERATOR) != 0)) {
 				zend_generator *generator = zend_get_running_generator(EXECUTE_DATA_C);
+				zend_backtrace_frame_on_leave(execute_data);
 				EG(current_execute_data) = EX(prev_execute_data);
 				zend_generator_close(generator, 1);
 				ZEND_VM_RETURN();
@@ -59387,6 +59410,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_CALL_TRAMPOLINE_SP
 
 		EG(current_execute_data) = call->prev_execute_data;
 
+		zend_backtrace_frame_on_leave(call);
 		zend_vm_stack_free_args(call);
 		if (UNEXPECTED(call_info & ZEND_CALL_HAS_EXTRA_NAMED_PARAMS)) {
 			zend_free_extra_named_params(call->extra_named_params);
@@ -59531,6 +59555,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_CALL_TRAMPOLINE_SP
 
 		EG(current_execute_data) = call->prev_execute_data;
 
+		zend_backtrace_frame_on_leave(call);
 		zend_vm_stack_free_args(call);
 		if (UNEXPECTED(call_info & ZEND_CALL_HAS_EXTRA_NAMED_PARAMS)) {
 			zend_free_extra_named_params(call->extra_named_params);
@@ -112387,6 +112412,7 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV_EX  z
 	if (zend_observer_fcall_op_array_extension != -1) {
 		zend_observer_fcall_end(execute_data, NULL);
 	}
+	zend_backtrace_frame_on_leave(execute_data);
 	cleanup_live_vars(execute_data, op_num, 0);
 	if (UNEXPECTED((EX_CALL_INFO() & ZEND_CALL_GENERATOR) != 0)) {
 		zend_generator *generator = zend_get_running_generator(EXECUTE_DATA_C);

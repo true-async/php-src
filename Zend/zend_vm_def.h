@@ -4141,6 +4141,7 @@ ZEND_VM_HOT_HANDLER(129, ZEND_DO_ICALL, ANY, ANY, SPEC(RETVAL,OBSERVER))
 	ZEND_VM_FCALL_INTERRUPT_CHECK(call);
 
 	EG(current_execute_data) = execute_data;
+	zend_backtrace_frame_on_leave(call);
 	zend_vm_stack_free_args(call);
 
 	uint32_t call_info = ZEND_CALL_INFO(call);
@@ -4277,6 +4278,7 @@ ZEND_VM_HOT_HANDLER(131, ZEND_DO_FCALL_BY_NAME, ANY, ANY, SPEC(RETVAL,OBSERVER))
 	if (0) {
 ZEND_VM_C_LABEL(fcall_by_name_end):
 
+		zend_backtrace_frame_on_leave(call);
 		zend_vm_stack_free_args(call);
 
 		uint32_t call_info = ZEND_CALL_INFO(call);
@@ -4405,6 +4407,7 @@ ZEND_VM_HOT_HANDLER(60, ZEND_DO_FCALL, ANY, ANY, SPEC(RETVAL,OBSERVER))
 	if (0) {
 ZEND_VM_C_LABEL(fcall_end):
 
+		zend_backtrace_frame_on_leave(call);
 		zend_vm_stack_free_args(call);
 		if (UNEXPECTED(ZEND_CALL_INFO(call) & ZEND_CALL_HAS_EXTRA_NAMED_PARAMS)) {
 			zend_free_extra_named_params(call->extra_named_params);
@@ -8158,6 +8161,7 @@ ZEND_VM_HELPER(zend_dispatch_try_catch_finally_helper, ANY, ANY, uint32_t try_ca
 	if (zend_observer_fcall_op_array_extension != -1) {
 		zend_observer_fcall_end(execute_data, NULL);
 	}
+	zend_backtrace_frame_on_leave(execute_data);
 	cleanup_live_vars(execute_data, op_num, 0);
 	if (UNEXPECTED((EX_CALL_INFO() & ZEND_CALL_GENERATOR) != 0)) {
 		zend_generator *generator = zend_get_running_generator(EXECUTE_DATA_C);
@@ -8248,6 +8252,7 @@ ZEND_VM_HANDLER(150, ZEND_USER_OPCODE, ANY, ANY)
 		case ZEND_USER_OPCODE_RETURN:
 			if (UNEXPECTED((EX_CALL_INFO() & ZEND_CALL_GENERATOR) != 0)) {
 				zend_generator *generator = zend_get_running_generator(EXECUTE_DATA_C);
+				zend_backtrace_frame_on_leave(execute_data);
 				EG(current_execute_data) = EX(prev_execute_data);
 				zend_generator_close(generator, 1);
 				ZEND_VM_RETURN();
@@ -9098,6 +9103,7 @@ ZEND_VM_HANDLER(158, ZEND_CALL_TRAMPOLINE, ANY, ANY, SPEC(OBSERVER))
 
 		EG(current_execute_data) = call->prev_execute_data;
 
+		zend_backtrace_frame_on_leave(call);
 		zend_vm_stack_free_args(call);
 		if (UNEXPECTED(call_info & ZEND_CALL_HAS_EXTRA_NAMED_PARAMS)) {
 			zend_free_extra_named_params(call->extra_named_params);
