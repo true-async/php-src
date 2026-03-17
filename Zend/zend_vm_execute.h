@@ -2050,6 +2050,7 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_D
 
 		EG(current_execute_data) = execute_data;
 
+
 		goto fcall_end;
 	}
 
@@ -2181,6 +2182,7 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_D
 
 		EG(current_execute_data) = execute_data;
 
+
 		goto fcall_end;
 	}
 
@@ -2307,6 +2309,7 @@ static ZEND_VM_COLD ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_
 		ZEND_VM_FCALL_INTERRUPT_CHECK(call);
 
 		EG(current_execute_data) = execute_data;
+
 
 		goto fcall_end;
 	}
@@ -3379,7 +3382,12 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV_
 	if (zend_observer_fcall_op_array_extension != -1) {
 		zend_observer_fcall_end(execute_data, NULL);
 	}
-	zend_backtrace_frame_on_leave(execute_data);
+	if (UNEXPECTED((EX_CALL_INFO() & ZEND_CALL_GENERATOR) != 0)) {
+		zend_generator *gen = zend_get_running_generator(EXECUTE_DATA_C);
+		zend_backtrace_frame_on_generator_leave(execute_data, gen);
+	} else {
+		zend_backtrace_frame_on_leave(execute_data);
+	}
 	cleanup_live_vars(execute_data, op_num, 0);
 	if (UNEXPECTED((EX_CALL_INFO() & ZEND_CALL_GENERATOR) != 0)) {
 		zend_generator *generator = zend_get_running_generator(EXECUTE_DATA_C);
@@ -3470,7 +3478,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_USER_OPCODE_S
 		case ZEND_USER_OPCODE_RETURN:
 			if (UNEXPECTED((EX_CALL_INFO() & ZEND_CALL_GENERATOR) != 0)) {
 				zend_generator *generator = zend_get_running_generator(EXECUTE_DATA_C);
-				zend_backtrace_frame_on_leave(execute_data);
+				zend_backtrace_frame_on_generator_leave(execute_data, generator);
 				EG(current_execute_data) = EX(prev_execute_data);
 				zend_generator_close(generator, 1);
 				ZEND_VM_RETURN();
@@ -5056,9 +5064,9 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_GENERATOR_RET
 	}
 
 
-	/* Populate backtrace frame while the full call chain is still valid:
-	 * gen() -> execute_fake -> current()/send()/etc -> caller -> ... */
-	zend_backtrace_frame_on_leave(execute_data);
+	/* Populate backtrace frame while the full call chain is still valid.
+	 * Uses delegation tree (node.parent) to link to parent generators. */
+	zend_backtrace_frame_on_generator_leave(execute_data, generator);
 
 	EG(current_execute_data) = EX(prev_execute_data);
 
@@ -5107,9 +5115,9 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_GENERATOR_RET
 
 	zend_observer_fcall_end(generator->execute_data, &generator->retval);
 
-	/* Populate backtrace frame while the full call chain is still valid:
-	 * gen() -> execute_fake -> current()/send()/etc -> caller -> ... */
-	zend_backtrace_frame_on_leave(execute_data);
+	/* Populate backtrace frame while the full call chain is still valid.
+	 * Uses delegation tree (node.parent) to link to parent generators. */
+	zend_backtrace_frame_on_generator_leave(execute_data, generator);
 
 	EG(current_execute_data) = EX(prev_execute_data);
 
@@ -20658,9 +20666,9 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_GENERATOR_RET
 	}
 
 
-	/* Populate backtrace frame while the full call chain is still valid:
-	 * gen() -> execute_fake -> current()/send()/etc -> caller -> ... */
-	zend_backtrace_frame_on_leave(execute_data);
+	/* Populate backtrace frame while the full call chain is still valid.
+	 * Uses delegation tree (node.parent) to link to parent generators. */
+	zend_backtrace_frame_on_generator_leave(execute_data, generator);
 
 	EG(current_execute_data) = EX(prev_execute_data);
 
@@ -23381,9 +23389,9 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_GENERATOR_RET
 	}
 
 
-	/* Populate backtrace frame while the full call chain is still valid:
-	 * gen() -> execute_fake -> current()/send()/etc -> caller -> ... */
-	zend_backtrace_frame_on_leave(execute_data);
+	/* Populate backtrace frame while the full call chain is still valid.
+	 * Uses delegation tree (node.parent) to link to parent generators. */
+	zend_backtrace_frame_on_generator_leave(execute_data, generator);
 
 	EG(current_execute_data) = EX(prev_execute_data);
 
@@ -41922,9 +41930,9 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_GENERATOR_RET
 	}
 
 
-	/* Populate backtrace frame while the full call chain is still valid:
-	 * gen() -> execute_fake -> current()/send()/etc -> caller -> ... */
-	zend_backtrace_frame_on_leave(execute_data);
+	/* Populate backtrace frame while the full call chain is still valid.
+	 * Uses delegation tree (node.parent) to link to parent generators. */
+	zend_backtrace_frame_on_generator_leave(execute_data, generator);
 
 	EG(current_execute_data) = EX(prev_execute_data);
 
@@ -57886,6 +57894,7 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_DO_FCA
 
 		EG(current_execute_data) = execute_data;
 
+
 		goto fcall_end;
 	}
 
@@ -58017,6 +58026,7 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_DO_FCA
 
 		EG(current_execute_data) = execute_data;
 
+
 		goto fcall_end;
 	}
 
@@ -58143,6 +58153,7 @@ static ZEND_VM_COLD ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_DO_FC
 		ZEND_VM_FCALL_INTERRUPT_CHECK(call);
 
 		EG(current_execute_data) = execute_data;
+
 
 		goto fcall_end;
 	}
@@ -59189,7 +59200,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_USER_OPCODE_SPEC_T
 		case ZEND_USER_OPCODE_RETURN:
 			if (UNEXPECTED((EX_CALL_INFO() & ZEND_CALL_GENERATOR) != 0)) {
 				zend_generator *generator = zend_get_running_generator(EXECUTE_DATA_C);
-				zend_backtrace_frame_on_leave(execute_data);
+				zend_backtrace_frame_on_generator_leave(execute_data, generator);
 				EG(current_execute_data) = EX(prev_execute_data);
 				zend_generator_close(generator, 1);
 				ZEND_VM_RETURN();
@@ -60775,9 +60786,9 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_GENERATOR_RETURN_S
 	}
 
 
-	/* Populate backtrace frame while the full call chain is still valid:
-	 * gen() -> execute_fake -> current()/send()/etc -> caller -> ... */
-	zend_backtrace_frame_on_leave(execute_data);
+	/* Populate backtrace frame while the full call chain is still valid.
+	 * Uses delegation tree (node.parent) to link to parent generators. */
+	zend_backtrace_frame_on_generator_leave(execute_data, generator);
 
 	EG(current_execute_data) = EX(prev_execute_data);
 
@@ -60826,9 +60837,9 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_GENERATOR_RETURN_S
 
 	zend_observer_fcall_end(generator->execute_data, &generator->retval);
 
-	/* Populate backtrace frame while the full call chain is still valid:
-	 * gen() -> execute_fake -> current()/send()/etc -> caller -> ... */
-	zend_backtrace_frame_on_leave(execute_data);
+	/* Populate backtrace frame while the full call chain is still valid.
+	 * Uses delegation tree (node.parent) to link to parent generators. */
+	zend_backtrace_frame_on_generator_leave(execute_data, generator);
 
 	EG(current_execute_data) = EX(prev_execute_data);
 
@@ -76175,9 +76186,9 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_GENERATOR_RETURN_S
 	}
 
 
-	/* Populate backtrace frame while the full call chain is still valid:
-	 * gen() -> execute_fake -> current()/send()/etc -> caller -> ... */
-	zend_backtrace_frame_on_leave(execute_data);
+	/* Populate backtrace frame while the full call chain is still valid.
+	 * Uses delegation tree (node.parent) to link to parent generators. */
+	zend_backtrace_frame_on_generator_leave(execute_data, generator);
 
 	EG(current_execute_data) = EX(prev_execute_data);
 
@@ -78898,9 +78909,9 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_GENERATOR_RETURN_S
 	}
 
 
-	/* Populate backtrace frame while the full call chain is still valid:
-	 * gen() -> execute_fake -> current()/send()/etc -> caller -> ... */
-	zend_backtrace_frame_on_leave(execute_data);
+	/* Populate backtrace frame while the full call chain is still valid.
+	 * Uses delegation tree (node.parent) to link to parent generators. */
+	zend_backtrace_frame_on_generator_leave(execute_data, generator);
 
 	EG(current_execute_data) = EX(prev_execute_data);
 
@@ -97439,9 +97450,9 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_GENERATOR_RETURN_S
 	}
 
 
-	/* Populate backtrace frame while the full call chain is still valid:
-	 * gen() -> execute_fake -> current()/send()/etc -> caller -> ... */
-	zend_backtrace_frame_on_leave(execute_data);
+	/* Populate backtrace frame while the full call chain is still valid.
+	 * Uses delegation tree (node.parent) to link to parent generators. */
+	zend_backtrace_frame_on_generator_leave(execute_data, generator);
 
 	EG(current_execute_data) = EX(prev_execute_data);
 
@@ -112412,7 +112423,12 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV_EX  z
 	if (zend_observer_fcall_op_array_extension != -1) {
 		zend_observer_fcall_end(execute_data, NULL);
 	}
-	zend_backtrace_frame_on_leave(execute_data);
+	if (UNEXPECTED((EX_CALL_INFO() & ZEND_CALL_GENERATOR) != 0)) {
+		zend_generator *gen = zend_get_running_generator(EXECUTE_DATA_C);
+		zend_backtrace_frame_on_generator_leave(execute_data, gen);
+	} else {
+		zend_backtrace_frame_on_leave(execute_data);
+	}
 	cleanup_live_vars(execute_data, op_num, 0);
 	if (UNEXPECTED((EX_CALL_INFO() & ZEND_CALL_GENERATOR) != 0)) {
 		zend_generator *generator = zend_get_running_generator(EXECUTE_DATA_C);

@@ -131,6 +131,50 @@ static void zend_generator_cleanup_unfinished_execution(
 }
 /* }}} */
 
+/* Called before a generator's execute_data is destroyed.
+ * Populates the generator's backtrace frame and propagates to the parent
+ * generator (via delegation tree) or to the caller (via execute_fake). */
+ZEND_API void zend_backtrace_frame_on_generator_leave(zend_execute_data *execute_data, void *generator_ptr)
+{
+	zend_backtrace_frame *bt_frame = execute_data->backtrace_frame;
+	if (UNEXPECTED(bt_frame != NULL)) {
+		zend_generator *generator = (zend_generator *)generator_ptr;
+		zend_execute_data *fake = execute_data->prev_execute_data;
+
+		/* Populate this generator's frame */
+		zend_backtrace_frame_copy(bt_frame, execute_data);
+
+		/* Update parent bt_frame's chain pointer */
+		if (bt_frame->parent) {
+			bt_frame->parent->execute_data.prev_execute_data = &bt_frame->execute_data;
+		}
+
+		/* Propagate: where does prev point? */
+		if (generator->node.parent) {
+			/* yield from delegation: propagate to parent generator's execute_data */
+			zend_generator *parent = generator->node.parent;
+			if (parent->execute_data) {
+				zend_backtrace_frame *parent_bt = zend_backtrace_frame_ensure(
+					parent->execute_data, bt_frame, bt_frame->ignore_args);
+				bt_frame->execute_data.backtrace_frame = parent_bt;
+				/* Point to live parent execute_data (will be populated when parent closes) */
+				bt_frame->execute_data.prev_execute_data = parent->execute_data;
+			} else {
+				bt_frame->execute_data.prev_execute_data = NULL;
+				bt_frame->execute_data.backtrace_frame = NULL;
+			}
+		} else if (fake) {
+			/* Root generator: skip fake frame, link to caller on VM stack */
+			zend_execute_data *caller = fake->prev_execute_data;
+			bt_frame->execute_data.prev_execute_data = caller;
+			bt_frame->execute_data.backtrace_frame = NULL;
+		} else {
+			bt_frame->execute_data.prev_execute_data = NULL;
+			bt_frame->execute_data.backtrace_frame = NULL;
+		}
+	}
+}
+
 ZEND_API void zend_generator_close(zend_generator *generator, bool finished_execution) /* {{{ */
 {
 	if (EXPECTED(generator->execute_data)) {

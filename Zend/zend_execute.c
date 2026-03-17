@@ -77,6 +77,8 @@ static void zend_backtrace_frame_free_one(zend_backtrace_frame *frame)
 
 		if (ZEND_CALL_INFO(&frame->execute_data) & ZEND_CALL_RELEASE_THIS) {
 			OBJ_RELEASE(Z_OBJ(frame->execute_data.This));
+		} else if (!frame->execute_data.func && Z_TYPE(frame->execute_data.This) == IS_OBJECT) {
+			OBJ_RELEASE(Z_OBJ(frame->execute_data.This));
 		}
 
 		if (ZEND_CALL_INFO(&frame->execute_data) & ZEND_CALL_CLOSURE) {
