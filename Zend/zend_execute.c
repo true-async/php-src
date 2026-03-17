@@ -51,22 +51,16 @@
 
 ZEND_API zend_backtrace_frame *zend_backtrace_create_frame(bool ignore_args)
 {
-	/* Base size: fields before execute_data + ZEND_CALL_FRAME_SLOT (not sizeof(execute_data),
-	 * because ZEND_CALL_ARG uses FRAME_SLOT which rounds up to zval alignment) */
-	size_t alloc_size = offsetof(zend_backtrace_frame, execute_data) + ZEND_CALL_FRAME_SLOT * sizeof(zval);
-
-	/* Pre-allocate space for args so on_leave doesn't need to reallocate */
 	zend_execute_data *ex = EG(current_execute_data);
-	if (!ignore_args && ex && ex->func && ZEND_USER_CODE(ex->func->type)) {
-		alloc_size += ZEND_CALL_NUM_ARGS(ex) * sizeof(zval);
-	}
+	size_t alloc_size = ZEND_BACKTRACE_FRAME_BASE_SIZE
+		+ zend_backtrace_frame_num_args_ex(ex, ignore_args) * sizeof(zval);
 
 	zend_backtrace_frame *frame = ecalloc(1, alloc_size);
 	frame->ref_count = 1;
 	frame->ignore_args = ignore_args ? 1 : 0;
 	frame->owner = ex;
 
-if (ex) {
+	if (ex) {
 		ex->backtrace_frame = frame;
 	}
 
@@ -76,22 +70,15 @@ if (ex) {
 static void zend_backtrace_frame_free_one(zend_backtrace_frame *frame)
 {
 	if (frame->populated) {
-		/* Release copied args */
-		if (!frame->ignore_args && frame->execute_data.func
-				&& ZEND_USER_CODE(frame->execute_data.func->type)) {
-			const uint32_t num_args = ZEND_CALL_NUM_ARGS(&frame->execute_data);
-			zval *args = ZEND_CALL_ARG(&frame->execute_data, 1);
-			for (uint32_t i = 0; i < num_args; i++) {
-				zval_ptr_dtor(&args[i]);
-			}
+		uint32_t num_args = zend_backtrace_frame_num_args(frame);
+		for (uint32_t i = 0; i < num_args; i++) {
+			zval_ptr_dtor(ZEND_CALL_ARG(&frame->execute_data, i + 1));
 		}
 
-		/* Release $this */
 		if (ZEND_CALL_INFO(&frame->execute_data) & ZEND_CALL_RELEASE_THIS) {
 			OBJ_RELEASE(Z_OBJ(frame->execute_data.This));
 		}
 
-		/* Release closure */
 		if (ZEND_CALL_INFO(&frame->execute_data) & ZEND_CALL_CLOSURE) {
 			OBJ_RELEASE(ZEND_CLOSURE_OBJECT(frame->execute_data.func));
 		}

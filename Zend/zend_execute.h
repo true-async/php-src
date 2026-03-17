@@ -52,6 +52,30 @@ ZEND_API zend_backtrace_frame *zend_backtrace_create_frame(bool ignore_args);
 ZEND_API zend_backtrace_frame *zend_backtrace_acquire_frame(bool ignore_args);
 ZEND_API void zend_backtrace_frame_release(zend_backtrace_frame *frame);
 
+/* Number of saved args in a frame (0 if ignore_args or no func) */
+static zend_always_inline uint32_t zend_backtrace_frame_num_args(
+	const zend_backtrace_frame *frame)
+{
+	if (frame->ignore_args || !frame->execute_data.func) {
+		return 0;
+	}
+	return ZEND_CALL_NUM_ARGS(&frame->execute_data);
+}
+
+/* Same but for a live execute_data (used before copy) */
+static zend_always_inline uint32_t zend_backtrace_frame_num_args_ex(
+	const zend_execute_data *execute_data, bool ignore_args)
+{
+	if (ignore_args || !execute_data->func) {
+		return 0;
+	}
+	return ZEND_CALL_NUM_ARGS(execute_data);
+}
+
+/* Base allocation size for a backtrace frame (without args) */
+#define ZEND_BACKTRACE_FRAME_BASE_SIZE \
+	(offsetof(zend_backtrace_frame, execute_data) + ZEND_CALL_FRAME_SLOT * sizeof(zval))
+
 /* Populate a backtrace frame from a live execute_data:
  * copy header, args (with addref), $this and closure. */
 static zend_always_inline void zend_backtrace_frame_copy(
@@ -62,24 +86,18 @@ static zend_always_inline void zend_backtrace_frame_copy(
 	bt_frame->owner = NULL;
 
 	/* Copy and addref args (space was pre-allocated) */
-	if (!bt_frame->ignore_args && execute_data->func
-			&& ZEND_USER_CODE(execute_data->func->type)) {
-		const uint32_t num_args = ZEND_CALL_NUM_ARGS(execute_data);
-		if (num_args > 0) {
-			const zval *src = ZEND_CALL_ARG(execute_data, 1);
-			zval *dst = ZEND_CALL_ARG(&bt_frame->execute_data, 1);
-			for (uint32_t i = 0; i < num_args; i++) {
-				ZVAL_COPY(&dst[i], &src[i]);
-			}
-		}
+	uint32_t num_args = zend_backtrace_frame_num_args_ex(execute_data, bt_frame->ignore_args);
+	for (uint32_t i = 0; i < num_args; i++) {
+		ZVAL_COPY(ZEND_CALL_ARG(&bt_frame->execute_data, i + 1),
+		          ZEND_CALL_ARG(execute_data, i + 1));
 	}
 
-	/* Addref $this — zend_leave_helper will release the original */
+	/* Addref $this — caller will release the original */
 	if (ZEND_CALL_INFO(execute_data) & ZEND_CALL_RELEASE_THIS) {
 		GC_ADDREF(Z_OBJ(bt_frame->execute_data.This));
 	}
 
-	/* Addref closure — zend_leave_helper will release the original */
+	/* Addref closure — caller will release the original */
 	if (ZEND_CALL_INFO(execute_data) & ZEND_CALL_CLOSURE) {
 		zend_object *closure_obj = (zend_object*)((char*)(bt_frame->execute_data.func) - sizeof(zend_object));
 		GC_ADDREF(closure_obj);
@@ -108,11 +126,8 @@ static zend_always_inline void zend_backtrace_frame_on_leave(zend_execute_data *
 		 * Pre-allocate space for prev's args. */
 		if (prev) {
 			if (prev->backtrace_frame == NULL) {
-				size_t prev_alloc = offsetof(zend_backtrace_frame, execute_data)
-					+ ZEND_CALL_FRAME_SLOT * sizeof(zval);
-				if (!bt_frame->ignore_args && prev->func && ZEND_USER_CODE(prev->func->type)) {
-					prev_alloc += ZEND_CALL_NUM_ARGS(prev) * sizeof(zval);
-				}
+				size_t prev_alloc = ZEND_BACKTRACE_FRAME_BASE_SIZE
+					+ zend_backtrace_frame_num_args_ex(prev, bt_frame->ignore_args) * sizeof(zval);
 				zend_backtrace_frame *prev_bt = emalloc(prev_alloc);
 				prev_bt->ref_count = 1;
 				prev_bt->populated = 0;
