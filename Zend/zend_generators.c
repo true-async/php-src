@@ -175,41 +175,59 @@ ZEND_API void zend_backtrace_frame_on_generator_leave(zend_execute_data *execute
 			bt_frame->parent->execute_data.prev_execute_data = &bt_frame->execute_data;
 		}
 
-		/* 2. Walk delegation chain via execute_fake placeholders.
-		 *    For "yield from", prev_execute_data points to &orig->execute_fake.
-		 *    execute_fake.This contains the generator object (the consumer).
-		 *    That consumer's execute_data is the intermediate frame we need.
-		 *    We follow this chain until we reach a non-fake frame (the VM caller). */
+		/* 2. Walk delegation tree via node.child to find consumer generators.
+		 *    In "yield from" delegation, the source generator (root) has children
+		 *    that are consumers. Each consumer may itself be a source for another
+		 *    consumer. We walk from source to consumer via node.child.
+		 *    All generator objects and their execute_data live on the heap
+		 *    and are reliable — unlike prev_execute_data which may be stale. */
 		zend_backtrace_frame *prev_bt = bt_frame;
-		while (prev && !prev->func && Z_TYPE(prev->This) == IS_OBJECT
-				&& Z_OBJCE(prev->This) == zend_ce_generator) {
-			/* prev is an execute_fake — extract the consumer generator */
-			zend_generator *consumer = (zend_generator *)Z_OBJ(prev->This);
+		zend_generator *current = generator;
+		while (current->node.children > 0) {
+			zend_generator *child;
+			if (current->node.children == 1) {
+				child = current->node.child.single;
+			} else {
+				/* Multiple children: pick the one with the leaf pointer
+				 * that matches our delegation path. Use first child as fallback. */
+				child = NULL;
+				zend_generator *c;
+				ZEND_HASH_FOREACH_PTR(current->node.child.ht, c) {
+					child = c;
+					break;
+				} ZEND_HASH_FOREACH_END();
+				if (!child) break;
+			}
 
-			if (!consumer->execute_data) {
+			if (!child->execute_data) {
 				break;
 			}
 
-			/* Create and populate the consumer's frame (skip if already populated) */
-			zend_backtrace_frame *consumer_bt = zend_backtrace_frame_ensure(
-				consumer->execute_data, prev_bt, ignore_args);
-			if (!consumer_bt->populated) {
-				zend_backtrace_frame_copy(consumer_bt, consumer->execute_data);
+			/* Create and populate the child's (consumer's) frame */
+			zend_backtrace_frame *child_bt = zend_backtrace_frame_ensure(
+				child->execute_data, prev_bt, ignore_args);
+			if (!child_bt->populated) {
+				zend_backtrace_frame_copy(child_bt, child->execute_data);
 			}
 
-			/* Link chain */
-			prev_bt->execute_data.prev_execute_data = &consumer_bt->execute_data;
-			prev_bt->execute_data.backtrace_frame = consumer_bt;
+			/* Link chain: source -> consumer */
+			prev_bt->execute_data.prev_execute_data = &child_bt->execute_data;
+			prev_bt->execute_data.backtrace_frame = child_bt;
 
-			prev_bt = consumer_bt;
-			/* Move to next: consumer's prev may be another execute_fake or the VM caller */
-			prev = consumer->execute_data->prev_execute_data;
+			prev_bt = child_bt;
+			current = child;
 		}
 
 		/* 3. Link to caller on VM stack.
-		 *    prev now points to the VM caller (or NULL). */
+		 *    prev (from step 1) = execute_data->prev_execute_data of the leaf
+		 *    generator that actually executed. For simple generators this is
+		 *    the caller directly. For delegation it's &orig->execute_fake
+		 *    whose prev_execute_data = caller (set during resume, reliable). */
+		zend_execute_data *caller = NULL;
 		if (prev) {
-			zend_execute_data *caller = prev;
+			caller = (!prev->func) ? prev->prev_execute_data : prev;
+		}
+		if (caller) {
 			prev_bt->execute_data.prev_execute_data = caller;
 			if (caller) {
 				zend_backtrace_frame *caller_bt = zend_backtrace_frame_ensure(

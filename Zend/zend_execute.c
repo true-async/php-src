@@ -115,6 +115,11 @@ ZEND_API void zend_backtrace_frame_release(zend_backtrace_frame *frame)
 			return;
 		}
 
+		/* Detach from live execute_data if owner still valid */
+		if (frame->owner && frame->owner->backtrace_frame == frame) {
+			frame->owner->backtrace_frame = NULL;
+		}
+
 		zend_backtrace_frame_free_one(frame);
 
 		/* Continue to next only if we were the sole owner */

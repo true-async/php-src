@@ -105,7 +105,6 @@ static zend_always_inline void zend_backtrace_frame_copy(
 {
 	bt_frame->execute_data = *execute_data;
 	bt_frame->populated = 1;
-	bt_frame->owner = NULL;
 
 	/* Copy and addref all arg slots (including extra args in last_var+T zone) */
 	uint32_t total_slots = zend_backtrace_frame_slots_ex(execute_data, bt_frame->ignore_args);
@@ -165,6 +164,9 @@ static zend_always_inline void zend_backtrace_frame_on_leave(zend_execute_data *
 
 		/* Populate: copy execute_data + args + addref $this/closure */
 		zend_backtrace_frame_copy(bt_frame, execute_data);
+
+		/* VM stack frame is about to be destroyed — owner becomes dangling */
+		bt_frame->owner = NULL;
 
 		/* Update parent's chain pointer to us (now populated) */
 		if (bt_frame->parent) {
