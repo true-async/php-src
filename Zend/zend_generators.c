@@ -164,10 +164,19 @@ ZEND_API void zend_backtrace_frame_on_generator_leave(zend_execute_data *execute
 				bt_frame->execute_data.backtrace_frame = NULL;
 			}
 		} else if (fake) {
-			/* Root generator: skip fake frame, link to caller on VM stack */
-			zend_execute_data *caller = fake->prev_execute_data;
+			/* Root generator or simple generator: fake points to caller.
+			 * For simple generator: fake = caller directly (set by resume line 855).
+			 * For root of delegation: fake = execute_fake, caller = fake->prev.
+			 * Detect by checking fake->func == NULL (fake frame marker). */
+			zend_execute_data *caller = (!fake->func) ? fake->prev_execute_data : fake;
 			bt_frame->execute_data.prev_execute_data = caller;
-			bt_frame->execute_data.backtrace_frame = NULL;
+			if (caller) {
+				zend_backtrace_frame *caller_bt = zend_backtrace_frame_ensure(
+					caller, bt_frame, bt_frame->ignore_args);
+				bt_frame->execute_data.backtrace_frame = caller_bt;
+			} else {
+				bt_frame->execute_data.backtrace_frame = NULL;
+			}
 		} else {
 			bt_frame->execute_data.prev_execute_data = NULL;
 			bt_frame->execute_data.backtrace_frame = NULL;
