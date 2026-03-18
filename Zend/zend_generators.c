@@ -131,55 +131,96 @@ static void zend_generator_cleanup_unfinished_execution(
 }
 /* }}} */
 
-/* Called before a generator's execute_data is destroyed.
- * Populates the generator's backtrace frame and propagates to the parent
- * generator (via delegation tree) or to the caller (via execute_fake). */
+/* Called before a generator's execute_data is destroyed (return or uncaught exception).
+ *
+ * Generators have a unique stack structure: when using "yield from", the VM
+ * resumes the leaf generator directly, bypassing intermediate generators.
+ * These intermediate generators are not in the prev_execute_data chain at all —
+ * they only exist in the delegation tree (node.parent).
+ *
+ * The standard backtrace walker uses check_placeholder_frame() to discover
+ * intermediate generators at trace-build time by mutating live generator state.
+ * This is unsafe for lazy backtrace because generators may be active when the
+ * trace is materialized later.
+ *
+ * Instead, we build the complete chain NOW (while all generators are still
+ * accessible and their execute_data is valid):
+ *
+ *   1. Populate the leaf generator frame (the one that actually ran)
+ *   2. Walk node.parent chain: for each intermediate generator, create and
+ *      populate a backtrace frame from its heap-allocated execute_data
+ *   3. At the root (no parent): link to the caller on the VM stack via
+ *      execute_fake.prev_execute_data
+ *
+ * Result: bt_leaf -> bt_intermediate -> ... -> bt_root -> bt_caller(VM stack)
+ * The walker sees only populated frames with func != NULL, so it never calls
+ * check_placeholder_frame and never mutates live generator state. */
 ZEND_API void zend_backtrace_frame_on_generator_leave(zend_execute_data *execute_data, void *generator_ptr)
 {
 	zend_backtrace_frame *bt_frame = execute_data->backtrace_frame;
 	if (UNEXPECTED(bt_frame != NULL)) {
-		zend_generator *generator = (zend_generator *)generator_ptr;
-		zend_execute_data *fake = execute_data->prev_execute_data;
+		/* Already populated (e.g. by a child generator's on_generator_leave) — skip */
+		if (bt_frame->populated) {
+			return;
+		}
 
-		/* Populate this generator's frame */
+		zend_generator *generator = (zend_generator *)generator_ptr;
+		zend_execute_data *prev = execute_data->prev_execute_data;
+		bool ignore_args = bt_frame->ignore_args;
+
+		/* 1. Populate the current generator's frame */
 		zend_backtrace_frame_copy(bt_frame, execute_data);
 
-		/* Update parent bt_frame's chain pointer */
 		if (bt_frame->parent) {
 			bt_frame->parent->execute_data.prev_execute_data = &bt_frame->execute_data;
 		}
 
-		/* Propagate: where does prev point? */
-		if (generator->node.parent) {
-			/* yield from delegation: propagate to parent generator's execute_data */
-			zend_generator *parent = generator->node.parent;
-			if (parent->execute_data) {
-				zend_backtrace_frame *parent_bt = zend_backtrace_frame_ensure(
-					parent->execute_data, bt_frame, bt_frame->ignore_args);
-				bt_frame->execute_data.backtrace_frame = parent_bt;
-				/* Point to live parent execute_data (will be populated when parent closes) */
-				bt_frame->execute_data.prev_execute_data = parent->execute_data;
-			} else {
-				bt_frame->execute_data.prev_execute_data = NULL;
-				bt_frame->execute_data.backtrace_frame = NULL;
+		/* 2. Walk delegation chain via execute_fake placeholders.
+		 *    For "yield from", prev_execute_data points to &orig->execute_fake.
+		 *    execute_fake.This contains the generator object (the consumer).
+		 *    That consumer's execute_data is the intermediate frame we need.
+		 *    We follow this chain until we reach a non-fake frame (the VM caller). */
+		zend_backtrace_frame *prev_bt = bt_frame;
+		while (prev && !prev->func && Z_TYPE(prev->This) == IS_OBJECT
+				&& Z_OBJCE(prev->This) == zend_ce_generator) {
+			/* prev is an execute_fake — extract the consumer generator */
+			zend_generator *consumer = (zend_generator *)Z_OBJ(prev->This);
+
+			if (!consumer->execute_data) {
+				break;
 			}
-		} else if (fake) {
-			/* Root generator or simple generator: fake points to caller.
-			 * For simple generator: fake = caller directly (set by resume line 855).
-			 * For root of delegation: fake = execute_fake, caller = fake->prev.
-			 * Detect by checking fake->func == NULL (fake frame marker). */
-			zend_execute_data *caller = (!fake->func) ? fake->prev_execute_data : fake;
-			bt_frame->execute_data.prev_execute_data = caller;
+
+			/* Create and populate the consumer's frame (skip if already populated) */
+			zend_backtrace_frame *consumer_bt = zend_backtrace_frame_ensure(
+				consumer->execute_data, prev_bt, ignore_args);
+			if (!consumer_bt->populated) {
+				zend_backtrace_frame_copy(consumer_bt, consumer->execute_data);
+			}
+
+			/* Link chain */
+			prev_bt->execute_data.prev_execute_data = &consumer_bt->execute_data;
+			prev_bt->execute_data.backtrace_frame = consumer_bt;
+
+			prev_bt = consumer_bt;
+			/* Move to next: consumer's prev may be another execute_fake or the VM caller */
+			prev = consumer->execute_data->prev_execute_data;
+		}
+
+		/* 3. Link to caller on VM stack.
+		 *    prev now points to the VM caller (or NULL). */
+		if (prev) {
+			zend_execute_data *caller = prev;
+			prev_bt->execute_data.prev_execute_data = caller;
 			if (caller) {
 				zend_backtrace_frame *caller_bt = zend_backtrace_frame_ensure(
-					caller, bt_frame, bt_frame->ignore_args);
-				bt_frame->execute_data.backtrace_frame = caller_bt;
+					caller, prev_bt, ignore_args);
+				prev_bt->execute_data.backtrace_frame = caller_bt;
 			} else {
-				bt_frame->execute_data.backtrace_frame = NULL;
+				prev_bt->execute_data.backtrace_frame = NULL;
 			}
 		} else {
-			bt_frame->execute_data.prev_execute_data = NULL;
-			bt_frame->execute_data.backtrace_frame = NULL;
+			prev_bt->execute_data.prev_execute_data = NULL;
+			prev_bt->execute_data.backtrace_frame = NULL;
 		}
 	}
 }
