@@ -271,9 +271,12 @@ static HashTable *zend_exception_get_gc(zend_object *object, zval **table, int *
 			if (ZEND_CALL_INFO(&frame->execute_data) & ZEND_CALL_CLOSURE) {
 				zend_get_gc_buffer_add_obj(gc_buffer, ZEND_CLOSURE_OBJECT(frame->execute_data.func));
 			}
-			uint32_t num_args = zend_backtrace_frame_num_args(frame);
-			for (uint32_t i = 0; i < num_args; i++) {
-				zend_get_gc_buffer_add_zval(gc_buffer, ZEND_CALL_ARG(&frame->execute_data, i + 1));
+			uint32_t total_slots = zend_backtrace_frame_slots_ex(&frame->execute_data, frame->ignore_args);
+			zval *args = ZEND_CALL_ARG(&frame->execute_data, 1);
+			for (uint32_t i = 0; i < total_slots; i++) {
+				if (Z_TYPE(args[i]) != IS_UNDEF) {
+					zend_get_gc_buffer_add_zval(gc_buffer, &args[i]);
+				}
 			}
 			frame = (zend_backtrace_frame *)frame->execute_data.backtrace_frame;
 		}

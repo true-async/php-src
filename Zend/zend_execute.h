@@ -72,6 +72,28 @@ static zend_always_inline uint32_t zend_backtrace_frame_num_args_ex(
 	return ZEND_CALL_NUM_ARGS(execute_data);
 }
 
+/* Total number of zval slots needed after execute_data header to hold
+ * all args (including extra args in the last_var+T zone for user functions). */
+static zend_always_inline uint32_t zend_backtrace_frame_slots_ex(
+	const zend_execute_data *execute_data, bool ignore_args)
+{
+	if (ignore_args || !execute_data->func) {
+		return 0;
+	}
+	uint32_t num_args = ZEND_CALL_NUM_ARGS(execute_data);
+	if (ZEND_USER_CODE(execute_data->func->type)) {
+		uint32_t first_extra = execute_data->func->op_array.num_args;
+		if (num_args > first_extra) {
+			/* Extra args sit at last_var + T offset. Need space for:
+			 * declared args (first_extra) + CV/TMP gap + extra args */
+			uint32_t extra = num_args - first_extra;
+			return execute_data->func->op_array.last_var
+				+ execute_data->func->op_array.T + extra;
+		}
+	}
+	return num_args;
+}
+
 /* Base allocation size for a backtrace frame (without args) */
 #define ZEND_BACKTRACE_FRAME_BASE_SIZE \
 	(offsetof(zend_backtrace_frame, execute_data) + ZEND_CALL_FRAME_SLOT * sizeof(zval))
@@ -85,11 +107,18 @@ static zend_always_inline void zend_backtrace_frame_copy(
 	bt_frame->populated = 1;
 	bt_frame->owner = NULL;
 
-	/* Copy and addref args (space was pre-allocated) */
-	uint32_t num_args = zend_backtrace_frame_num_args_ex(execute_data, bt_frame->ignore_args);
-	for (uint32_t i = 0; i < num_args; i++) {
-		ZVAL_COPY(ZEND_CALL_ARG(&bt_frame->execute_data, i + 1),
-		          ZEND_CALL_ARG(execute_data, i + 1));
+	/* Copy and addref all arg slots (including extra args in last_var+T zone) */
+	uint32_t total_slots = zend_backtrace_frame_slots_ex(execute_data, bt_frame->ignore_args);
+	if (total_slots > 0) {
+		zval *src = ZEND_CALL_ARG(execute_data, 1);
+		zval *dst = ZEND_CALL_ARG(&bt_frame->execute_data, 1);
+		for (uint32_t i = 0; i < total_slots; i++) {
+			if (Z_TYPE(src[i]) != IS_UNDEF) {
+				ZVAL_COPY(&dst[i], &src[i]);
+			} else {
+				ZVAL_UNDEF(&dst[i]);
+			}
+		}
 	}
 
 	/* Addref $this — caller will release the original */
@@ -116,7 +145,7 @@ static zend_always_inline zend_backtrace_frame *zend_backtrace_frame_ensure(
 	}
 
 	size_t alloc_size = ZEND_BACKTRACE_FRAME_BASE_SIZE
-		+ zend_backtrace_frame_num_args_ex(execute_data, ignore_args) * sizeof(zval);
+		+ zend_backtrace_frame_slots_ex(execute_data, ignore_args) * sizeof(zval);
 	zend_backtrace_frame *bt = ecalloc(1, alloc_size);
 	bt->ref_count = 1;
 	bt->ignore_args = ignore_args;

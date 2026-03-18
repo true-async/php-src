@@ -53,7 +53,7 @@ ZEND_API zend_backtrace_frame *zend_backtrace_create_frame(bool ignore_args)
 {
 	zend_execute_data *ex = EG(current_execute_data);
 	size_t alloc_size = ZEND_BACKTRACE_FRAME_BASE_SIZE
-		+ zend_backtrace_frame_num_args_ex(ex, ignore_args) * sizeof(zval);
+		+ zend_backtrace_frame_slots_ex(ex, ignore_args) * sizeof(zval);
 
 	zend_backtrace_frame *frame = ecalloc(1, alloc_size);
 	frame->ref_count = 1;
@@ -70,9 +70,12 @@ ZEND_API zend_backtrace_frame *zend_backtrace_create_frame(bool ignore_args)
 static void zend_backtrace_frame_free_one(zend_backtrace_frame *frame)
 {
 	if (frame->populated) {
-		uint32_t num_args = zend_backtrace_frame_num_args(frame);
-		for (uint32_t i = 0; i < num_args; i++) {
-			zval_ptr_dtor(ZEND_CALL_ARG(&frame->execute_data, i + 1));
+		uint32_t total_slots = zend_backtrace_frame_slots_ex(&frame->execute_data, frame->ignore_args);
+		zval *args = ZEND_CALL_ARG(&frame->execute_data, 1);
+		for (uint32_t i = 0; i < total_slots; i++) {
+			if (Z_TYPE(args[i]) != IS_UNDEF) {
+				zval_ptr_dtor(&args[i]);
+			}
 		}
 
 		if (ZEND_CALL_INFO(&frame->execute_data) & ZEND_CALL_RELEASE_THIS) {
