@@ -140,6 +140,8 @@ static zend_always_inline zend_backtrace_frame *zend_backtrace_frame_ensure(
 	zend_execute_data *execute_data, zend_backtrace_frame *parent_bt, bool ignore_args)
 {
 	if (execute_data->backtrace_frame) {
+		execute_data->backtrace_frame->ref_count++;
+		execute_data->backtrace_frame->parent = parent_bt;
 		return execute_data->backtrace_frame;
 	}
 
@@ -159,7 +161,7 @@ static zend_always_inline zend_backtrace_frame *zend_backtrace_frame_ensure(
 static zend_always_inline void zend_backtrace_frame_on_leave(zend_execute_data *execute_data)
 {
 	zend_backtrace_frame *bt_frame = execute_data->backtrace_frame;
-	if (UNEXPECTED(bt_frame != NULL)) {
+	if (UNEXPECTED(bt_frame != NULL && !bt_frame->populated)) {
 		zend_execute_data *prev = execute_data->prev_execute_data;
 
 		/* Populate: copy execute_data + args + addref $this/closure */
