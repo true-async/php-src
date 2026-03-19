@@ -131,6 +131,22 @@ static void zend_generator_cleanup_unfinished_execution(
 }
 /* }}} */
 
+/* Snapshot entire generator stack at Exception creation time.
+ * Called from acquire_frame when current execute_data has ZEND_CALL_GENERATOR.
+ * Builds standalone populated chain: gen -> delegation consumers -> caller.
+ * NOT linked to any execute_data->backtrace_frame. */
+ZEND_API zend_backtrace_frame *zend_backtrace_acquire_generator_frame(zend_execute_data *ex, bool ignore_args)
+{
+	/* Snapshot the current generator frame */
+	zend_backtrace_frame *bt_frame = zend_backtrace_frame_snapshot(ex, ignore_args);
+
+	/* Snapshot the entire chain from prev onwards */
+	zend_generator *generator = (zend_generator *)ex->return_value;
+	zend_backtrace_snapshot_generator_chain(ex->prev_execute_data, bt_frame, ignore_args, generator);
+
+	return bt_frame;
+}
+
 /* Called before a generator's execute_data is destroyed (return or uncaught exception).
  *
  * Generators have a unique stack structure: when using "yield from", the VM
@@ -155,91 +171,110 @@ static void zend_generator_cleanup_unfinished_execution(
  * Result: bt_leaf -> bt_intermediate -> ... -> bt_root -> bt_caller(VM stack)
  * The walker sees only populated frames with func != NULL, so it never calls
  * check_placeholder_frame and never mutates live generator state. */
+
+/* Snapshot the entire call chain starting from a generator execute_data.
+ * Walks prev_execute_data, resolving execute_fake via the delegation tree.
+ * All generator frames are snapshot'd eagerly — never lazy placeholders.
+ * prev_bt is the caller's bt_frame; it gets linked to the first snapshot.
+ * Returns the last snapshot in the chain. */
+ZEND_API zend_backtrace_frame *zend_backtrace_snapshot_generator_chain(
+	zend_execute_data *call, zend_backtrace_frame *prev_bt, bool ignore_args,
+	zend_generator *last_gen)
+{
+	while (call) {
+		if (!call->func && Z_TYPE(call->This) == IS_OBJECT
+				&& Z_OBJCE(call->This) == zend_ce_generator) {
+			/* execute_fake — resolve intermediates via delegation tree */
+			zend_generator *fake_gen = (zend_generator *)Z_OBJ(call->This);
+
+			if (last_gen) {
+				/* Walk delegation tree from last_gen towards fake_gen */
+				zend_generator *tree_cur = last_gen;
+				while (tree_cur->node.children > 0) {
+					zend_generator *child;
+					if (tree_cur->node.children == 1) {
+						child = tree_cur->node.child.single;
+					} else {
+						child = NULL;
+						zend_generator *c;
+						ZEND_HASH_FOREACH_PTR(tree_cur->node.child.ht, c) {
+							child = c;
+							break;
+						} ZEND_HASH_FOREACH_END();
+						if (!child) break;
+					}
+					if (!child->execute_data) break;
+
+					zend_backtrace_frame *child_bt = zend_backtrace_frame_snapshot(
+						child->execute_data, ignore_args);
+					prev_bt->execute_data.prev_execute_data = &child_bt->execute_data;
+					prev_bt->execute_data.backtrace_frame = child_bt;
+					prev_bt = child_bt;
+					tree_cur = child;
+				}
+
+				if (tree_cur != fake_gen && fake_gen->execute_data) {
+					zend_backtrace_frame *fake_bt = zend_backtrace_frame_snapshot(
+						fake_gen->execute_data, ignore_args);
+					prev_bt->execute_data.prev_execute_data = &fake_bt->execute_data;
+					prev_bt->execute_data.backtrace_frame = fake_bt;
+					prev_bt = fake_bt;
+				}
+			} else if (fake_gen->execute_data) {
+				/* No last_gen yet — just snapshot the fake_gen directly */
+				zend_backtrace_frame *fake_bt = zend_backtrace_frame_snapshot(
+					fake_gen->execute_data, ignore_args);
+				prev_bt->execute_data.prev_execute_data = &fake_bt->execute_data;
+				prev_bt->execute_data.backtrace_frame = fake_bt;
+				prev_bt = fake_bt;
+			}
+
+			last_gen = fake_gen;
+			call = call->prev_execute_data;
+
+		} else if (ZEND_CALL_INFO(call) & ZEND_CALL_GENERATOR) {
+			/* Generator frame in prev chain (iterator-connected) */
+			zend_backtrace_frame *snap = zend_backtrace_frame_snapshot(call, ignore_args);
+			prev_bt->execute_data.prev_execute_data = &snap->execute_data;
+			prev_bt->execute_data.backtrace_frame = snap;
+			prev_bt = snap;
+			last_gen = (zend_generator *)call->return_value;
+			call = call->prev_execute_data;
+
+		} else {
+			/* Regular frame — snapshot and continue */
+			zend_backtrace_frame *snap = zend_backtrace_frame_snapshot(call, ignore_args);
+			prev_bt->execute_data.prev_execute_data = &snap->execute_data;
+			prev_bt->execute_data.backtrace_frame = snap;
+			prev_bt = snap;
+			call = call->prev_execute_data;
+		}
+	}
+
+	prev_bt->execute_data.prev_execute_data = NULL;
+	prev_bt->execute_data.backtrace_frame = NULL;
+	return prev_bt;
+}
+
 ZEND_API void zend_backtrace_frame_on_generator_leave(zend_execute_data *execute_data, void *generator_ptr)
 {
 	zend_backtrace_frame *bt_frame = execute_data->backtrace_frame;
 	if (UNEXPECTED(bt_frame != NULL)) {
-		/* Already populated (e.g. by a child generator's on_generator_leave) — skip */
 		if (bt_frame->populated) {
 			return;
 		}
 
-		zend_generator *generator = (zend_generator *)generator_ptr;
-		zend_execute_data *prev = execute_data->prev_execute_data;
-		bool ignore_args = bt_frame->ignore_args;
-
-		/* 1. Populate the current generator's frame */
+		/* Populate this generator's frame */
 		zend_backtrace_frame_copy(bt_frame, execute_data);
 
 		if (bt_frame->parent) {
 			bt_frame->parent->execute_data.prev_execute_data = &bt_frame->execute_data;
 		}
 
-		/* 2. Walk delegation tree via node.child to find consumer generators.
-		 *    In "yield from" delegation, the source generator (root) has children
-		 *    that are consumers. Each consumer may itself be a source for another
-		 *    consumer. We walk from source to consumer via node.child.
-		 *    All generator objects and their execute_data live on the heap
-		 *    and are reliable — unlike prev_execute_data which may be stale. */
-		zend_backtrace_frame *prev_bt = bt_frame;
-		zend_generator *current = generator;
-		while (current->node.children > 0) {
-			zend_generator *child;
-			if (current->node.children == 1) {
-				child = current->node.child.single;
-			} else {
-				/* Multiple children: pick the one with the leaf pointer
-				 * that matches our delegation path. Use first child as fallback. */
-				child = NULL;
-				zend_generator *c;
-				ZEND_HASH_FOREACH_PTR(current->node.child.ht, c) {
-					child = c;
-					break;
-				} ZEND_HASH_FOREACH_END();
-				if (!child) break;
-			}
-
-			if (!child->execute_data) {
-				break;
-			}
-
-			/* Create and populate the child's (consumer's) frame */
-			zend_backtrace_frame *child_bt = zend_backtrace_frame_ensure(
-				child->execute_data, prev_bt, ignore_args);
-			if (!child_bt->populated) {
-				zend_backtrace_frame_copy(child_bt, child->execute_data);
-			}
-
-			/* Link chain: source -> consumer */
-			prev_bt->execute_data.prev_execute_data = &child_bt->execute_data;
-			prev_bt->execute_data.backtrace_frame = child_bt;
-
-			prev_bt = child_bt;
-			current = child;
-		}
-
-		/* 3. Link to caller on VM stack.
-		 *    prev (from step 1) = execute_data->prev_execute_data of the leaf
-		 *    generator that actually executed. For simple generators this is
-		 *    the caller directly. For delegation it's &orig->execute_fake
-		 *    whose prev_execute_data = caller (set during resume, reliable). */
-		zend_execute_data *caller = NULL;
-		if (prev) {
-			caller = (!prev->func) ? prev->prev_execute_data : prev;
-		}
-		if (caller) {
-			prev_bt->execute_data.prev_execute_data = caller;
-			if (caller) {
-				zend_backtrace_frame *caller_bt = zend_backtrace_frame_ensure(
-					caller, prev_bt, ignore_args);
-				prev_bt->execute_data.backtrace_frame = caller_bt;
-			} else {
-				prev_bt->execute_data.backtrace_frame = NULL;
-			}
-		} else {
-			prev_bt->execute_data.prev_execute_data = NULL;
-			prev_bt->execute_data.backtrace_frame = NULL;
-		}
+		/* Snapshot the entire remaining chain — never use ensure on generators */
+		zend_generator *generator = (zend_generator *)generator_ptr;
+		zend_backtrace_snapshot_generator_chain(
+			execute_data->prev_execute_data, bt_frame, bt_frame->ignore_args, generator);
 	}
 }
 
@@ -252,9 +287,9 @@ ZEND_API void zend_generator_close(zend_generator *generator, bool finished_exec
 		generator->execute_data = NULL;
 
 		/* Detach backtrace_frame from execute_data before cleanup.
-		 * If populated (by on_leave in ZEND_GENERATOR_RETURN), it's already
-		 * detached (owner=NULL). If not populated, null owner so release
-		 * won't follow a dangling pointer after efree. */
+		 * Generator frames should never have lazy placeholders —
+		 * they are always snapshot'd eagerly. If a bt_frame exists here
+		 * it was either already populated or is from on_generator_leave. */
 		if (execute_data->backtrace_frame) {
 			execute_data->backtrace_frame->owner = NULL;
 			execute_data->backtrace_frame = NULL;

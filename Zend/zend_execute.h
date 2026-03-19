@@ -44,12 +44,14 @@ struct _zend_backtrace_frame {
 	bool                 ignore_args : 1;
 	zend_backtrace_frame *parent;
 	zend_execute_data   *owner;      /* live execute_data owning this frame (NULL when populated) */
+	zend_string         *class_name; /* class name for backtrace (addref'd), NULL if no class */
 	zend_execute_data    execute_data;
 	/* if !ignore_args: zval args[num_args] follow here */
 };
 
 ZEND_API zend_backtrace_frame *zend_backtrace_create_frame(bool ignore_args);
 ZEND_API zend_backtrace_frame *zend_backtrace_acquire_frame(bool ignore_args);
+ZEND_API zend_backtrace_frame *zend_backtrace_acquire_generator_frame(zend_execute_data *ex, bool ignore_args);
 ZEND_API void zend_backtrace_frame_release(zend_backtrace_frame *frame);
 
 /* Number of saved args in a frame (0 if ignore_args or no func) */
@@ -98,6 +100,11 @@ static zend_always_inline uint32_t zend_backtrace_frame_slots_ex(
 #define ZEND_BACKTRACE_FRAME_BASE_SIZE \
 	(offsetof(zend_backtrace_frame, execute_data) + ZEND_CALL_FRAME_SLOT * sizeof(zval))
 
+/* Get zend_backtrace_frame from its embedded execute_data.
+ * Only valid when execute_data.bt_is_frame is set. */
+#define ZEND_BT_FRAME_FROM_EXECUTE_DATA(ex) \
+	((zend_backtrace_frame*)((char*)(ex) - offsetof(zend_backtrace_frame, execute_data)))
+
 /* Populate a backtrace frame from a live execute_data:
  * copy header, args (with addref), $this and closure. */
 static zend_always_inline void zend_backtrace_frame_copy(
@@ -120,11 +127,32 @@ static zend_always_inline void zend_backtrace_frame_copy(
 		}
 	}
 
-	/* Addref $this — caller will release the original */
-	if (ZEND_CALL_INFO(execute_data) & ZEND_CALL_RELEASE_THIS) {
-		GC_ADDREF(Z_OBJ(bt_frame->execute_data.This));
+	/* Save class info and clear $this — never hold object references.
+	 * The walker checks bt_is_frame and uses class_name from the bt_frame. */
+	bt_frame->execute_data.bt_is_frame = 1;
+	if (Z_TYPE(execute_data->This) == IS_OBJECT) {
+		bt_frame->execute_data.bt_instance_method = 1;
+		if (execute_data->func && execute_data->func->common.scope) {
+			bt_frame->class_name = execute_data->func->common.scope->name;
+		} else {
+			bt_frame->class_name = Z_OBJCE(execute_data->This)->name;
+		}
+		zend_string_addref(bt_frame->class_name);
+		/* Clear $this to avoid dangling pointer — don't addref the object */
+		ZVAL_UNDEF(&bt_frame->execute_data.This);
+		ZEND_DEL_CALL_FLAG(&bt_frame->execute_data, ZEND_CALL_RELEASE_THIS);
 	} else if (!execute_data->func && Z_TYPE(execute_data->This) == IS_OBJECT) {
-		GC_ADDREF(Z_OBJ(bt_frame->execute_data.This));
+		/* execute_fake placeholder — generator object in This */
+		bt_frame->execute_data.bt_instance_method = 0;
+		bt_frame->class_name = NULL;
+	} else {
+		bt_frame->execute_data.bt_instance_method = 0;
+		if (execute_data->func && execute_data->func->common.scope) {
+			bt_frame->class_name = execute_data->func->common.scope->name;
+			zend_string_addref(bt_frame->class_name);
+		} else {
+			bt_frame->class_name = NULL;
+		}
 	}
 
 	/* Addref closure — caller will release the original */
@@ -132,6 +160,22 @@ static zend_always_inline void zend_backtrace_frame_copy(
 		zend_object *closure_obj = (zend_object*)((char*)(bt_frame->execute_data.func) - sizeof(zend_object));
 		GC_ADDREF(closure_obj);
 	}
+}
+
+/* Create a standalone populated snapshot from a live execute_data.
+ * Not linked to execute_data->backtrace_frame. */
+static zend_always_inline zend_backtrace_frame *zend_backtrace_frame_snapshot(
+	zend_execute_data *execute_data, bool ignore_args)
+{
+	size_t alloc_size = ZEND_BACKTRACE_FRAME_BASE_SIZE
+		+ zend_backtrace_frame_slots_ex(execute_data, ignore_args) * sizeof(zval);
+	zend_backtrace_frame *bt = ecalloc(1, alloc_size);
+	bt->ref_count = 1;
+	bt->ignore_args = ignore_args;
+	bt->owner = NULL;
+	bt->parent = NULL;
+	zend_backtrace_frame_copy(bt, execute_data);
+	return bt;
 }
 
 /* Helper: create an empty (unpopulated) backtrace_frame for a live execute_data.
@@ -156,6 +200,14 @@ static zend_always_inline zend_backtrace_frame *zend_backtrace_frame_ensure(
 	return bt;
 }
 
+typedef struct _zend_generator zend_generator;
+
+/* Snapshot the entire generator call chain. Defined in zend_generators.c.
+ * last_gen is the most recent generator (for delegation tree walking), or NULL. */
+ZEND_API zend_backtrace_frame *zend_backtrace_snapshot_generator_chain(
+	zend_execute_data *call, zend_backtrace_frame *prev_bt, bool ignore_args,
+	zend_generator *last_gen);
+
 /* Called before a normal (non-generator) stack frame is destroyed.
  * Populate the frame and propagate one level to prev. */
 static zend_always_inline void zend_backtrace_frame_on_leave(zend_execute_data *execute_data)
@@ -178,11 +230,20 @@ static zend_always_inline void zend_backtrace_frame_on_leave(zend_execute_data *
 		/* Point to live prev (transition to live stack) */
 		bt_frame->execute_data.prev_execute_data = prev;
 
-		/* Propagate: ensure prev has a placeholder frame */
+		/* Propagate to prev frame.
+		 * Generator frames are ALWAYS snapshot'd eagerly — never lazy.
+		 * Normal frames get a lazy placeholder via ensure. */
 		if (prev) {
-			zend_backtrace_frame *prev_bt = zend_backtrace_frame_ensure(
-				prev, bt_frame, bt_frame->ignore_args);
-			bt_frame->execute_data.backtrace_frame = prev_bt;
+			if (ZEND_CALL_INFO(prev) & ZEND_CALL_GENERATOR) {
+				/* prev is a generator — snapshot entire chain */
+				zend_generator *gen = (zend_generator *)prev->return_value;
+				zend_backtrace_snapshot_generator_chain(
+					prev, bt_frame, bt_frame->ignore_args, gen);
+			} else {
+				zend_backtrace_frame *prev_bt = zend_backtrace_frame_ensure(
+					prev, bt_frame, bt_frame->ignore_args);
+				bt_frame->execute_data.backtrace_frame = prev_bt;
+			}
 		} else {
 			bt_frame->execute_data.backtrace_frame = NULL;
 		}
@@ -503,6 +564,7 @@ static zend_always_inline void zend_vm_init_call_frame(zend_execute_data *call, 
 	ZEND_CALL_INFO(call) = call_info;
 	ZEND_CALL_NUM_ARGS(call) = num_args;
 	call->backtrace_frame = NULL;
+	call->bt_is_frame = 0;
 }
 
 static zend_always_inline zend_execute_data *zend_vm_stack_push_call_frame_ex(uint32_t used_stack, uint32_t call_info, zend_function *func, uint32_t num_args, void *object_or_called_scope)

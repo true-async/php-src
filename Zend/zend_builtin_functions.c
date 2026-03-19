@@ -1954,7 +1954,10 @@ ZEND_API void zend_fetch_debug_backtrace_from(zval *return_value, zend_execute_d
 			if (EXPECTED((ZEND_CALL_INFO(call) & ZEND_CALL_TOP_FUNCTION) == 0)) {
 				break;
 			}
-		} else if (UNEXPECTED((ZEND_CALL_INFO(call) & ZEND_CALL_GENERATOR) != 0)) {
+		} else if (UNEXPECTED((ZEND_CALL_INFO(call) & ZEND_CALL_GENERATOR) != 0)
+				&& !call->bt_is_frame) {
+			/* Only resolve placeholder frames for live generator frames.
+			 * Snapshot'd bt_frames already have the correct chain. */
 			prev = zend_generator_check_placeholder_frame(prev);
 		}
 
@@ -2092,7 +2095,20 @@ not_frameless_call:
 			ZVAL_STR_COPY(&tmp, func->common.function_name);
 			_zend_hash_append_ex(stack_frame, ZSTR_KNOWN(ZEND_STR_FUNCTION), &tmp, 1);
 
-			if (Z_TYPE(call->This) == IS_OBJECT) {
+			if (call->bt_is_frame) {
+				/* Backtrace snapshot frame — class info stored in bt_frame */
+				zend_backtrace_frame *bt = ZEND_BT_FRAME_FROM_EXECUTE_DATA(call);
+				if (bt->class_name) {
+					ZVAL_STR_COPY(&tmp, bt->class_name);
+					_zend_hash_append_ex(stack_frame, ZSTR_KNOWN(ZEND_STR_CLASS), &tmp, 1);
+					if (bt->execute_data.bt_instance_method) {
+						ZVAL_INTERNED_STR(&tmp, ZSTR_KNOWN(ZEND_STR_OBJECT_OPERATOR));
+					} else {
+						ZVAL_INTERNED_STR(&tmp, ZSTR_KNOWN(ZEND_STR_PAAMAYIM_NEKUDOTAYIM));
+					}
+					_zend_hash_append_ex(stack_frame, ZSTR_KNOWN(ZEND_STR_TYPE), &tmp, 1);
+				}
+			} else if (Z_TYPE(call->This) == IS_OBJECT) {
 				object = Z_OBJ(call->This);
 				/* $this may be passed into regular internal functions */
 				if (func->common.scope) {

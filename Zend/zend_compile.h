@@ -646,6 +646,10 @@ struct _zend_execute_data {
 	void               **run_time_cache;   /* cache op_array->run_time_cache */
 	zend_array          *extra_named_params;
 	zend_backtrace_frame *backtrace_frame; /* lazy backtrace frame           */
+	/* Backtrace snapshot flags — set when frame is populated into a
+	 * zend_backtrace_frame. Fits in existing padding (no stack growth). */
+	bool                 bt_is_frame : 1;       /* execute_data is inside a zend_backtrace_frame */
+	bool                 bt_instance_method : 1; /* call was instance method "->", not static "::" */
 };
 
 #define ZEND_CALL_HAS_THIS           IS_OBJECT_EX

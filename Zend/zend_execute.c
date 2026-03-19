@@ -78,10 +78,9 @@ static void zend_backtrace_frame_free_one(zend_backtrace_frame *frame)
 			}
 		}
 
-		if (ZEND_CALL_INFO(&frame->execute_data) & ZEND_CALL_RELEASE_THIS) {
-			OBJ_RELEASE(Z_OBJ(frame->execute_data.This));
-		} else if (!frame->execute_data.func && Z_TYPE(frame->execute_data.This) == IS_OBJECT) {
-			OBJ_RELEASE(Z_OBJ(frame->execute_data.This));
+		/* Release class_name string (object $this is never held) */
+		if (frame->class_name) {
+			zend_string_release(frame->class_name);
 		}
 
 		if (ZEND_CALL_INFO(&frame->execute_data) & ZEND_CALL_CLOSURE) {
@@ -131,6 +130,7 @@ ZEND_API void zend_backtrace_frame_release(zend_backtrace_frame *frame)
 	}
 }
 
+
 ZEND_API zend_backtrace_frame *zend_backtrace_acquire_frame(bool ignore_args)
 {
 	if (!EG(current_execute_data)) {
@@ -138,6 +138,12 @@ ZEND_API zend_backtrace_frame *zend_backtrace_acquire_frame(bool ignore_args)
 	}
 
 	zend_execute_data *ex = EG(current_execute_data);
+
+	/* Generator frame: snapshot immediately — generator stacks are unstable */
+	if (ZEND_CALL_INFO(ex) & ZEND_CALL_GENERATOR) {
+		return zend_backtrace_acquire_generator_frame(ex, ignore_args);
+	}
+
 	if (ex->backtrace_frame) {
 		ex->backtrace_frame->ref_count++;
 		return ex->backtrace_frame;

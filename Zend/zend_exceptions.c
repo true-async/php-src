@@ -265,9 +265,7 @@ static HashTable *zend_exception_get_gc(zend_object *object, zval **table, int *
 		/* Walk the frame chain and report held objects */
 		zend_backtrace_frame *frame = exc->backtrace_frame;
 		while (frame && frame->populated) {
-			if (Z_TYPE(frame->execute_data.This) == IS_OBJECT) {
-				zend_get_gc_buffer_add_obj(gc_buffer, Z_OBJ(frame->execute_data.This));
-			}
+			/* $this is no longer held in bt_frames — nothing to report */
 			if (ZEND_CALL_INFO(&frame->execute_data) & ZEND_CALL_CLOSURE) {
 				zend_get_gc_buffer_add_obj(gc_buffer, ZEND_CLOSURE_OBJECT(frame->execute_data.func));
 			}
