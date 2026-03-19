@@ -188,37 +188,29 @@ ZEND_API zend_backtrace_frame *zend_backtrace_snapshot_generator_chain(
 			zend_generator *fake_gen = (zend_generator *)Z_OBJ(call->This);
 
 			if (last_gen) {
-				/* Walk delegation tree from last_gen towards fake_gen */
-				zend_generator *tree_cur = last_gen;
-				while (tree_cur->node.children > 0) {
-					zend_generator *child;
-					if (tree_cur->node.children == 1) {
-						child = tree_cur->node.child.single;
-					} else {
-						child = NULL;
-						zend_generator *c;
-						ZEND_HASH_FOREACH_PTR(tree_cur->node.child.ht, c) {
-							child = c;
-							break;
-						} ZEND_HASH_FOREACH_END();
-						if (!child) break;
-					}
-					if (!child->execute_data) break;
+				/* Walk node.parent from fake_gen UP to last_gen, collecting
+				 * intermediate generators into a stack, then add in order.
+				 * This correctly follows the delegation chain even when
+				 * the tree branches (multiple children per node). */
+				zend_generator *path[64];
+				int path_len = 0;
 
-					zend_backtrace_frame *child_bt = zend_backtrace_frame_snapshot(
-						child->execute_data, ignore_args);
-					prev_bt->execute_data.prev_execute_data = &child_bt->execute_data;
-					prev_bt->execute_data.backtrace_frame = child_bt;
-					prev_bt = child_bt;
-					tree_cur = child;
+				/* Collect: fake_gen -> parent -> ... -> last_gen (exclusive) */
+				zend_generator *cur = fake_gen;
+				while (cur && cur != last_gen && path_len < 64) {
+					if (cur->execute_data) {
+						path[path_len++] = cur;
+					}
+					cur = cur->node.parent;
 				}
 
-				if (tree_cur != fake_gen && fake_gen->execute_data) {
-					zend_backtrace_frame *fake_bt = zend_backtrace_frame_snapshot(
-						fake_gen->execute_data, ignore_args);
-					prev_bt->execute_data.prev_execute_data = &fake_bt->execute_data;
-					prev_bt->execute_data.backtrace_frame = fake_bt;
-					prev_bt = fake_bt;
+				/* Add frames in reverse order (from last_gen's child towards fake_gen) */
+				for (int i = path_len - 1; i >= 0; i--) {
+					zend_backtrace_frame *snap = zend_backtrace_frame_snapshot(
+						path[i]->execute_data, ignore_args);
+					prev_bt->execute_data.prev_execute_data = &snap->execute_data;
+					prev_bt->execute_data.backtrace_frame = snap;
+					prev_bt = snap;
 				}
 			} else if (fake_gen->execute_data) {
 				/* No last_gen yet — just snapshot the fake_gen directly */
