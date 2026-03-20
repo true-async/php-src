@@ -358,7 +358,7 @@ typedef zend_async_process_event_t *(*zend_async_new_process_event_t)(
 		zend_process_t process_handle, size_t extra_size);
 typedef void (*zend_async_thread_entry_t)(void *arg, size_t extra_size);
 typedef zend_async_thread_event_t *(*zend_async_new_thread_event_t)(
-		zend_async_thread_entry_t entry, void *arg, uint32_t thread_flags, size_t extra_size);
+		const zend_fcall_t *entry, const zend_fcall_t *bootloader, uint32_t thread_flags, size_t extra_size);
 typedef void (*zend_async_trigger_event_trigger_fn)(zend_async_trigger_event_t *event);
 typedef zend_async_trigger_event_t *(*zend_async_new_trigger_event_t)(size_t extra_size);
 typedef zend_async_filesystem_event_t *(*zend_async_new_filesystem_event_t)(
@@ -917,16 +917,6 @@ struct _zend_async_process_event_s {
 struct _zend_async_thread_event_s {
 	zend_async_event_t base;
 
-	/* PHP entry point (userland thread). If NULL, internal_entry is used. */
-	zend_fcall_t *fcall;
-
-	/* Optional bootloader closure, executed before fcall */
-	zend_fcall_t *bootloader;
-
-	/* C entry point (internal thread). If NULL, fcall is used. */
-	zend_async_thread_entry_t internal_entry;
-	void *internal_arg;
-
 	/* Thread configuration flags (ZEND_THREAD_F_*) */
 	uint32_t thread_flags;
 
@@ -936,7 +926,7 @@ struct _zend_async_thread_event_s {
 	/* Exception from the thread, if any */
 	zend_object *exception;
 
-	/* Exit code for internal threads */
+	/* Exit code */
 	zend_long exit_code;
 
 	/* OS thread ID, set atomically inside the thread entry */
@@ -2116,10 +2106,10 @@ END_EXTERN_C()
 	zend_async_new_process_event_fn(process_handle, 0)
 #define ZEND_ASYNC_NEW_PROCESS_EVENT_EX(process_handle, extra_size) \
 	zend_async_new_process_event_fn(process_handle, extra_size)
-#define ZEND_ASYNC_NEW_THREAD_EVENT(entry, arg) \
-	zend_async_new_thread_event_fn(entry, arg, 0, 0)
-#define ZEND_ASYNC_NEW_THREAD_EVENT_EX(entry, arg, flags, extra_size) \
-	zend_async_new_thread_event_fn(entry, arg, flags, extra_size)
+#define ZEND_ASYNC_NEW_THREAD_EVENT(entry, bootloader) \
+	zend_async_new_thread_event_fn(entry, bootloader, 0, 0)
+#define ZEND_ASYNC_NEW_THREAD_EVENT_EX(entry, bootloader, flags, extra_size) \
+	zend_async_new_thread_event_fn(entry, bootloader, flags, extra_size)
 #define ZEND_ASYNC_NEW_FILESYSTEM_EVENT(path, flags) \
 	zend_async_new_filesystem_event_fn(path, flags, 0)
 #define ZEND_ASYNC_NEW_FILESYSTEM_EVENT_EX(path, flags, extra_size) \
