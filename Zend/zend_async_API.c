@@ -246,6 +246,9 @@ zend_async_waker_destroy_t zend_async_waker_destroy_fn = zend_async_waker_destro
 static char *thread_pool_module_name = NULL;
 static char *pool_module_name = NULL;
 zend_async_queue_task_t zend_async_queue_task_fn = NULL;
+zend_async_thread_snapshot_create_t zend_async_thread_snapshot_create_fn = NULL;
+zend_async_thread_snapshot_destroy_t zend_async_thread_snapshot_destroy_fn = NULL;
+zend_async_thread_run_t zend_async_thread_run_fn = NULL;
 
 /* Iterator API */
 zend_async_new_iterator_t zend_async_new_iterator_fn = NULL;
@@ -373,7 +376,10 @@ ZEND_API bool zend_async_scheduler_register(char *module, bool allow_override,
 		zend_async_new_future_t new_future_fn, zend_async_new_channel_t new_channel_fn,
 		zend_async_new_future_obj_t new_future_obj_fn,
 		zend_async_new_channel_obj_t new_channel_obj_fn, zend_async_new_group_t new_group_fn,
-		zend_async_engine_shutdown_t engine_shutdown_fn)
+		zend_async_engine_shutdown_t engine_shutdown_fn,
+		zend_async_thread_snapshot_create_t thread_snapshot_create_fn,
+		zend_async_thread_snapshot_destroy_t thread_snapshot_destroy_fn,
+		zend_async_thread_run_t thread_run_fn)
 {
 	if (zend_atomic_bool_exchange(&scheduler_lock, 1)) {
 		return false;
@@ -418,6 +424,9 @@ ZEND_API bool zend_async_scheduler_register(char *module, bool allow_override,
 	zend_async_new_channel_obj_fn = new_channel_obj_fn;
 	zend_async_new_group_fn = new_group_fn;
 	zend_async_engine_shutdown_fn = engine_shutdown_fn;
+	zend_async_thread_snapshot_create_fn = thread_snapshot_create_fn;
+	zend_async_thread_snapshot_destroy_fn = thread_snapshot_destroy_fn;
+	zend_async_thread_run_fn = thread_run_fn;
 
 	zend_atomic_bool_store(&scheduler_lock, 0);
 

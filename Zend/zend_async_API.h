@@ -359,6 +359,13 @@ typedef zend_async_process_event_t *(*zend_async_new_process_event_t)(
 typedef void (*zend_async_thread_entry_t)(void *arg, size_t extra_size);
 typedef zend_async_thread_event_t *(*zend_async_new_thread_event_t)(
 		const zend_fcall_t *entry, const zend_fcall_t *bootloader, uint32_t thread_flags, size_t extra_size);
+
+/* Thread lifecycle: snapshot create/destroy and thread entry point.
+ * Implemented by thread module, called by reactor backend. */
+typedef void *(*zend_async_thread_snapshot_create_t)(
+		const zend_fcall_t *entry, const zend_fcall_t *bootloader);
+typedef void (*zend_async_thread_snapshot_destroy_t)(void *snapshot);
+typedef void (*zend_async_thread_run_t)(void *arg);
 typedef void (*zend_async_trigger_event_trigger_fn)(zend_async_trigger_event_t *event);
 typedef zend_async_trigger_event_t *(*zend_async_new_trigger_event_t)(size_t extra_size);
 typedef zend_async_filesystem_event_t *(*zend_async_new_filesystem_event_t)(
@@ -935,6 +942,13 @@ struct _zend_async_thread_event_s {
 	/* Spawn location tracking */
 	zend_string *filename;
 	uint32_t lineno;
+
+	/* Opaque pointer to thread snapshot (owned by ext, not by core) */
+	void *snapshot;
+
+	/* Notify parent event loop that thread has finished.
+	 * Set by the reactor backend, called from child thread. */
+	void (*notify_parent)(zend_async_thread_event_t *event);
 };
 
 /* Filesystem event types (backend-agnostic) */
@@ -1795,6 +1809,9 @@ ZEND_API extern zend_async_new_timer_event_t zend_async_new_timer_event_fn;
 ZEND_API extern zend_async_new_signal_event_t zend_async_new_signal_event_fn;
 ZEND_API extern zend_async_new_process_event_t zend_async_new_process_event_fn;
 ZEND_API extern zend_async_new_thread_event_t zend_async_new_thread_event_fn;
+ZEND_API extern zend_async_thread_snapshot_create_t zend_async_thread_snapshot_create_fn;
+ZEND_API extern zend_async_thread_snapshot_destroy_t zend_async_thread_snapshot_destroy_fn;
+ZEND_API extern zend_async_thread_run_t zend_async_thread_run_fn;
 ZEND_API extern zend_async_new_filesystem_event_t zend_async_new_filesystem_event_fn;
 
 /* Socket Listening API */
@@ -1856,7 +1873,10 @@ ZEND_API bool zend_async_scheduler_register(char *module, bool allow_override,
 		zend_async_new_future_t new_future_fn, zend_async_new_channel_t new_channel_fn,
 		zend_async_new_future_obj_t new_future_obj_fn,
 		zend_async_new_channel_obj_t new_channel_obj_fn, zend_async_new_group_t new_group_fn,
-		zend_async_engine_shutdown_t engine_shutdown_fn);
+		zend_async_engine_shutdown_t engine_shutdown_fn,
+		zend_async_thread_snapshot_create_t thread_snapshot_create_fn,
+		zend_async_thread_snapshot_destroy_t thread_snapshot_destroy_fn,
+		zend_async_thread_run_t thread_run_fn);
 
 ZEND_API bool zend_async_reactor_register(char *module, bool allow_override,
 		zend_async_reactor_startup_t reactor_startup_fn,
@@ -1877,6 +1897,7 @@ ZEND_API bool zend_async_reactor_register(char *module, bool allow_override,
 
 ZEND_API void zend_async_thread_pool_register(
 		char *module, bool allow_override, zend_async_queue_task_t queue_task_fn);
+
 
 ZEND_API void zend_async_pool_api_register(
 		char *module, bool allow_override,
@@ -2110,6 +2131,12 @@ END_EXTERN_C()
 	zend_async_new_thread_event_fn(entry, bootloader, 0, 0)
 #define ZEND_ASYNC_NEW_THREAD_EVENT_EX(entry, bootloader, flags, extra_size) \
 	zend_async_new_thread_event_fn(entry, bootloader, flags, extra_size)
+#define ZEND_ASYNC_THREAD_SNAPSHOT_CREATE(entry, bootloader) \
+	zend_async_thread_snapshot_create_fn(entry, bootloader)
+#define ZEND_ASYNC_THREAD_SNAPSHOT_DESTROY(snapshot) \
+	zend_async_thread_snapshot_destroy_fn(snapshot)
+#define ZEND_ASYNC_THREAD_RUN(arg) \
+	zend_async_thread_run_fn(arg)
 #define ZEND_ASYNC_NEW_FILESYSTEM_EVENT(path, flags) \
 	zend_async_new_filesystem_event_fn(path, flags, 0)
 #define ZEND_ASYNC_NEW_FILESYSTEM_EVENT_EX(path, flags, extra_size) \
