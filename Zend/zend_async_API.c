@@ -249,6 +249,7 @@ zend_async_queue_task_t zend_async_queue_task_fn = NULL;
 zend_async_thread_snapshot_create_t zend_async_thread_snapshot_create_fn = NULL;
 zend_async_thread_snapshot_destroy_t zend_async_thread_snapshot_destroy_fn = NULL;
 zend_async_thread_run_t zend_async_thread_run_fn = NULL;
+zend_async_thread_load_result_t zend_async_thread_load_result_fn = NULL;
 
 /* Iterator API */
 zend_async_new_iterator_t zend_async_new_iterator_fn = NULL;
@@ -379,7 +380,8 @@ ZEND_API bool zend_async_scheduler_register(char *module, bool allow_override,
 		zend_async_engine_shutdown_t engine_shutdown_fn,
 		zend_async_thread_snapshot_create_t thread_snapshot_create_fn,
 		zend_async_thread_snapshot_destroy_t thread_snapshot_destroy_fn,
-		zend_async_thread_run_t thread_run_fn)
+		zend_async_thread_run_t thread_run_fn,
+		zend_async_thread_load_result_t thread_load_result_fn)
 {
 	if (zend_atomic_bool_exchange(&scheduler_lock, 1)) {
 		return false;
@@ -427,6 +429,7 @@ ZEND_API bool zend_async_scheduler_register(char *module, bool allow_override,
 	zend_async_thread_snapshot_create_fn = thread_snapshot_create_fn;
 	zend_async_thread_snapshot_destroy_fn = thread_snapshot_destroy_fn;
 	zend_async_thread_run_fn = thread_run_fn;
+	zend_async_thread_load_result_fn = thread_load_result_fn;
 
 	zend_atomic_bool_store(&scheduler_lock, 0);
 
