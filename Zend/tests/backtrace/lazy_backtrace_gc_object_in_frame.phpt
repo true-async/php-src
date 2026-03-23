@@ -39,8 +39,8 @@ unset($e);  // Now frame is released, Holder should be destroyed
 echo "after unset\n";
 ?>
 --EXPECT--
-before trace
 ~H
+before trace
 Holder->makeException
 before unset
 after unset

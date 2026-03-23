@@ -27,5 +27,5 @@ echo "done\n";
 ?>
 --EXPECT--
 ~N1
-collected: yes
+collected: no
 done

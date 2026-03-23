@@ -12,5 +12,5 @@ echo $e->getTraceAsString();
 --EXPECTF--
 #0 %s(%d): inner()
 #1 [internal function]: gen()
-#2 %s(%d): Exception->getTraceAsString()
+#2 %s(%d): Generator->current()
 #3 {main}
