@@ -940,9 +940,6 @@ struct _zend_async_thread_event_s {
 	/* Exception from the thread, if any */
 	zend_object *exception;
 
-	/* Exit code */
-	zend_long exit_code;
-
 	/* OS thread ID, set atomically inside the thread entry */
 	zend_atomic_int64 thread_id;
 
@@ -956,6 +953,10 @@ struct _zend_async_thread_event_s {
 	/* Notify parent event loop that thread has finished.
 	 * Set by the reactor backend, called from child thread. */
 	void (*notify_parent)(zend_async_thread_event_t *event);
+
+	/* Bailout error message (pemalloc'd C string, NULL if no bailout).
+	 * Set in child thread after zend_catch, read in parent by load_result. */
+	char *bailout_error_message;
 };
 
 /* Filesystem event types (backend-agnostic) */
