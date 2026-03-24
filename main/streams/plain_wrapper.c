@@ -1070,6 +1070,24 @@ static int php_stdiop_stat(php_stream *stream, php_stream_statbuf *ssb)
 	return ret;
 }
 
+/* Thread pool flock support */
+typedef struct {
+	int fd;
+	int operation;
+	int result;
+	int error_code;
+} php_stdiop_flock_task_data_t;
+
+static void php_stdiop_flock_task_run(zend_async_task_t *task)
+{
+	php_stdiop_flock_task_data_t *flock_data = (php_stdiop_flock_task_data_t *) task->data;
+	flock_data->result = flock(flock_data->fd, flock_data->operation);
+
+	if (flock_data->result != 0) {
+		flock_data->error_code = errno;
+	}
+}
+
 static int php_stdiop_set_option(php_stream *stream, int option, int value, void *ptrparam)
 {
 	php_stdio_stream_data *data = (php_stdio_stream_data*) stream->abstract;
@@ -1144,6 +1162,49 @@ static int php_stdiop_set_option(php_stream *stream, int option, int value, void
 
 			if ((uintptr_t) ptrparam == PHP_STREAM_LOCK_SUPPORTED) {
 				return 0;
+			}
+
+			/* Use thread pool for potentially blocking lock operations inside coroutines.
+			 * LOCK_UN (unlock) and LOCK_NB (non-blocking) never block, so skip the thread pool. */
+			if (!(value & LOCK_NB) && (value & ~LOCK_NB) != LOCK_UN
+					&& !ZEND_ASYNC_IS_OFF && !ZEND_ASYNC_IS_SCHEDULER_CONTEXT
+					&& zend_async_thread_pool_is_enabled()) {
+
+				ZEND_ASYNC_SCHEDULER_INIT();
+
+				if (UNEXPECTED(EG(exception))) {
+					return -1;
+				}
+
+				php_stdiop_flock_task_data_t flock_data = { .fd = fd, .operation = value };
+				zend_async_task_t *task = ZEND_ASYNC_NEW_TASK(php_stdiop_flock_task_run, &flock_data);
+
+				zend_coroutine_t *const coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+				ZEND_ASYNC_WAKER_NEW(coroutine);
+
+				if (UNEXPECTED(!zend_async_resume_when(coroutine, &task->base, true,
+					zend_async_waker_callback_resolve, NULL))) {
+					ZEND_ASYNC_WAKER_DESTROY(coroutine);
+					return -1;
+				}
+
+				if (UNEXPECTED(!ZEND_ASYNC_QUEUE_TASK(task))) {
+					ZEND_ASYNC_WAKER_DESTROY(coroutine);
+					return -1;
+				}
+
+				if (UNEXPECTED(!ZEND_ASYNC_SUSPEND())) {
+					ZEND_ASYNC_WAKER_DESTROY(coroutine);
+					return -1;
+				}
+
+				if (flock_data.result == 0) {
+					data->lock_flag = value;
+					return 0;
+				}
+
+				errno = flock_data.error_code;
+				return -1;
 			}
 
 			if (!flock(fd, value)) {

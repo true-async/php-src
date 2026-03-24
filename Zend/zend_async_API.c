@@ -245,6 +245,7 @@ zend_async_waker_destroy_t zend_async_waker_destroy_fn = zend_async_waker_destro
 
 static char *thread_pool_module_name = NULL;
 static char *pool_module_name = NULL;
+zend_async_new_task_t zend_async_new_task_fn = NULL;
 zend_async_queue_task_t zend_async_queue_task_fn = NULL;
 
 /* Iterator API */
@@ -489,7 +490,8 @@ ZEND_API bool zend_async_reactor_register(char *module, bool allow_override,
 }
 
 ZEND_API void zend_async_thread_pool_register(
-		char *module, bool allow_override, zend_async_queue_task_t queue_task_fn)
+		char *module, bool allow_override,
+		zend_async_new_task_t new_task_fn, zend_async_queue_task_t queue_task_fn)
 {
 	if (thread_pool_module_name != NULL && false == allow_override) {
 		zend_error(E_CORE_ERROR,
@@ -499,7 +501,13 @@ ZEND_API void zend_async_thread_pool_register(
 	}
 
 	thread_pool_module_name = module;
+	zend_async_new_task_fn = new_task_fn;
 	zend_async_queue_task_fn = queue_task_fn;
+}
+
+ZEND_API bool zend_async_thread_pool_is_enabled(void)
+{
+	return zend_async_queue_task_fn != NULL;
 }
 
 ZEND_API void zend_async_pool_api_register(

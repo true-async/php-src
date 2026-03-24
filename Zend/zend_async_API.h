@@ -383,9 +383,9 @@ typedef int (*zend_async_exec_t)(zend_async_exec_mode exec_mode, const char *cmd
 		zval *return_buffer, zval *return_value, zval *std_error, const char *cwd, const char *env,
 		const zend_ulong timeout);
 
-typedef bool (*zend_async_queue_task_t)(zend_async_task_t *task);
-
 typedef void (*zend_async_task_run_t)(zend_async_task_t *task);
+typedef bool (*zend_async_queue_task_t)(zend_async_task_t *task);
+typedef zend_async_task_t *(*zend_async_new_task_t)(zend_async_task_run_t run, void *data, size_t extra_size);
 
 typedef void (*zend_async_microtask_handler_t)(zend_async_microtask_t *microtask);
 
@@ -972,6 +972,7 @@ struct _zend_async_listen_event_s {
 struct _zend_async_task_s {
 	zend_async_event_t base;
 	zend_async_task_run_t run;
+	void *data;
 };
 
 struct _zend_async_trigger_event_s {
@@ -1800,6 +1801,7 @@ ZEND_API extern zend_async_waker_destroy_t zend_async_waker_destroy_fn;
 
 /* Thread pool API */
 ZEND_API bool zend_async_thread_pool_is_enabled(void);
+ZEND_API extern zend_async_new_task_t zend_async_new_task_fn;
 ZEND_API extern zend_async_queue_task_t zend_async_queue_task_fn;
 
 /* Trigger Event API */
@@ -1853,7 +1855,8 @@ ZEND_API bool zend_async_reactor_register(char *module, bool allow_override,
 		zend_async_exec_t exec_fn, zend_async_new_trigger_event_t new_trigger_event_fn);
 
 ZEND_API void zend_async_thread_pool_register(
-		char *module, bool allow_override, zend_async_queue_task_t queue_task_fn);
+		char *module, bool allow_override,
+		zend_async_new_task_t new_task_fn, zend_async_queue_task_t queue_task_fn);
 
 ZEND_API void zend_async_pool_api_register(
 		char *module, bool allow_override,
@@ -2110,6 +2113,8 @@ END_EXTERN_C()
 #define ZEND_ASYNC_EXEC(exec_mode, cmd, return_buffer, return_value, std_error, cwd, env, timeout) \
 	zend_async_exec_fn(exec_mode, cmd, return_buffer, return_value, std_error, cwd, env, timeout)
 
+#define ZEND_ASYNC_NEW_TASK(run, data) zend_async_new_task_fn((run), (data), 0)
+#define ZEND_ASYNC_NEW_TASK_EX(run, data, extra_size) zend_async_new_task_fn((run), (data), (extra_size))
 #define ZEND_ASYNC_QUEUE_TASK(task) zend_async_queue_task_fn(task)
 
 /* Trigger Event API Macros */
