@@ -258,14 +258,14 @@ static zend_string *zend_jit_trace_name(const zend_op_array *op_array, uint32_t 
 	smart_str_appendc(&buf, '$');
 	if (op_array->function_name) {
 		if (op_array->scope) {
-			smart_str_appendl(&buf, ZSTR_VAL(op_array->scope->name), ZSTR_LEN(op_array->scope->name));
+			smart_str_append(&buf, op_array->scope->name);
 			smart_str_appends(&buf, "::");
-			smart_str_appendl(&buf, ZSTR_VAL(op_array->function_name), ZSTR_LEN(op_array->function_name));
+			smart_str_append(&buf, op_array->function_name);
 		} else {
-			smart_str_appendl(&buf, ZSTR_VAL(op_array->function_name), ZSTR_LEN(op_array->function_name));
+			smart_str_append(&buf, op_array->function_name);
 		}
 	} else if (op_array->filename) {
-		smart_str_appendl(&buf, ZSTR_VAL(op_array->filename), ZSTR_LEN(op_array->filename));
+		smart_str_append(&buf, op_array->filename);
 	}
 	smart_str_appendc(&buf, '$');
 	smart_str_append_long(&buf, (zend_long)lineno);
@@ -3649,7 +3649,7 @@ static int zend_jit_trace_deoptimization(
 
 		ZEND_ASSERT(STACK_FLAGS(parent_stack, check2) == ZREG_ZVAL_COPY);
 		ZEND_ASSERT(reg != ZREG_NONE);
-		if (!zend_jit_escape_if_undef(jit, check2, flags, opline, reg)) {
+		if (!zend_jit_escape_if_undef(jit, check2, flags, opline, exit_info->op_array, reg)) {
 			return 0;
 		}
 		if (!zend_jit_restore_zval(jit, EX_NUM_TO_VAR(check2), reg)) {
