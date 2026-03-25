@@ -182,7 +182,8 @@ static int pgsql_stmt_execute(pdo_stmt_t *stmt)
 	ExecStatusType status;
 	int dispatch_result = 1;
 
-	bool in_trans = stmt->dbh->methods->in_transaction(stmt->dbh);
+	pdo_dbh_t *active_dbh = stmt->pooled_conn ? stmt->pooled_conn : stmt->dbh;
+	const bool in_trans = active_dbh->methods->in_transaction(active_dbh);
 
 	/* in unbuffered mode, finish any running statement: libpq explicitely prohibits this
 	 * and returns a PGRES_FATAL_ERROR when PQgetResult gets called for stmt 2 if DEALLOCATE
@@ -369,8 +370,8 @@ stmt_retry:
 		stmt->row_count = (zend_long)PQntuples(S->result);
 	}
 
-	if (in_trans && !stmt->dbh->methods->in_transaction(stmt->dbh)) {
-		pdo_pgsql_close_lob_streams(stmt->dbh);
+	if (in_trans && !active_dbh->methods->in_transaction(active_dbh)) {
+		pdo_pgsql_close_lob_streams(active_dbh);
 	}
 
 	return 1;
