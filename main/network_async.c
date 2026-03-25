@@ -258,12 +258,6 @@ ZEND_API int network_async_await_stream_socket(php_netstream_data_t *netdata, as
 	}
 
 	zend_ulong async_events = poll2_events_to_async(events);
-	zend_async_poll_proxy_t *poll_event = php_netstream_get_async_event(netdata, async_events);
-
-	if (UNEXPECTED(poll_event == NULL)) {
-		handle_exception_and_errno();
-		return -1;
-	}
 
 	// Convert timeval timeout to milliseconds for async waker.
 	// For async waker, 0 means infinite timeout. But a zero timeval {0,0}
@@ -271,10 +265,22 @@ ZEND_API int network_async_await_stream_socket(php_netstream_data_t *netdata, as
 	// Fall back to synchronous poll for zero-timeout to avoid infinite suspend.
 	zend_ulong timeout_ms = 0;
 	if (timeout != NULL) {
+		if (timeout->tv_sec < 0) {
+			return php_pollfd_for(netdata->socket, events, timeout);
+		}
+
 		timeout_ms = timeout->tv_sec * 1000 + timeout->tv_usec / 1000;
+
 		if (timeout_ms == 0) {
 			return php_pollfd_for(netdata->socket, events, timeout);
 		}
+	}
+
+	zend_async_poll_proxy_t *poll_event = php_netstream_get_async_event(netdata, async_events);
+
+	if (UNEXPECTED(poll_event == NULL)) {
+		handle_exception_and_errno();
+		return -1;
 	}
 
 	// Initialize waker with timeout
