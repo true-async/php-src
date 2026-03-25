@@ -1069,6 +1069,13 @@ struct _zend_async_scope_s {
 #define ZEND_ASYNC_SCOPE_CAN_BE_DISPOSED(scope) \
 	((scope)->can_be_disposed((scope), true, true))
 
+#define ZEND_ASYNC_SCOPE_RELEASE(scope) do { \
+	if (ZEND_ASYNC_EVENT_REFCOUNT(&(scope)->event) > 1) { \
+		ZEND_ASYNC_EVENT_DEL_REF(&(scope)->event); \
+	} \
+	(scope)->try_to_dispose(scope); \
+} while (0)
+
 #define ZEND_ASYNC_SCOPE_F_CLOSED ZEND_ASYNC_EVENT_F_CLOSED /* scope was closed */
 #define ZEND_ASYNC_SCOPE_F_NO_FREE_MEMORY \
 	ZEND_ASYNC_EVENT_F_NO_FREE_MEMORY /* scope will not free memory in dispose handler */
