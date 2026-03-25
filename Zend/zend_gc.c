@@ -2153,7 +2153,7 @@ static zend_never_inline bool gc_call_destructors_in_coroutine(void)
 	ZEND_ASSERT(scope != NULL && "destructor scope not initialized");
 
 	// Waiting for the completion of a Scope with all destructor coroutines.
-	if (UNEXPECTED(!zend_async_resume_when(GC_G(gc_coroutine), &scope->event, true, gc_scope_callback, NULL))) {
+	if (UNEXPECTED(!zend_async_resume_when(GC_G(gc_coroutine), &scope->event, false, gc_scope_callback, NULL))) {
 		return false;
 	}
 
