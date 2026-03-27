@@ -108,7 +108,9 @@
 
 #if ZEND_DEBUG
 # ifdef HAVE_LIBBACKTRACE
+BEGIN_EXTERN_C()
 ZEND_API void zend_print_backtrace_ex(const char *msg, const char *file, int line);
+END_EXTERN_C()
 #  define ZEND_PRINT_BACKTRACE(msg) zend_print_backtrace_ex(msg, __FILE__, __LINE__)
 #  define ZEND_ASSERT(c) do { \
 	if (__builtin_expect(!(c), 0)) { \
