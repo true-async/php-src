@@ -862,6 +862,24 @@ AS_VAR_IF([PHP_DEBUG_ASSERTIONS], [yes], [
   CXXFLAGS="$CXXFLAGS -UNDEBUG"
 ])
 
+dnl libbacktrace for C backtraces in debug builds (ZEND_ASSERT, exception traces).
+AS_VAR_IF([ZEND_DEBUG], [yes], [
+  PKG_CHECK_MODULES([LIBBACKTRACE], [libbacktrace], [
+    PHP_EVAL_INCLINE([$LIBBACKTRACE_CFLAGS])
+    PHP_EVAL_LIBLINE([$LIBBACKTRACE_LIBS], [])
+    AC_DEFINE([HAVE_LIBBACKTRACE], [1],
+      [Define to 1 if libbacktrace is available for C backtrace support.])
+  ], [
+    AC_CHECK_LIB([backtrace], [backtrace_create_state], [
+      EXTRA_LIBS="$EXTRA_LIBS -lbacktrace"
+      AC_DEFINE([HAVE_LIBBACKTRACE], [1],
+        [Define to 1 if libbacktrace is available for C backtrace support.])
+    ], [
+      AC_MSG_WARN([libbacktrace not found. C backtraces in ZEND_ASSERT and exception traces will be disabled.])
+    ])
+  ])
+])
+
 AC_ARG_ENABLE([zts],
   [AS_HELP_STRING([--enable-zts],
     [Enable thread safety])],

@@ -18,6 +18,9 @@
 */
 
 #include "zend.h"
+#if ZEND_DEBUG && defined(HAVE_LIBBACKTRACE)
+# include <backtrace.h>
+#endif
 #include "zend_extensions.h"
 #include "zend_modules.h"
 #include "zend_constants.h"
@@ -273,6 +276,7 @@ ZEND_INI_BEGIN()
 	STD_ZEND_INI_BOOLEAN("zend.signal_check", SIGNAL_CHECK_DEFAULT, ZEND_INI_SYSTEM, OnUpdateBool, check, zend_signal_globals_t, zend_signal_globals)
 #endif
 	STD_ZEND_INI_BOOLEAN("zend.exception_ignore_args",	"0",	ZEND_INI_ALL,		OnUpdateBool, exception_ignore_args, zend_executor_globals, executor_globals)
+	STD_ZEND_INI_BOOLEAN("zend.exception_c_backtrace",	"0",	ZEND_INI_ALL,		OnUpdateBool, exception_c_backtrace, zend_executor_globals, executor_globals)
 	STD_ZEND_INI_ENTRY("zend.exception_string_param_max_len",	"15",	ZEND_INI_ALL,	OnSetExceptionStringParamMaxLen,	exception_string_param_max_len,		zend_executor_globals,	executor_globals)
 	STD_ZEND_INI_ENTRY("fiber.stack_size",		NULL,			ZEND_INI_ALL,		OnUpdateFiberStackSize,		fiber_stack_size,	zend_executor_globals, 		executor_globals)
 #ifdef ZEND_CHECK_STACK_LIMIT
@@ -2145,3 +2149,91 @@ ZEND_API void zend_alloc_ce_cache(zend_string *type_name)
 	GC_ADD_FLAGS(type_name, IS_STR_CLASS_NAME_MAP_PTR);
 	GC_SET_REFCOUNT(type_name, ret);
 }
+
+#if ZEND_DEBUG && defined(HAVE_LIBBACKTRACE)
+
+static struct backtrace_state *zend_bt_state = NULL;
+
+static void zend_bt_error_cb(void *data, const char *msg, int errnum)
+{
+	(void)data; (void)errnum;
+	fprintf(stderr, "  [backtrace error: %s]\n", msg);
+}
+
+static int zend_bt_frame_cb(void *data, uintptr_t pc,
+	const char *filename, int lineno, const char *function)
+{
+	int *frame = (int *)data;
+	const char *C = "\033[36m";
+	const char *D = "\033[2m";
+	const char *B = "\033[1m";
+	const char *N = "\033[0m";
+
+	if (function) {
+		fprintf(stderr, "  %s#%-2d%s %s%s%s  %s%s:%d%s\n",
+			C, (*frame)++, N,
+			B, function, N,
+			D, filename ? filename : "??", lineno, N);
+	} else {
+		fprintf(stderr, "  %s#%-2d%s 0x%lx  %s%s:%d%s\n",
+			C, (*frame)++, N,
+			(unsigned long)pc,
+			D, filename ? filename : "??", lineno, N);
+	}
+	return 0;
+}
+
+ZEND_API void zend_print_backtrace_ex(const char *msg, const char *file, int line)
+{
+	const char *R = "\033[31m";
+	const char *Y = "\033[33m";
+	const char *B = "\033[1m";
+	const char *N = "\033[0m";
+	const char *D = "\033[2m";
+	const char *C = "\033[36m";
+
+	fprintf(stderr, "\n%s%s>>> %s%s\n", B, R, msg, N);
+	fprintf(stderr, "%s    at %s:%d%s\n", D, file, line, N);
+
+	/* C backtrace via libbacktrace (DWARF) */
+	if (zend_bt_state == NULL) {
+		zend_bt_state = backtrace_create_state(NULL, 1, zend_bt_error_cb, NULL);
+	}
+
+	fprintf(stderr, "\n%s%s--- C backtrace ---%s\n", B, Y, N);
+	if (zend_bt_state) {
+		int frame = 0;
+		backtrace_full(zend_bt_state, 1, zend_bt_frame_cb, zend_bt_error_cb, &frame);
+	}
+
+	/* PHP backtrace */
+	zend_execute_data *ex = EG(current_execute_data);
+	if (ex) {
+		int frame = 0;
+		fprintf(stderr, "\n%s%s--- PHP backtrace ---%s\n", B, Y, N);
+		while (ex) {
+			if (ex->func && ZEND_USER_CODE(ex->func->type)) {
+				const char *fname = ex->func->common.function_name
+					? ZSTR_VAL(ex->func->common.function_name) : "{main}";
+				const char *cls = ex->func->common.scope
+					? ZSTR_VAL(ex->func->common.scope->name) : NULL;
+				fprintf(stderr, "  %s#%-2d%s %s%s:%d%s %s%s%s%s()%s\n",
+					C, frame++, N,
+					D, ZSTR_VAL(ex->func->op_array.filename),
+					ex->opline ? (int)ex->opline->lineno : 0, N,
+					B, cls ? cls : "", cls ? "::" : "", fname, N);
+			} else if (ex->func && ex->func->common.function_name) {
+				const char *cls = ex->func->common.scope
+					? ZSTR_VAL(ex->func->common.scope->name) : NULL;
+				fprintf(stderr, "  %s#%-2d%s %s[internal]%s %s%s%s%s()%s\n",
+					C, frame++, N,
+					D, N,
+					B, cls ? cls : "", cls ? "::" : "",
+					ZSTR_VAL(ex->func->common.function_name), N);
+			}
+			ex = ex->prev_execute_data;
+		}
+	}
+	fprintf(stderr, "\n");
+}
+#endif

@@ -1200,6 +1200,18 @@ typedef enum {
 			|| ((waker)->status != ZEND_ASYNC_WAKER_QUEUED \
 					&& (waker)->status != ZEND_ASYNC_WAKER_IGNORED))
 
+/* Fixed-size trigger for inline storage (capacity=0 means inline, length=0 means unused).
+ * Binary-compatible with zend_async_waker_trigger_t — same field layout (length, capacity, event,
+ * data[]) at identical offsets, safe to cast to zend_async_waker_trigger_t*. */
+typedef struct {
+	uint32_t length;
+	uint32_t capacity; /* always 0 for inline triggers */
+	zend_async_event_t *event;
+	zend_async_event_callback_t *data[1];
+} zend_async_waker_inline_trigger_t;
+
+#define ZEND_ASYNC_WAKER_INLINE_SLOTS 2
+
 struct _zend_async_waker_s {
 	/* The waker status. */
 	ZEND_ASYNC_WAKER_STATUS status;
@@ -1218,6 +1230,10 @@ struct _zend_async_waker_s {
 	uint32_t lineno;
 	/* The waker destructor. */
 	zend_async_waker_dtor dtor;
+	/* Inline storage for triggers (capacity=0, length=0 means free) */
+	zend_async_waker_inline_trigger_t inline_triggers[ZEND_ASYNC_WAKER_INLINE_SLOTS];
+	/* Inline storage for coroutine event callbacks (base.callback=NULL means free) */
+	zend_coroutine_event_callback_t inline_callbacks[ZEND_ASYNC_WAKER_INLINE_SLOTS];
 };
 
 #define ZEND_ASYNC_WAKER_WAITING(waker) ((waker)->status < ZEND_ASYNC_WAKER_RESULT)
