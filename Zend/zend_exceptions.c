@@ -174,6 +174,10 @@ ZEND_API ZEND_COLD void zend_throw_exception_internal(zend_object *exception) /*
 #endif /* HAVE_DTRACE */
 
 	if (exception != NULL) {
+		if (EG(exception_c_backtrace)) {
+			ZEND_PRINT_BACKTRACE(ZSTR_VAL(exception->ce->name));
+		}
+
 		const zend_object *previous = EG(exception);
 		if (previous && zend_is_unwind_exit(previous)) {
 			/* Don't replace unwinding exception with different exception. */
