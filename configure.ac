@@ -870,12 +870,16 @@ AS_VAR_IF([ZEND_DEBUG], [yes], [
     AC_DEFINE([HAVE_LIBBACKTRACE], [1],
       [Define to 1 if libbacktrace is available for C backtrace support.])
   ], [
-    AC_CHECK_LIB([backtrace], [backtrace_create_state], [
-      EXTRA_LIBS="$EXTRA_LIBS -lbacktrace"
-      AC_DEFINE([HAVE_LIBBACKTRACE], [1],
-        [Define to 1 if libbacktrace is available for C backtrace support.])
+    AC_CHECK_HEADER([backtrace.h], [
+      AC_CHECK_LIB([backtrace], [backtrace_create_state], [
+        EXTRA_LIBS="$EXTRA_LIBS -lbacktrace"
+        AC_DEFINE([HAVE_LIBBACKTRACE], [1],
+          [Define to 1 if libbacktrace is available for C backtrace support.])
+      ], [
+        AC_MSG_WARN([libbacktrace library not found. C backtraces will be disabled.])
+      ])
     ], [
-      AC_MSG_WARN([libbacktrace not found. C backtraces in ZEND_ASSERT and exception traces will be disabled.])
+      AC_MSG_WARN([backtrace.h not found. C backtraces in ZEND_ASSERT and exception traces will be disabled.])
     ])
   ])
 ])
