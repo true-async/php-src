@@ -1739,14 +1739,15 @@ static void dbh_free(pdo_dbh_t *dbh, bool free_persistent)
 {
 	int i;
 
-	/* Destroy connection pool first */
-	pdo_pool_destroy(dbh);
-
+	/* Release cached query statement before pool — it may hold a pooled_conn pointer */
 	if (dbh->query_stmt) {
 		OBJ_RELEASE(dbh->query_stmt_obj);
 		dbh->query_stmt_obj = NULL;
 		dbh->query_stmt = NULL;
 	}
+
+	/* Destroy connection pool */
+	pdo_pool_destroy(dbh);
 
 	if (dbh->is_persistent) {
 #if ZEND_DEBUG

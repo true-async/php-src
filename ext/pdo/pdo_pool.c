@@ -290,7 +290,7 @@ void pdo_pool_destroy(pdo_dbh_t *dbh)
 		dbh->pool_wrapper = NULL;
 	}
 
-	/* Step 3: Close and dispose the pool via event lifecycle */
+	/* Step 4: Close and dispose the pool via event lifecycle */
 	if (dbh->pool) {
 		ZEND_ASYNC_POOL_CLOSE(dbh->pool);
 		ZEND_ASYNC_EVENT_RELEASE(&dbh->pool->event);
