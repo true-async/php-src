@@ -1596,7 +1596,12 @@ static zend_long async_wait_process(zend_process_t process_h, const zend_ulong t
 	pid_t wait_result = waitpid(process_h, &status, WNOHANG);
 
 	if (wait_result > 0) {
-		return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+		if (WIFEXITED(status)) {
+			return WEXITSTATUS(status);
+		} else if (WIFSIGNALED(status)) {
+			return -WTERMSIG(status);
+		}
+		return -1;
 	}
 
 	if (wait_result == -1 && errno == ECHILD) {
