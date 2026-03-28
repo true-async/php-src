@@ -1593,9 +1593,15 @@ static zend_long async_wait_process(zend_process_t process_h, const zend_ulong t
 	}
 #else
 	int status = 0;
+	pid_t wait_result = waitpid(process_h, &status, WNOHANG);
 
-	if (waitpid(process_h, &status, WNOHANG) > 0) {
+	if (wait_result > 0) {
 		return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+	}
+
+	if (wait_result == -1 && errno == ECHILD) {
+		/* Child was already reaped externally. Nothing left to wait for. */
+		return -1;
 	}
 #endif
 
