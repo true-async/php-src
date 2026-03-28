@@ -51,6 +51,7 @@ typedef struct {
 	pdo_dbh_t *dbh;                     /* master PDO handle that owns the pool, NULL if pool destroyed */
 	pdo_dbh_t *conn;                    /* active connection, NULL if released back to pool */
 	zend_ulong coro_key;                /* key in pool_bindings */
+	bool has_coro_callback;              /* true if registered with coroutine event */
 } pdo_pool_binding_t;
 
 /*
@@ -269,8 +270,13 @@ void pdo_pool_destroy(pdo_dbh_t *dbh)
 				binding->conn = NULL;
 			}
 
-			/* Invalidate so coroutine callback becomes a no-op */
-			binding->dbh = NULL;
+			if (!binding->has_coro_callback) {
+				/* No coroutine callback registered — free binding directly */
+				efree(binding);
+			} else {
+				/* Invalidate so coroutine callback becomes a no-op */
+				binding->dbh = NULL;
+			}
 		} ZEND_HASH_FOREACH_END();
 
 		zend_hash_destroy(dbh->pool_bindings);
@@ -363,6 +369,7 @@ pdo_dbh_t *pdo_pool_acquire_conn(pdo_dbh_t *dbh)
 	/* Register callback on coroutine — once, never removed */
 	if (coro != NULL) {
 		coro->event.add_callback(&coro->event, &binding->event);
+		binding->has_coro_callback = true;
 	}
 
 	return binding->conn;
