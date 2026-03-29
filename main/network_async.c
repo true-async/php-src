@@ -1268,7 +1268,7 @@ return_error:
 					zend_read_property_ex(EG(exception)->ce, EG(exception), zend_known_strings[ZEND_STR_MESSAGE], 0, &rv);
 
 			if (message != NULL && Z_TYPE_P(message) == IS_STRING) {
-				*error_string = Z_STR_P(message);
+				*error_string = zend_string_copy(Z_STR_P(message));
 			}
 		} else {
 			*error_string = php_socket_error_str(error);

@@ -877,7 +877,7 @@ PHPAPI php_socket_t php_network_accept_incoming_ex(php_socket_t srvsock,
 					zend_read_property_ex(EG(exception)->ce, EG(exception), zend_known_strings[ZEND_STR_MESSAGE], 0, &rv);
 
 			if (message != NULL && Z_TYPE_P(message) == IS_STRING) {
-				*error_string = Z_STR_P(message);
+				*error_string = zend_string_copy(Z_STR_P(message));
 			}
 		} else {
 			*error_string = php_socket_error_str(error);
