@@ -18,6 +18,9 @@
 */
 
 #include "zend.h"
+#if ZEND_DEBUG && defined(HAVE_LIBBACKTRACE)
+# include <backtrace.h>
+#endif
 #include "zend_extensions.h"
 #include "zend_modules.h"
 #include "zend_constants.h"
@@ -273,6 +276,7 @@ ZEND_INI_BEGIN()
 	STD_ZEND_INI_BOOLEAN("zend.signal_check", SIGNAL_CHECK_DEFAULT, ZEND_INI_SYSTEM, OnUpdateBool, check, zend_signal_globals_t, zend_signal_globals)
 #endif
 	STD_ZEND_INI_BOOLEAN("zend.exception_ignore_args",	"0",	ZEND_INI_ALL,		OnUpdateBool, exception_ignore_args, zend_executor_globals, executor_globals)
+	STD_ZEND_INI_BOOLEAN("zend.exception_c_backtrace",	"0",	ZEND_INI_ALL,		OnUpdateBool, exception_c_backtrace, zend_executor_globals, executor_globals)
 	STD_ZEND_INI_ENTRY("zend.exception_string_param_max_len",	"15",	ZEND_INI_ALL,	OnSetExceptionStringParamMaxLen,	exception_string_param_max_len,		zend_executor_globals,	executor_globals)
 	STD_ZEND_INI_ENTRY("fiber.stack_size",		NULL,			ZEND_INI_ALL,		OnUpdateFiberStackSize,		fiber_stack_size,	zend_executor_globals, 		executor_globals)
 #ifdef ZEND_CHECK_STACK_LIMIT
@@ -566,6 +570,7 @@ static void zend_print_zval_r_to_buf(smart_str *buf, zval *expr, int indent) /* 
 				zend_object *zobj = Z_OBJ_P(expr);
 				uint32_t *guard = zend_get_recursion_guard(zobj);
 				zend_string *class_name = Z_OBJ_HANDLER_P(expr, get_class_name)(zobj);
+				/* cut off on NULL byte ... class@anonymous */
 				smart_str_appends(buf, ZSTR_VAL(class_name));
 				zend_string_release_ex(class_name, 0);
 
@@ -833,8 +838,7 @@ static void executor_globals_ctor(zend_executor_globals *executor_globals) /* {{
 #endif
 	executor_globals->flags = EG_FLAGS_INITIAL;
 	executor_globals->record_errors = false;
-	executor_globals->num_errors = 0;
-	executor_globals->errors = NULL;
+	memset(&executor_globals->errors, 0, sizeof(executor_globals->errors));
 	executor_globals->filename_override = NULL;
 	executor_globals->lineno_override = -1;
 #ifdef ZEND_CHECK_STACK_LIMIT
@@ -1449,8 +1453,7 @@ ZEND_API ZEND_COLD void zend_error_zstr_at(
 	zend_stack delayed_oplines_stack;
 	int type = orig_type & E_ALL;
 	bool orig_record_errors;
-	uint32_t orig_num_errors;
-	zend_error_info **orig_errors;
+	zend_err_buf orig_errors_buf;
 	zend_result res;
 
 	/* If we're executing a function during SCCP, count any warnings that may be emitted,
@@ -1462,11 +1465,9 @@ ZEND_API ZEND_COLD void zend_error_zstr_at(
 	}
 
 	/* Emit any delayed error before handling fatal error */
-	if ((type & E_FATAL_ERRORS) && !(type & E_DONT_BAIL) && EG(num_errors)) {
-		uint32_t num_errors = EG(num_errors);
-		zend_error_info **errors = EG(errors);
-		EG(num_errors) = 0;
-		EG(errors) = NULL;
+	if ((type & E_FATAL_ERRORS) && !(type & E_DONT_BAIL) && EG(errors).size) {
+		zend_err_buf errors_buf = EG(errors);
+		EG(errors).size = 0;
 
 		bool orig_record_errors = EG(record_errors);
 		EG(record_errors) = false;
@@ -1476,12 +1477,11 @@ ZEND_API ZEND_COLD void zend_error_zstr_at(
 		int orig_user_error_handler_error_reporting = EG(user_error_handler_error_reporting);
 		EG(user_error_handler_error_reporting) = 0;
 
-		zend_emit_recorded_errors_ex(num_errors, errors);
+		zend_emit_recorded_errors_ex(errors_buf.size, errors_buf.errors);
 
 		EG(user_error_handler_error_reporting) = orig_user_error_handler_error_reporting;
 		EG(record_errors) = orig_record_errors;
-		EG(num_errors) = num_errors;
-		EG(errors) = errors;
+		EG(errors) = errors_buf;
 	}
 
 	if (EG(record_errors)) {
@@ -1490,12 +1490,13 @@ ZEND_API ZEND_COLD void zend_error_zstr_at(
 		info->lineno = error_lineno;
 		info->filename = zend_string_copy(error_filename);
 		info->message = zend_string_copy(message);
-
-		/* This is very inefficient for a large number of errors.
-		 * Use pow2 realloc if it becomes a problem. */
-		EG(num_errors)++;
-		EG(errors) = erealloc(EG(errors), sizeof(zend_error_info*) * EG(num_errors));
-		EG(errors)[EG(num_errors)-1] = info;
+		EG(errors).size++;
+		if (EG(errors).size > EG(errors).capacity) {
+			uint32_t capacity = EG(errors).capacity ? EG(errors).capacity + (EG(errors).capacity >> 1) : 2;
+			EG(errors).errors = erealloc(EG(errors).errors, sizeof(zend_error_info *) * capacity);
+			EG(errors).capacity = capacity;
+		}
+		EG(errors).errors[EG(errors).size - 1] = info;
 
 		/* Do not process non-fatal recorded error */
 		if (!(type & E_FATAL_ERRORS) || (type & E_DONT_BAIL)) {
@@ -1578,17 +1579,15 @@ ZEND_API ZEND_COLD void zend_error_zstr_at(
 			}
 
 			orig_record_errors = EG(record_errors);
-			orig_num_errors = EG(num_errors);
-			orig_errors = EG(errors);
 			EG(record_errors) = false;
-			EG(num_errors) = 0;
-			EG(errors) = NULL;
+
+			orig_errors_buf = EG(errors);
+			memset(&EG(errors), 0, sizeof(EG(errors)));
 
 			res = call_user_function(CG(function_table), NULL, &orig_user_error_handler, &retval, 4, params);
 
 			EG(record_errors) = orig_record_errors;
-			EG(num_errors) = orig_num_errors;
-			EG(errors) = orig_errors;
+			EG(errors) = orig_errors_buf;
 
 			if (res == SUCCESS) {
 				if (Z_TYPE(retval) != IS_UNDEF) {
@@ -1783,8 +1782,7 @@ ZEND_API void zend_begin_record_errors(void)
 {
 	ZEND_ASSERT(!EG(record_errors) && "Error recording already enabled");
 	EG(record_errors) = true;
-	EG(num_errors) = 0;
-	EG(errors) = NULL;
+	EG(errors).size = 0;
 }
 
 ZEND_API void zend_emit_recorded_errors_ex(uint32_t num_errors, zend_error_info **errors)
@@ -1798,24 +1796,23 @@ ZEND_API void zend_emit_recorded_errors_ex(uint32_t num_errors, zend_error_info 
 ZEND_API void zend_emit_recorded_errors(void)
 {
 	EG(record_errors) = false;
-	zend_emit_recorded_errors_ex(EG(num_errors), EG(errors));
+	zend_emit_recorded_errors_ex(EG(errors).size, EG(errors).errors);
 }
 
 ZEND_API void zend_free_recorded_errors(void)
 {
-	if (!EG(num_errors)) {
+	if (!EG(errors).size) {
 		return;
 	}
 
-	for (uint32_t i = 0; i < EG(num_errors); i++) {
-		zend_error_info *info = EG(errors)[i];
+	for (uint32_t i = 0; i < EG(errors).size; i++) {
+		zend_error_info *info = EG(errors).errors[i];
 		zend_string_release(info->filename);
 		zend_string_release(info->message);
-		efree(info);
+		efree_size(info, sizeof(zend_error_info));
 	}
-	efree(EG(errors));
-	EG(errors) = NULL;
-	EG(num_errors) = 0;
+	efree(EG(errors).errors);
+	memset(&EG(errors), 0, sizeof(EG(errors)));
 }
 
 ZEND_API ZEND_COLD void zend_throw_error(zend_class_entry *exception_ce, const char *format, ...) /* {{{ */
@@ -2144,3 +2141,91 @@ ZEND_API void zend_alloc_ce_cache(zend_string *type_name)
 	GC_ADD_FLAGS(type_name, IS_STR_CLASS_NAME_MAP_PTR);
 	GC_SET_REFCOUNT(type_name, ret);
 }
+
+#if ZEND_DEBUG && defined(HAVE_LIBBACKTRACE)
+
+static struct backtrace_state *zend_bt_state = NULL;
+
+static void zend_bt_error_cb(void *data, const char *msg, int errnum)
+{
+	(void)data; (void)errnum;
+	fprintf(stderr, "  [backtrace error: %s]\n", msg);
+}
+
+static int zend_bt_frame_cb(void *data, uintptr_t pc,
+	const char *filename, int lineno, const char *function)
+{
+	int *frame = (int *)data;
+	const char *C = "\033[36m";
+	const char *D = "\033[2m";
+	const char *B = "\033[1m";
+	const char *N = "\033[0m";
+
+	if (function) {
+		fprintf(stderr, "  %s#%-2d%s %s%s%s  %s%s:%d%s\n",
+			C, (*frame)++, N,
+			B, function, N,
+			D, filename ? filename : "??", lineno, N);
+	} else {
+		fprintf(stderr, "  %s#%-2d%s 0x%lx  %s%s:%d%s\n",
+			C, (*frame)++, N,
+			(unsigned long)pc,
+			D, filename ? filename : "??", lineno, N);
+	}
+	return 0;
+}
+
+ZEND_API void zend_print_backtrace_ex(const char *msg, const char *file, int line)
+{
+	const char *R = "\033[31m";
+	const char *Y = "\033[33m";
+	const char *B = "\033[1m";
+	const char *N = "\033[0m";
+	const char *D = "\033[2m";
+	const char *C = "\033[36m";
+
+	fprintf(stderr, "\n%s%s>>> %s%s\n", B, R, msg, N);
+	fprintf(stderr, "%s    at %s:%d%s\n", D, file, line, N);
+
+	/* C backtrace via libbacktrace (DWARF) */
+	if (zend_bt_state == NULL) {
+		zend_bt_state = backtrace_create_state(NULL, 1, zend_bt_error_cb, NULL);
+	}
+
+	fprintf(stderr, "\n%s%s--- C backtrace ---%s\n", B, Y, N);
+	if (zend_bt_state) {
+		int frame = 0;
+		backtrace_full(zend_bt_state, 1, zend_bt_frame_cb, zend_bt_error_cb, &frame);
+	}
+
+	/* PHP backtrace */
+	zend_execute_data *ex = EG(current_execute_data);
+	if (ex) {
+		int frame = 0;
+		fprintf(stderr, "\n%s%s--- PHP backtrace ---%s\n", B, Y, N);
+		while (ex) {
+			if (ex->func && ZEND_USER_CODE(ex->func->type)) {
+				const char *fname = ex->func->common.function_name
+					? ZSTR_VAL(ex->func->common.function_name) : "{main}";
+				const char *cls = ex->func->common.scope
+					? ZSTR_VAL(ex->func->common.scope->name) : NULL;
+				fprintf(stderr, "  %s#%-2d%s %s%s:%d%s %s%s%s%s()%s\n",
+					C, frame++, N,
+					D, ZSTR_VAL(ex->func->op_array.filename),
+					ex->opline ? (int)ex->opline->lineno : 0, N,
+					B, cls ? cls : "", cls ? "::" : "", fname, N);
+			} else if (ex->func && ex->func->common.function_name) {
+				const char *cls = ex->func->common.scope
+					? ZSTR_VAL(ex->func->common.scope->name) : NULL;
+				fprintf(stderr, "  %s#%-2d%s %s[internal]%s %s%s%s%s()%s\n",
+					C, frame++, N,
+					D, N,
+					B, cls ? cls : "", cls ? "::" : "",
+					ZSTR_VAL(ex->func->common.function_name), N);
+			}
+			ex = ex->prev_execute_data;
+		}
+	}
+	fprintf(stderr, "\n");
+}
+#endif

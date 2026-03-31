@@ -174,6 +174,10 @@ ZEND_API ZEND_COLD void zend_throw_exception_internal(zend_object *exception) /*
 #endif /* HAVE_DTRACE */
 
 	if (exception != NULL) {
+		if (EG(exception_c_backtrace)) {
+			ZEND_PRINT_BACKTRACE(ZSTR_VAL(exception->ce->name));
+		}
+
 		const zend_object *previous = EG(exception);
 		if (previous && zend_is_unwind_exit(previous)) {
 			/* Don't replace unwinding exception with different exception. */
@@ -505,12 +509,12 @@ ZEND_METHOD(ErrorException, getSeverity)
 #define TRACE_APPEND_KEY(key) do {                                          \
 		tmp = zend_hash_find(ht, key);                                      \
 		if (tmp) {                                                          \
-			if (Z_TYPE_P(tmp) != IS_STRING) {                               \
+			if (UNEXPECTED(Z_TYPE_P(tmp) != IS_STRING)) {                   \
 				zend_error(E_WARNING, "Value for %s is not a string",       \
 					ZSTR_VAL(key));                                         \
 				smart_str_appends(str, "[unknown]");                        \
 			} else {                                                        \
-				smart_str_appends(str, Z_STRVAL_P(tmp));                    \
+				smart_str_append(str, Z_STR_P(tmp));                        \
 			}                                                               \
 		} \
 	} while (0)
@@ -540,6 +544,7 @@ static void _build_trace_args(zval *arg, smart_str *str) /* {{{ */
 			case IS_OBJECT: {
 				zend_string *class_name = Z_OBJ_HANDLER_P(arg, get_class_name)(Z_OBJ_P(arg));
 				smart_str_appends(str, "Object(");
+				/* cut off on NULL byte ... class@anonymous */
 				smart_str_appends(str, ZSTR_VAL(class_name));
 				smart_str_appends(str, "), ");
 				zend_string_release_ex(class_name, 0);
@@ -581,7 +586,16 @@ static void _build_trace_string(smart_str *str, const HashTable *ht, uint32_t nu
 	} else {
 		smart_str_appends(str, "[internal function]: ");
 	}
-	TRACE_APPEND_KEY(ZSTR_KNOWN(ZEND_STR_CLASS));
+	const zval *class_name = zend_hash_find(ht, ZSTR_KNOWN(ZEND_STR_CLASS));
+	if (class_name) {
+		if (UNEXPECTED(Z_TYPE_P(class_name) != IS_STRING)) {
+			zend_error(E_WARNING, "Value for class is not a string");
+			smart_str_appends(str, "[unknown]");
+		} else {
+			/* cut off on NULL byte ... class@anonymous */
+			smart_str_appends(str, Z_STRVAL_P(class_name));
+		}
+	}
 	TRACE_APPEND_KEY(ZSTR_KNOWN(ZEND_STR_TYPE));
 	TRACE_APPEND_KEY(ZSTR_KNOWN(ZEND_STR_FUNCTION));
 	smart_str_appendc(str, '(');

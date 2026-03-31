@@ -151,7 +151,7 @@ static bool php_zip_extract_file(struct zip * za, char *dest, const char *file, 
 	new_state.cwd[0] = '\0';
 	new_state.cwd_length = 0;
 
-	/* Clean/normlize the path and then transform any path (absolute or relative)
+	/* Clean/normalize the path and then transform any path (absolute or relative)
 		 to a path relative to cwd (../../mydir/foo.txt > mydir/foo.txt)
 	 */
 	virtual_file_ex(&new_state, file, NULL, CWD_EXPAND);
@@ -1416,12 +1416,10 @@ static void php_zip_entry_get_info(INTERNAL_FUNCTION_PARAMETERS, int opt) /* {{{
 					RETURN_STRING("imploded");
 				case 7:
 					RETURN_STRING("tokenized");
-					break;
 				case 8:
 					RETURN_STRING("deflated");
 				case 9:
 					RETURN_STRING("deflatedX");
-					break;
 				case 10:
 					RETURN_STRING("implodedX");
 				default:
@@ -1591,9 +1589,7 @@ PHP_METHOD(ZipArchive, close)
 	struct zip *intern;
 	zval *self = ZEND_THIS;
 
-	if (zend_parse_parameters_none() == FAILURE) {
-		RETURN_THROWS();
-	}
+	ZEND_PARSE_PARAMETERS_NONE();
 
 	ZIP_FROM_OBJECT(intern, self);
 
@@ -1608,9 +1604,7 @@ PHP_METHOD(ZipArchive, count)
 	zval *self = ZEND_THIS;
 	zip_int64_t num;
 
-	if (zend_parse_parameters_none() == FAILURE) {
-		RETURN_THROWS();
-	}
+	ZEND_PARSE_PARAMETERS_NONE();
 
 	ZIP_FROM_OBJECT(intern, self);
 
@@ -1625,9 +1619,7 @@ PHP_METHOD(ZipArchive, clearError)
 	zval *self = ZEND_THIS;
 	ze_zip_object *ze_obj;
 
-	if (zend_parse_parameters_none() == FAILURE) {
-		RETURN_THROWS();
-	}
+	ZEND_PARSE_PARAMETERS_NONE();
 
 	ze_obj = Z_ZIP_P(self); /* not ZIP_FROM_OBJECT as we can use saved error after close */
 	if (ze_obj->za) {
@@ -1645,9 +1637,7 @@ PHP_METHOD(ZipArchive, getStatusString)
 	zval *self = ZEND_THIS;
 	ze_zip_object *ze_obj;
 
-	if (zend_parse_parameters_none() == FAILURE) {
-		RETURN_THROWS();
-	}
+	ZEND_PARSE_PARAMETERS_NONE();
 
 	ze_obj = Z_ZIP_P(self); /* not ZIP_FROM_OBJECT as we can use saved error after close */
 
@@ -2691,9 +2681,7 @@ PHP_METHOD(ZipArchive, unchangeAll)
 	struct zip *intern;
 	zval *self = ZEND_THIS;
 
-	if (zend_parse_parameters_none() == FAILURE) {
-		RETURN_THROWS();
-	}
+	ZEND_PARSE_PARAMETERS_NONE();
 
 	ZIP_FROM_OBJECT(intern, self);
 
@@ -2707,9 +2695,7 @@ PHP_METHOD(ZipArchive, unchangeArchive)
 	struct zip *intern;
 	zval *self = ZEND_THIS;
 
-	if (zend_parse_parameters_none() == FAILURE) {
-		RETURN_THROWS();
-	}
+	ZEND_PARSE_PARAMETERS_NONE();
 
 	ZIP_FROM_OBJECT(intern, self);
 

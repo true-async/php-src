@@ -525,7 +525,7 @@ struct _pdo_dbh_t {
 
 	/* Connection pool (requires async extension) */
 	zend_async_pool_t *pool;		/* internal pool, NULL if pooling disabled */
-	HashTable *pool_connections;	/* coroutine_id => pdo_dbh_t* (pinned for transactions) */
+	HashTable *pool_bindings;	/* coroutine_id => pdo_pool_binding_t* */
 	zend_object *pool_wrapper;		/* cached PHP Async\Pool object for getPool() */
 	uint32_t pool_slot_refcount;	/* number of statements borrowing this pooled connection */
 };

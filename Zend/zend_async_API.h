@@ -394,9 +394,9 @@ typedef int (*zend_async_exec_t)(zend_async_exec_mode exec_mode, const char *cmd
 		zval *return_buffer, zval *return_value, zval *std_error, const char *cwd, const char *env,
 		const zend_ulong timeout);
 
-typedef bool (*zend_async_queue_task_t)(zend_async_task_t *task);
-
 typedef void (*zend_async_task_run_t)(zend_async_task_t *task);
+typedef bool (*zend_async_queue_task_t)(zend_async_task_t *task);
+typedef zend_async_task_t *(*zend_async_new_task_t)(zend_async_task_run_t run, void *data, size_t extra_size);
 
 typedef void (*zend_async_microtask_handler_t)(zend_async_microtask_t *microtask);
 
@@ -1019,6 +1019,7 @@ struct _zend_async_listen_event_s {
 struct _zend_async_task_s {
 	zend_async_event_t base;
 	zend_async_task_run_t run;
+	void *data;
 };
 
 struct _zend_async_trigger_event_s {
@@ -1114,6 +1115,13 @@ struct _zend_async_scope_s {
 	((scope)->can_be_disposed((scope), true, false))
 #define ZEND_ASYNC_SCOPE_CAN_BE_DISPOSED(scope) \
 	((scope)->can_be_disposed((scope), true, true))
+
+#define ZEND_ASYNC_SCOPE_RELEASE(scope) do { \
+	if (ZEND_ASYNC_EVENT_REFCOUNT(&(scope)->event) > 1) { \
+		ZEND_ASYNC_EVENT_DEL_REF(&(scope)->event); \
+	} \
+	(scope)->try_to_dispose(scope); \
+} while (0)
 
 #define ZEND_ASYNC_SCOPE_F_CLOSED ZEND_ASYNC_EVENT_F_CLOSED /* scope was closed */
 #define ZEND_ASYNC_SCOPE_F_NO_FREE_MEMORY \
@@ -1239,6 +1247,18 @@ typedef enum {
 			|| ((waker)->status != ZEND_ASYNC_WAKER_QUEUED \
 					&& (waker)->status != ZEND_ASYNC_WAKER_IGNORED))
 
+/* Fixed-size trigger for inline storage (capacity=0 means inline, length=0 means unused).
+ * Binary-compatible with zend_async_waker_trigger_t — same field layout (length, capacity, event,
+ * data[]) at identical offsets, safe to cast to zend_async_waker_trigger_t*. */
+typedef struct {
+	uint32_t length;
+	uint32_t capacity; /* always 0 for inline triggers */
+	zend_async_event_t *event;
+	zend_async_event_callback_t *data[1];
+} zend_async_waker_inline_trigger_t;
+
+#define ZEND_ASYNC_WAKER_INLINE_SLOTS 2
+
 struct _zend_async_waker_s {
 	/* The waker status. */
 	ZEND_ASYNC_WAKER_STATUS status;
@@ -1257,6 +1277,10 @@ struct _zend_async_waker_s {
 	uint32_t lineno;
 	/* The waker destructor. */
 	zend_async_waker_dtor dtor;
+	/* Inline storage for triggers (capacity=0, length=0 means free) */
+	zend_async_waker_inline_trigger_t inline_triggers[ZEND_ASYNC_WAKER_INLINE_SLOTS];
+	/* Inline storage for coroutine event callbacks (base.callback=NULL means free) */
+	zend_coroutine_event_callback_t inline_callbacks[ZEND_ASYNC_WAKER_INLINE_SLOTS];
 };
 
 #define ZEND_ASYNC_WAKER_WAITING(waker) ((waker)->status < ZEND_ASYNC_WAKER_RESULT)
@@ -1851,6 +1875,7 @@ ZEND_API extern zend_async_waker_destroy_t zend_async_waker_destroy_fn;
 
 /* Thread pool API */
 ZEND_API bool zend_async_thread_pool_is_enabled(void);
+ZEND_API extern zend_async_new_task_t zend_async_new_task_fn;
 ZEND_API extern zend_async_queue_task_t zend_async_queue_task_fn;
 
 /* Trigger Event API */
@@ -1908,7 +1933,8 @@ ZEND_API bool zend_async_reactor_register(char *module, bool allow_override,
 		zend_async_exec_t exec_fn, zend_async_new_trigger_event_t new_trigger_event_fn);
 
 ZEND_API void zend_async_thread_pool_register(
-		char *module, bool allow_override, zend_async_queue_task_t queue_task_fn);
+		char *module, bool allow_override,
+		zend_async_new_task_t new_task_fn, zend_async_queue_task_t queue_task_fn);
 
 
 ZEND_API void zend_async_pool_api_register(
@@ -2176,6 +2202,8 @@ END_EXTERN_C()
 #define ZEND_ASYNC_EXEC(exec_mode, cmd, return_buffer, return_value, std_error, cwd, env, timeout) \
 	zend_async_exec_fn(exec_mode, cmd, return_buffer, return_value, std_error, cwd, env, timeout)
 
+#define ZEND_ASYNC_NEW_TASK(run, data) zend_async_new_task_fn((run), (data), 0)
+#define ZEND_ASYNC_NEW_TASK_EX(run, data, extra_size) zend_async_new_task_fn((run), (data), (extra_size))
 #define ZEND_ASYNC_QUEUE_TASK(task) zend_async_queue_task_fn(task)
 
 /* Trigger Event API Macros */

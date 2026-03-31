@@ -424,6 +424,15 @@ PDO_API void php_pdo_internal_construct_driver(INTERNAL_FUNCTION_PARAMETERS, zen
 			}
 		}
 
+		if (is_persistent && options && pdo_attr_lval(options, PDO_ATTR_POOL_ENABLED, 0)) {
+			if (hash_key) {
+				zend_string_release_ex(hash_key, false);
+			}
+			zend_throw_exception_ex(php_pdo_get_exception(), 0,
+				"PDO::ATTR_POOL_ENABLED cannot be used with PDO::ATTR_PERSISTENT");
+			RETURN_THROWS();
+		}
+
 		if (is_persistent) {
 			/* let's see if we have one cached.... */
 			if ((le = zend_hash_find_ptr(&EG(persistent_list), hash_key)) != NULL) {
@@ -502,15 +511,6 @@ PDO_API void php_pdo_internal_construct_driver(INTERNAL_FUNCTION_PARAMETERS, zen
 
 	/* Pool mode: skip creating a real connection for the template.
 	 * driver_data stays NULL — connections come from the pool on demand. */
-	if (options && pdo_attr_lval(options, PDO_ATTR_POOL_ENABLED, 0)) {
-		if (is_persistent) {
-			zend_throw_exception_ex(php_pdo_get_exception(), 0,
-				"PDO::ATTR_POOL_ENABLED cannot be used with PDO::ATTR_PERSISTENT");
-			zend_restore_error_handling(&zeh);
-			return;
-		}
-	}
-
 	if (!is_persistent && options
 		&& pdo_attr_lval(options, PDO_ATTR_POOL_ENABLED, 0)
 		&& driver->db_handle_init_methods) {
@@ -1739,14 +1739,15 @@ static void dbh_free(pdo_dbh_t *dbh, bool free_persistent)
 {
 	int i;
 
-	/* Destroy connection pool first */
-	pdo_pool_destroy(dbh);
-
+	/* Release cached query statement before pool — it may hold a pooled_conn pointer */
 	if (dbh->query_stmt) {
 		OBJ_RELEASE(dbh->query_stmt_obj);
 		dbh->query_stmt_obj = NULL;
 		dbh->query_stmt = NULL;
 	}
+
+	/* Destroy connection pool */
+	pdo_pool_destroy(dbh);
 
 	if (dbh->is_persistent) {
 #if ZEND_DEBUG

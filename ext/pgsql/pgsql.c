@@ -1391,7 +1391,6 @@ PHP_FUNCTION(pg_query)
 			PHP_PQ_ERROR("Query failed: %s", pgsql);
 			PQclear(pgsql_result);
 			RETURN_FALSE;
-			break;
 		case PGRES_COMMAND_OK: /* successful command that did not return rows */
 		default:
 			if (pgsql_result) {
@@ -1530,7 +1529,6 @@ PHP_FUNCTION(pg_query_params)
 			PHP_PQ_ERROR("Query failed: %s", pgsql);
 			PQclear(pgsql_result);
 			RETURN_FALSE;
-			break;
 		case PGRES_COMMAND_OK: /* successful command that did not return rows */
 		default:
 			if (pgsql_result) {
@@ -1616,7 +1614,6 @@ PHP_FUNCTION(pg_prepare)
 			PHP_PQ_ERROR("Query failed: %s", pgsql);
 			PQclear(pgsql_result);
 			RETURN_FALSE;
-			break;
 		case PGRES_COMMAND_OK: /* successful command that did not return rows */
 		default:
 			if (pgsql_result) {
@@ -1715,7 +1712,6 @@ PHP_FUNCTION(pg_execute)
 			PHP_PQ_ERROR("Query failed: %s", pgsql);
 			PQclear(pgsql_result);
 			RETURN_FALSE;
-			break;
 		case PGRES_COMMAND_OK: /* successful command that did not return rows */
 		default:
 			if (pgsql_result) {
@@ -1827,7 +1823,6 @@ PHP_FUNCTION(pg_last_notice)
 				zend_hash_clean(notices);
 			}
 			RETURN_TRUE;
-			break;
 		default:
 			zend_argument_value_error(2, "must be one of PGSQL_NOTICE_LAST, PGSQL_NOTICE_ALL, or PGSQL_NOTICE_CLEAR");
 			RETURN_THROWS();
@@ -1993,18 +1988,14 @@ static void php_pgsql_get_field_info(INTERNAL_FUNCTION_PARAMETERS, int entry_typ
 	switch (entry_type) {
 		case PHP_PG_FIELD_NAME:
 			RETURN_STRING(PQfname(pgsql_result, (int)field));
-			break;
 		case PHP_PG_FIELD_SIZE:
 			RETURN_LONG(PQfsize(pgsql_result, (int)field));
-			break;
 		case PHP_PG_FIELD_TYPE:
 			RETURN_STR(get_field_name(pg_result->conn, PQftype(pgsql_result, (int)field)));
-			break;
 		case PHP_PG_FIELD_TYPE_OID:
 
 			oid = PQftype(pgsql_result, (int)field);
 			PGSQL_RETURN_OID(oid);
-			break;
 		EMPTY_SWITCH_DEFAULT_CASE()
 	}
 }
@@ -3584,7 +3575,6 @@ PHP_FUNCTION(pg_copy_to)
 						case -2:
 							PHP_PQ_ERROR("getline failed: %s", pgsql);
 							RETURN_FALSE;
-							break;
 						default:
 							add_next_index_string(return_value, csv);
 							PQfreemem(csv);
@@ -3603,7 +3593,6 @@ PHP_FUNCTION(pg_copy_to)
 			PQclear(pgsql_result);
 			PHP_PQ_ERROR("Copy command failed: %s", pgsql);
 			RETURN_FALSE;
-			break;
 	}
 }
 /* }}} */
@@ -3734,12 +3723,10 @@ PHP_FUNCTION(pg_copy_from)
 				RETURN_FALSE;
 			}
 			RETURN_TRUE;
-			break;
 		default:
 			PQclear(pgsql_result);
 			PHP_PQ_ERROR("Copy command failed: %s", pgsql);
 			RETURN_FALSE;
-			break;
 	}
 }
 /* }}} */
@@ -4724,8 +4711,8 @@ PHP_FUNCTION(pg_flush)
 	}
 
 	switch (ret) {
-		case 0: RETURN_TRUE; break;
-		case 1: RETURN_LONG(0); break;
+		case 0: RETURN_TRUE;
+		case 1: RETURN_LONG(0);
 		default: RETURN_FALSE;
 	}
 }
@@ -5976,7 +5963,6 @@ PHP_FUNCTION(pg_insert)
 				PHP_PQ_ERROR("Query failed: %s", pg_link);
 				PQclear(pg_result);
 				RETURN_FALSE;
-				break;
 			case PGRES_COMMAND_OK: /* successful command that did not return rows */
 			default:
 				if (pg_result) {

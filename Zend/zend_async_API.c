@@ -245,6 +245,7 @@ zend_async_waker_destroy_t zend_async_waker_destroy_fn = zend_async_waker_destro
 
 static char *thread_pool_module_name = NULL;
 static char *pool_module_name = NULL;
+zend_async_new_task_t zend_async_new_task_fn = NULL;
 zend_async_queue_task_t zend_async_queue_task_fn = NULL;
 zend_async_thread_snapshot_create_t zend_async_thread_snapshot_create_fn = NULL;
 zend_async_thread_snapshot_destroy_t zend_async_thread_snapshot_destroy_fn = NULL;
@@ -501,7 +502,8 @@ ZEND_API bool zend_async_reactor_register(char *module, bool allow_override,
 }
 
 ZEND_API void zend_async_thread_pool_register(
-		char *module, bool allow_override, zend_async_queue_task_t queue_task_fn)
+		char *module, bool allow_override,
+		zend_async_new_task_t new_task_fn, zend_async_queue_task_t queue_task_fn)
 {
 	if (thread_pool_module_name != NULL && false == allow_override) {
 		zend_error(E_CORE_ERROR,
@@ -511,7 +513,13 @@ ZEND_API void zend_async_thread_pool_register(
 	}
 
 	thread_pool_module_name = module;
+	zend_async_new_task_fn = new_task_fn;
 	zend_async_queue_task_fn = queue_task_fn;
+}
+
+ZEND_API bool zend_async_thread_pool_is_enabled(void)
+{
+	return zend_async_queue_task_fn != NULL;
 }
 
 ZEND_API void zend_async_pool_api_register(
@@ -612,9 +620,20 @@ ZEND_API zend_coroutine_event_callback_t *zend_async_coroutine_callback_new(
 //////////////////////////////////////////////////////////////////////
 
 static zend_always_inline zend_async_waker_trigger_t *waker_trigger_create(
-		zend_async_event_t *event, uint32_t initial_capacity)
+		zend_async_waker_t *waker, zend_async_event_t *event, uint32_t initial_capacity)
 {
 	ZEND_ASSERT(initial_capacity > 0);
+
+	/* Try inline slot first (capacity==0, length==0 means free) */
+	if (EXPECTED(waker != NULL && initial_capacity <= 1)) {
+		for (uint32_t i = 0; i < ZEND_ASYNC_WAKER_INLINE_SLOTS; i++) {
+			if (waker->inline_triggers[i].length == 0 && waker->inline_triggers[i].event == NULL) {
+				waker->inline_triggers[i].event = event;
+				/* capacity stays 0 — marks as inline */
+				return (zend_async_waker_trigger_t *) &waker->inline_triggers[i];
+			}
+		}
+	}
 
 	// Ensure minimum capacity of 2
 	if (initial_capacity == 1) {
@@ -642,6 +661,36 @@ static zend_always_inline zend_async_waker_trigger_t *waker_trigger_create(
 static zend_always_inline zend_async_waker_trigger_t *waker_trigger_add_callback(
 		zend_async_waker_trigger_t *trigger, zend_async_event_callback_t *callback)
 {
+	if (EXPECTED(trigger->capacity == 0)) {
+		/* Inline trigger: single slot available */
+		if (trigger->length == 0) {
+			trigger->data[0] = callback;
+			trigger->length = 1;
+			return trigger;
+		}
+
+		/* Overflow: promote inline → heap with capacity 2 */
+		const uint32_t new_capacity = 2;
+#ifdef __cplusplus
+		const size_t total_size = sizeof(zend_async_waker_trigger_t)
+				+ (new_capacity - 1) * sizeof(zend_async_event_callback_t *);
+#else
+		const size_t total_size = sizeof(zend_async_waker_trigger_t)
+				+ new_capacity * sizeof(zend_async_event_callback_t *);
+#endif
+		zend_async_waker_trigger_t *heap_trigger = emalloc(total_size);
+		heap_trigger->length = 1;
+		heap_trigger->capacity = new_capacity;
+		heap_trigger->event = trigger->event;
+		heap_trigger->data[0] = trigger->data[0];
+
+		/* Free the inline slot */
+		trigger->length = 0;
+		trigger->event = NULL;
+
+		trigger = heap_trigger;
+	}
+
 	if (trigger->length >= trigger->capacity) {
 		uint32_t new_capacity = trigger->capacity * 2;
 		size_t total_size = sizeof(zend_async_waker_trigger_t)
@@ -686,8 +735,12 @@ static void waker_events_dtor(zval *item)
 	event->stop(event);
 	ZEND_ASYNC_EVENT_RELEASE(event);
 
-	// Free the entire trigger (includes flexible array member)
-	efree(trigger);
+	// capacity == 0 means inline trigger embedded in waker — do not free
+	if (trigger->capacity != 0) {
+		efree(trigger);
+	} else {
+		trigger->length = 0;
+	}
 }
 
 static void waker_triggered_events_dtor(zval *item)
@@ -757,6 +810,13 @@ ZEND_API void zend_async_waker_init(zend_async_waker_t *waker)
 	waker->dtor = NULL;
 	ZVAL_UNDEF(&waker->result);
 	zend_hash_init(&waker->events, 2, NULL, waker_events_dtor, 0);
+
+	for (uint32_t i = 0; i < ZEND_ASYNC_WAKER_INLINE_SLOTS; i++) {
+		waker->inline_triggers[i].length = 0;
+		waker->inline_triggers[i].capacity = 0;
+		waker->inline_triggers[i].event = NULL;
+		waker->inline_callbacks[i].base.callback = NULL;
+	}
 }
 
 /**
@@ -797,6 +857,11 @@ ZEND_API void zend_async_waker_clean(zend_coroutine_t *coroutine)
 	zval_ptr_dtor(&waker->result);
 	ZVAL_UNDEF(&waker->result);
 	zend_hash_clean(&waker->events);
+
+	/* Reset inline callback slots for reuse */
+	for (uint32_t i = 0; i < ZEND_ASYNC_WAKER_INLINE_SLOTS; i++) {
+		waker->inline_callbacks[i].base.callback = NULL;
+	}
 }
 
 static void zend_async_waker_destroy_default(zend_coroutine_t *coroutine)
@@ -841,23 +906,9 @@ static void zend_async_waker_destroy_default(zend_coroutine_t *coroutine)
 	zend_hash_destroy(&waker->events);
 }
 
-void coroutine_event_callback_dispose(
+static void coroutine_event_callback_dispose_common(
 		zend_async_event_callback_t *callback, zend_async_event_t *event)
 {
-	if (callback->ref_count > 1) {
-		// If the callback is still referenced, we cannot dispose it yet
-		callback->ref_count--;
-		return;
-	} else if (UNEXPECTED(callback->ref_count == 0)) {
-		// Circular free from destructor
-		return;
-	} else {
-		ZEND_ASSERT(callback->ref_count > 0
-				&& "Callback ref_count must be greater than 0. Memory corruption detected.");
-	}
-
-	callback->ref_count = 0;
-
 	const zend_coroutine_t *coroutine = ((zend_coroutine_event_callback_t *) callback)->coroutine;
 
 	if (EXPECTED(coroutine != NULL)) {
@@ -900,8 +951,45 @@ void coroutine_event_callback_dispose(
 	if (event != NULL && event->del_callback != NULL) {
 		event->del_callback(event, callback);
 	}
+}
 
+void coroutine_event_callback_dispose(
+		zend_async_event_callback_t *callback, zend_async_event_t *event)
+{
+	if (callback->ref_count > 1) {
+		callback->ref_count--;
+		return;
+	} else if (UNEXPECTED(callback->ref_count == 0)) {
+		// Circular free from destructor
+		return;
+	} else {
+		ZEND_ASSERT(callback->ref_count > 0
+				&& "Callback ref_count must be greater than 0. Memory corruption detected.");
+	}
+
+	callback->ref_count = 0;
+	coroutine_event_callback_dispose_common(callback, event);
 	efree(callback);
+}
+
+/* Inline version: same logic but resets slot instead of efree */
+static void coroutine_event_callback_dispose_inline(
+		zend_async_event_callback_t *callback, zend_async_event_t *event)
+{
+	if (callback->ref_count > 1) {
+		callback->ref_count--;
+		return;
+	} else if (UNEXPECTED(callback->ref_count == 0)) {
+		return;
+	} else {
+		ZEND_ASSERT(callback->ref_count > 0
+				&& "Callback ref_count must be greater than 0. Memory corruption detected.");
+	}
+
+	callback->ref_count = 0;
+	coroutine_event_callback_dispose_common(callback, event);
+	/* Mark inline slot as free */
+	callback->callback = NULL;
 }
 
 ZEND_API void zend_async_waker_add_triggered_event(
@@ -957,10 +1045,23 @@ ZEND_API bool zend_async_resume_when(zend_coroutine_t *coroutine, zend_async_eve
 	}
 
 	if (event_callback == NULL) {
+		/* Try inline callback slot first */
+		if (EXPECTED(coroutine->waker != NULL)) {
+			for (uint32_t i = 0; i < ZEND_ASYNC_WAKER_INLINE_SLOTS; i++) {
+				if (coroutine->waker->inline_callbacks[i].base.callback == NULL) {
+					event_callback = &coroutine->waker->inline_callbacks[i];
+					event_callback->base.dispose = coroutine_event_callback_dispose_inline;
+					goto callback_init;
+				}
+			}
+		}
+
 		event_callback = emalloc(sizeof(zend_coroutine_event_callback_t));
+		event_callback->base.dispose = coroutine_event_callback_dispose;
+
+callback_init:
 		event_callback->base.ref_count = 0;
 		event_callback->base.callback = callback;
-		event_callback->base.dispose = coroutine_event_callback_dispose;
 		event_callback->event = event;
 		callback_should_dispose = true;
 	} else if (event_callback->base.ref_count == 0) {
@@ -1009,14 +1110,19 @@ ZEND_API bool zend_async_resume_when(zend_coroutine_t *coroutine, zend_async_eve
 			Z_PTR_P(trigger_zval) = trigger;
 		} else {
 			// New event, create new trigger
-			trigger = waker_trigger_create(event, 1);
+			trigger = waker_trigger_create(coroutine->waker, event, 1);
 			trigger = waker_trigger_add_callback(trigger, &event_callback->base);
 
 			if (UNEXPECTED(zend_hash_index_add_ptr(
 								   &coroutine->waker->events, ptr_to_index(event), trigger)
 						== NULL)) {
 				// This should not happen with new events, but handle gracefully
-				efree(trigger);
+				if (trigger->capacity != 0) {
+					efree(trigger);
+				} else {
+					trigger->length = 0;
+					trigger->event = NULL;
+				}
 
 				event_callback->coroutine = NULL;
 				if (!event->del_callback(event, &event_callback->base)) {

@@ -1974,13 +1974,15 @@ static zend_never_inline void gc_call_destructors_in_fiber(void)
 	GC_G(dtor_idx) = GC_FIRST_ROOT;
 	GC_G(dtor_end) = GC_G(first_unused);
 
+	zend_object *exception = NULL;
+	remember_prev_exception(&exception);
+
 	if (UNEXPECTED(!fiber)) {
 		fiber = gc_create_destructor_fiber();
 	} else {
 		zend_fiber_resume(fiber, NULL, NULL);
 	}
 
-	zend_object *exception = NULL;
 	remember_prev_exception(&exception);
 
 	for (;;) {
@@ -2153,7 +2155,7 @@ static zend_never_inline bool gc_call_destructors_in_coroutine(void)
 	ZEND_ASSERT(scope != NULL && "destructor scope not initialized");
 
 	// Waiting for the completion of a Scope with all destructor coroutines.
-	if (UNEXPECTED(!zend_async_resume_when(GC_G(gc_coroutine), &scope->event, true, gc_scope_callback, NULL))) {
+	if (UNEXPECTED(!zend_async_resume_when(GC_G(gc_coroutine), &scope->event, false, gc_scope_callback, NULL))) {
 		return false;
 	}
 

@@ -42,6 +42,19 @@ static zend_always_inline zend_ulong pdo_pool_coro_key(zend_coroutine_t *coro)
 }
 
 /*
+ * Binding: long-lived association between a pool and a coroutine.
+ * Created once on first acquire, reused for all subsequent acquire/release
+ * cycles within the same coroutine. Freed when the coroutine finalizes.
+ */
+typedef struct {
+	zend_async_event_callback_t event;  /* Must be first for event callback cast */
+	pdo_dbh_t *dbh;                     /* master PDO handle that owns the pool, NULL if pool destroyed */
+	pdo_dbh_t *conn;                    /* active connection, NULL if released back to pool */
+	zend_ulong coro_key;                /* key in pool_bindings */
+	bool has_coro_callback;              /* true if registered with coroutine event */
+} pdo_pool_binding_t;
+
+/*
  * Pool internal handlers
  */
 
@@ -81,9 +94,6 @@ static bool pdo_pool_factory(zend_async_pool_t *pool, zval *result)
 	conn->driver = dbh->driver;
 	conn->auto_commit = dbh->auto_commit;
 
-	// TODO: This code could be optimized in the future to avoid copying data over and over again.
-	// For now, it is implemented this way to minimize changes.
-
 	/* Copy template strings — drivers may mutate, reallocate, or overwrite
 	 * these fields during factory (e.g. PgSQL replaces ';' with ' ',
 	 * MySQL allocates username from DSN, ODBC rebuilds the whole string). */
@@ -110,7 +120,7 @@ static bool pdo_pool_factory(zend_async_pool_t *pool, zval *result)
 /* Destructor: closes a connection */
 static void pdo_pool_destructor(zend_async_pool_t *pool, zval *resource)
 {
-	pdo_dbh_t *conn = Z_PTR_P(resource);
+	pdo_dbh_t *const conn = Z_PTR_P(resource);
 
 	if (UNEXPECTED(conn == NULL)) {
 		return;
@@ -122,7 +132,7 @@ static void pdo_pool_destructor(zend_async_pool_t *pool, zval *resource)
 /* Healthcheck: verifies connection is still alive */
 static bool pdo_pool_healthcheck(zend_async_pool_t *pool, zval *resource)
 {
-	pdo_dbh_t *conn = Z_PTR_P(resource);
+	pdo_dbh_t *const conn = Z_PTR_P(resource);
 
 	if (UNEXPECTED(conn == NULL || conn->methods == NULL)) {
 		return false;
@@ -138,7 +148,7 @@ static bool pdo_pool_healthcheck(zend_async_pool_t *pool, zval *resource)
 /* Before release: cleanup connection state */
 static bool pdo_pool_before_release(zend_async_pool_t *pool, zval *resource)
 {
-	pdo_dbh_t *conn = Z_PTR_P(resource);
+	pdo_dbh_t *const conn = Z_PTR_P(resource);
 
 	if (UNEXPECTED(conn == NULL)) {
 		return false;
@@ -153,6 +163,49 @@ static bool pdo_pool_before_release(zend_async_pool_t *pool, zval *resource)
 	}
 
 	return true;
+}
+
+/*
+ * Binding callbacks — registered once per coroutine per pool.
+ */
+
+/* Dispose: free the binding when the coroutine event cleans up callbacks */
+static void pdo_pool_binding_dispose(
+	zend_async_event_callback_t *callback,
+	zend_async_event_t *event
+) {
+	efree(callback);
+}
+
+/* Callback: called when the coroutine finalizes.
+ * If the connection was not returned to the pool, return it now. */
+static void pdo_pool_binding_on_coroutine_finish(
+	zend_async_event_t *event,
+	zend_async_event_callback_t *callback,
+	void *result,
+	zend_object *exception
+) {
+	pdo_pool_binding_t *binding = (pdo_pool_binding_t *)callback;
+
+	/* Pool already destroyed — nothing to do */
+	if (binding->dbh == NULL) {
+		return;
+	}
+
+	/* Connection still held — return it to pool (rolls back uncommitted transactions) */
+	if (binding->conn != NULL) {
+		binding->conn->pool_slot_refcount = 0;
+
+		zval conn_zval;
+		ZVAL_PTR(&conn_zval, binding->conn);
+		ZEND_ASYNC_POOL_RELEASE(binding->dbh->pool, &conn_zval);
+		binding->conn = NULL;
+	}
+
+	/* Remove binding from pool_bindings */
+	if (binding->dbh->pool_bindings != NULL) {
+		zend_hash_index_del(binding->dbh->pool_bindings, binding->coro_key);
+	}
 }
 
 /*
@@ -192,27 +245,43 @@ bool pdo_pool_create(pdo_dbh_t *dbh, zval *options)
 
 	dbh->pool->user_data = dbh;
 
-	dbh->pool_connections = emalloc(sizeof(HashTable));
-	zend_hash_init(dbh->pool_connections, 8, NULL, NULL, 0);
+	dbh->pool_bindings = emalloc(sizeof(HashTable));
+	zend_hash_init(dbh->pool_bindings, 8, NULL, NULL, 0);
 
 	return true;
 }
 
-/* Destroy pool for a PDO handle */
+/* Destroy pool for a PDO handle.
+ * This is a rare event — the PDO object itself is being destroyed.
+ * We can afford O(N) here to cleanly detach from coroutines. */
 void pdo_pool_destroy(pdo_dbh_t *dbh)
 {
-	/* Step 1: Release all connections back to pool (pool must be alive) */
-	if (dbh->pool_connections) {
-		zval *conn_zval;
-		ZEND_HASH_FOREACH_VAL(dbh->pool_connections, conn_zval) {
-			if (dbh->pool && Z_TYPE_P(conn_zval) == IS_PTR) {
-				ZEND_ASYNC_POOL_RELEASE(dbh->pool, conn_zval);
+	/* Step 1: Detach all bindings — release active connections, invalidate bindings */
+	if (dbh->pool_bindings) {
+		pdo_pool_binding_t *binding;
+		ZEND_HASH_FOREACH_PTR(dbh->pool_bindings, binding) {
+			/* Release active connection back to pool */
+			if (binding->conn != NULL && dbh->pool != NULL) {
+				binding->conn->pool_slot_refcount = 0;
+
+				zval conn_zval;
+				ZVAL_PTR(&conn_zval, binding->conn);
+				ZEND_ASYNC_POOL_RELEASE(dbh->pool, &conn_zval);
+				binding->conn = NULL;
+			}
+
+			if (!binding->has_coro_callback) {
+				/* No coroutine callback registered — free binding directly */
+				efree(binding);
+			} else {
+				/* Invalidate so coroutine callback becomes a no-op */
+				binding->dbh = NULL;
 			}
 		} ZEND_HASH_FOREACH_END();
 
-		zend_hash_destroy(dbh->pool_connections);
-		efree(dbh->pool_connections);
-		dbh->pool_connections = NULL;
+		zend_hash_destroy(dbh->pool_bindings);
+		efree(dbh->pool_bindings);
+		dbh->pool_bindings = NULL;
 	}
 
 	/* Step 2: Release wrapper if userland requested it via getPool() */
@@ -221,7 +290,7 @@ void pdo_pool_destroy(pdo_dbh_t *dbh)
 		dbh->pool_wrapper = NULL;
 	}
 
-	/* Step 3: Close and dispose the pool via event lifecycle */
+	/* Step 4: Close and dispose the pool via event lifecycle */
 	if (dbh->pool) {
 		ZEND_ASYNC_POOL_CLOSE(dbh->pool);
 		ZEND_ASYNC_EVENT_RELEASE(&dbh->pool->event);
@@ -230,132 +299,108 @@ void pdo_pool_destroy(pdo_dbh_t *dbh)
 }
 
 /*
- * Coroutine cleanup callback — safety net for connections still in the
- * slot when the coroutine finishes (e.g. uncommitted transactions).
- */
-typedef struct {
-	zend_async_event_callback_t base;  /* Must be first */
-	pdo_dbh_t *dbh;
-	zend_ulong coroutine_key;
-} pdo_pool_cleanup_data_t;
-
-static void pdo_pool_cleanup_dispose(
-	zend_async_event_callback_t *callback,
-	zend_async_event_t *event
-) {
-	efree(callback);
-}
-
-static void pdo_pool_cleanup_callback(
-	zend_async_event_t *event,
-	zend_async_event_callback_t *callback,
-	void *result,
-	zend_object *exception
-) {
-	const pdo_pool_cleanup_data_t *data = (const pdo_pool_cleanup_data_t *)callback;
-	pdo_dbh_t *dbh = data->dbh;
-
-	if (dbh && dbh->pool && dbh->pool_connections) {
-		zval *conn_zval = zend_hash_index_find(dbh->pool_connections, data->coroutine_key);
-		if (conn_zval && Z_TYPE_P(conn_zval) == IS_PTR) {
-			pdo_dbh_t *conn = Z_PTR_P(conn_zval);
-			conn->pool_slot_refcount = 0;
-			ZEND_ASYNC_POOL_RELEASE(dbh->pool, conn_zval);
-			zend_hash_index_del(dbh->pool_connections, data->coroutine_key);
-		}
-	}
-
-	/* Don't efree here — the async framework calls dispose() to free. */
-}
-
-/*
- * Peek at existing slot connection for current coroutine.
+ * Peek at existing binding connection for current coroutine.
  * Never acquires a new connection from the pool.
- * Returns dbh itself when pool is disabled, NULL if slot is empty.
+ * Returns dbh itself when pool is disabled, NULL if no active connection.
  */
 pdo_dbh_t *pdo_pool_peek_conn(pdo_dbh_t *dbh)
 {
+	zend_coroutine_t *coro = ZEND_ASYNC_CURRENT_COROUTINE;
+	const zend_ulong coro_key = coro ? pdo_pool_coro_key(coro) : 0;
+
 	if (dbh->pool == NULL) {
 		return dbh;
 	}
 
-	zend_coroutine_t *coro = ZEND_ASYNC_CURRENT_COROUTINE;
-	const zend_ulong coro_key = coro ? pdo_pool_coro_key(coro) : 0;
-
-	zval *conn_zval = zend_hash_index_find(dbh->pool_connections, coro_key);
-	if (conn_zval && Z_TYPE_P(conn_zval) == IS_PTR) {
-		return Z_PTR_P(conn_zval);
+	const pdo_pool_binding_t *binding = zend_hash_index_find_ptr(dbh->pool_bindings, coro_key);
+	if (binding != NULL && binding->conn != NULL) {
+		return binding->conn;
 	}
 
 	return NULL;
 }
 
 /*
- * Get connection for current coroutine. Reuses existing slot or acquires
- * from pool. Returns dbh itself when pool is disabled, NULL on failure.
+ * Get connection for current coroutine. Reuses existing binding or creates
+ * a new one on first access. Returns dbh itself when pool is disabled, NULL on failure.
  */
 pdo_dbh_t *pdo_pool_acquire_conn(pdo_dbh_t *dbh)
 {
+	zend_coroutine_t *coro = ZEND_ASYNC_CURRENT_COROUTINE;
+	const zend_ulong coro_key = coro ? pdo_pool_coro_key(coro) : 0;
+
 	if (dbh->pool == NULL) {
 		return dbh;
 	}
 
-	zend_coroutine_t *coro = ZEND_ASYNC_CURRENT_COROUTINE;
-	const zend_ulong coro_key = coro ? pdo_pool_coro_key(coro) : 0;
+	/* Check existing binding */
+	pdo_pool_binding_t *binding = zend_hash_index_find_ptr(dbh->pool_bindings, coro_key);
+	if (binding != NULL) {
+		/* Binding exists — reuse active connection or acquire a new one */
+		if (binding->conn != NULL) {
+			return binding->conn;
+		}
 
-	/* Reuse existing slot */
-	zval *conn_zval = zend_hash_index_find(dbh->pool_connections, coro_key);
-	if (conn_zval && Z_TYPE_P(conn_zval) == IS_PTR) {
-		return Z_PTR_P(conn_zval);
+		/* Connection was released earlier, acquire a new one into the same binding */
+		zval resource;
+		if (UNEXPECTED(!ZEND_ASYNC_POOL_ACQUIRE(dbh->pool, &resource, 0))) {
+			return NULL;
+		}
+		binding->conn = Z_PTR(resource);
+		return binding->conn;
 	}
 
-	/* Acquire from pool */
-	zval res;
-	if (UNEXPECTED(!ZEND_ASYNC_POOL_ACQUIRE(dbh->pool, &res, 0))) {
+	/* First acquire for this coroutine — create binding */
+	zval resource;
+	if (UNEXPECTED(!ZEND_ASYNC_POOL_ACQUIRE(dbh->pool, &resource, 0))) {
 		return NULL;
 	}
 
-	zend_hash_index_add_new(dbh->pool_connections, coro_key, &res);
+	binding = ecalloc(1, sizeof(pdo_pool_binding_t));
+	binding->event.callback = pdo_pool_binding_on_coroutine_finish;
+	binding->event.dispose = pdo_pool_binding_dispose;
+	binding->event.ref_count = 1;
+	binding->dbh = dbh;
+	binding->conn = Z_PTR(resource);
+	binding->coro_key = coro_key;
 
-	/* Register cleanup callback if inside a coroutine */
+	zend_hash_index_add_new_ptr(dbh->pool_bindings, coro_key, binding);
+
+	/* Register callback on coroutine — once, never removed */
 	if (coro != NULL) {
-		pdo_pool_cleanup_data_t *cleanup_data = emalloc(sizeof(pdo_pool_cleanup_data_t));
-		cleanup_data->base.callback = pdo_pool_cleanup_callback;
-		cleanup_data->base.dispose = pdo_pool_cleanup_dispose;
-		cleanup_data->base.ref_count = 1;
-		cleanup_data->dbh = dbh;
-		cleanup_data->coroutine_key = coro_key;
-
-		coro->event.add_callback(&coro->event, &cleanup_data->base);
+		coro->event.add_callback(&coro->event, &binding->event);
+		binding->has_coro_callback = true;
 	}
 
-	return Z_PTR(res);
+	return binding->conn;
 }
 
 /*
  * Release connection if no transaction is active.
- * Pinned connections (in_txn) stay until commit/rollback or coroutine end.
+ * The binding stays alive for future reuse within this coroutine.
  */
 void pdo_pool_maybe_release(pdo_dbh_t *dbh)
 {
-	if (dbh->pool == NULL || dbh->pool_connections == NULL) {
-		return;
-	}
-
 	zend_coroutine_t *coro = ZEND_ASYNC_CURRENT_COROUTINE;
 	const zend_ulong coro_key = coro ? pdo_pool_coro_key(coro) : 0;
 
-	zval *conn_zval = zend_hash_index_find(dbh->pool_connections, coro_key);
-	if (conn_zval && Z_TYPE_P(conn_zval) == IS_PTR) {
-		const pdo_dbh_t *conn = Z_PTR_P(conn_zval);
-
-		if (conn->in_txn || conn->pool_slot_refcount > 0) {
-			return;
-		}
-
-		ZEND_ASYNC_POOL_RELEASE(dbh->pool, conn_zval);
-		zend_hash_index_del(dbh->pool_connections, coro_key);
+	if (dbh->pool == NULL || dbh->pool_bindings == NULL) {
+		return;
 	}
+
+	pdo_pool_binding_t *binding = zend_hash_index_find_ptr(dbh->pool_bindings, coro_key);
+	if (binding == NULL || binding->conn == NULL) {
+		return;
+	}
+
+	if (binding->conn->in_txn || binding->conn->pool_slot_refcount > 0) {
+		return;
+	}
+
+	zval conn_zval;
+	ZVAL_PTR(&conn_zval, binding->conn);
+	ZEND_ASYNC_POOL_RELEASE(dbh->pool, &conn_zval);
+	binding->conn = NULL;
 }
 
 /* Get PHP Pool wrapper object for getPool() method */
