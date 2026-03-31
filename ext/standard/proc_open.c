@@ -39,7 +39,6 @@
 static zend_long async_wait_process(zend_process_t process_h, const zend_ulong timeout);
 static pid_t async_waitpid(pid_t pid, int *status, int options);
 
-#ifdef HAVE_POSIX_SPAWN_FILE_ACTIONS_ADDCHDIR_NP
 #if defined(HAVE_POSIX_SPAWN_FILE_ACTIONS_ADDCHDIR_NP) || defined(HAVE_POSIX_SPAWN_FILE_ACTIONS_ADDCHDIR)
 /* Only defined on glibc >= 2.29, FreeBSD CURRENT, musl >= 1.1.24,
  * MacOS Catalina or later..
