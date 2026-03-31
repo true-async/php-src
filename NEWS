@@ -17,6 +17,9 @@ PHP                                                                        NEWS
     ReflectionProperty::skipLazyInitialization after failed LazyProxy
     initialization). (Arnaud)
 
+- BCMath:
+  . Added NUL-byte validation to BCMath functions. (jorgsowa)
+
 - Date:
   . Update timelib to 2022.16. (Derick)
 
@@ -27,6 +30,7 @@ PHP                                                                        NEWS
 - Fileinfo:
   . Fixed bug GH-20679 (finfo_file() doesn't work on remote resources).
     (ndossche)
+  . Fixed bug #66095 (Hide libmagic dynamic symbols). (orlitzky)
 
 - Hash:
   . Upgrade xxHash to 0.8.2. (timwolla)
@@ -48,7 +52,7 @@ PHP                                                                        NEWS
     small value). (David Carlier)
 
 - Mail:
-  . Fixed bug GH-20862 (null pointer dereference in 
+  . Fixed bug GH-20862 (null pointer dereference in
     php_mail_detect_multiple_crlf via error_log (jordikroon)
 
 - Mbstring:
@@ -149,6 +153,8 @@ PHP                                                                        NEWS
   . Fixed bug GH-21221 (Prevent closing of innerstream of php://temp stream).
     (ilutov)
   . Improved stream_socket_server() bind failure error reporting. (ilutov)
+  . Fixed bug #49874 (ftell() and fseek() inconsistency when using stream
+    filters). (Jakub Zelenka)
 
 - Zip:
   . Fixed ZipArchive callback being called after executor has shut down.

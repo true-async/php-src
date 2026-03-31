@@ -1111,7 +1111,10 @@ static zend_always_inline zval *_zend_hash_index_add_or_update_i(HashTable *ht, 
 		if ((flag & (HASH_ADD_NEW|HASH_ADD_NEXT)) != (HASH_ADD_NEW|HASH_ADD_NEXT)
 		 && h < ht->nNumUsed) {
 			zv = ht->arPacked + h;
-			if (Z_TYPE_P(zv) != IS_UNDEF) {
+			if (flag & HASH_ADD_NEW) {
+				ZEND_ASSERT(Z_TYPE_P(zv) == IS_UNDEF);
+				goto convert_to_hash;
+			} else if (Z_TYPE_P(zv) != IS_UNDEF) {
 				if (flag & HASH_LOOKUP) {
 					return zv;
 				}

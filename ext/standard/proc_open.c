@@ -40,6 +40,7 @@ static zend_long async_wait_process(zend_process_t process_h, const zend_ulong t
 static pid_t async_waitpid(pid_t pid, int *status, int options);
 
 #ifdef HAVE_POSIX_SPAWN_FILE_ACTIONS_ADDCHDIR_NP
+#if defined(HAVE_POSIX_SPAWN_FILE_ACTIONS_ADDCHDIR_NP) || defined(HAVE_POSIX_SPAWN_FILE_ACTIONS_ADDCHDIR)
 /* Only defined on glibc >= 2.29, FreeBSD CURRENT, musl >= 1.1.24,
  * MacOS Catalina or later..
  * It should be possible to modify this so it is also
@@ -49,6 +50,13 @@ static pid_t async_waitpid(pid_t pid, int *status, int options);
  */
 #include <spawn.h>
 #define USE_POSIX_SPAWN
+
+/* The non-_np variant is in macOS 26 (and _np deprecated) */
+#ifdef HAVE_POSIX_SPAWN_FILE_ACTIONS_ADDCHDIR
+#define POSIX_SPAWN_FILE_ACTIONS_ADDCHDIR posix_spawn_file_actions_addchdir
+#else
+#define POSIX_SPAWN_FILE_ACTIONS_ADDCHDIR posix_spawn_file_actions_addchdir_np
+#endif
 #endif
 
 /* This symbol is defined in ext/standard/config.m4.
@@ -1410,9 +1418,9 @@ PHP_FUNCTION(proc_open)
 	}
 
 	if (cwd) {
-		r = posix_spawn_file_actions_addchdir_np(&factions, cwd);
+		r = POSIX_SPAWN_FILE_ACTIONS_ADDCHDIR(&factions, cwd);
 		if (r != 0) {
-			php_error_docref(NULL, E_WARNING, "posix_spawn_file_actions_addchdir_np() failed: %s", strerror(r));
+			php_error_docref(NULL, E_WARNING, ZEND_TOSTR(POSIX_SPAWN_FILE_ACTIONS_ADDCHDIR) "() failed: %s", strerror(r));
 		}
 	}
 
