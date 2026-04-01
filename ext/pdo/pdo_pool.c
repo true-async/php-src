@@ -54,6 +54,19 @@ typedef struct {
 	bool has_coro_callback;              /* true if registered with coroutine event */
 } pdo_pool_binding_t;
 
+/* Reset error state on the template dbh.
+ * Called on acquire so a new coroutine never sees stale errors. */
+static void pdo_pool_reset_error(pdo_dbh_t *dbh)
+{
+	memcpy(dbh->error_code, PDO_ERR_NONE, sizeof(pdo_error_type));
+
+	if (dbh->query_stmt) {
+		OBJ_RELEASE(dbh->query_stmt_obj);
+		dbh->query_stmt_obj = NULL;
+		dbh->query_stmt = NULL;
+	}
+}
+
 /*
  * Pool internal handlers
  */
@@ -162,6 +175,9 @@ static bool pdo_pool_before_release(zend_async_pool_t *pool, zval *resource)
 		conn->in_txn = false;
 	}
 
+	/* Clear error state so the next coroutine starts clean */
+	memcpy(conn->error_code, PDO_ERR_NONE, sizeof(pdo_error_type));
+
 	return true;
 }
 
@@ -201,6 +217,9 @@ static void pdo_pool_binding_on_coroutine_finish(
 		ZEND_ASYNC_POOL_RELEASE(binding->dbh->pool, &conn_zval);
 		binding->conn = NULL;
 	}
+
+	/* Clear stale error state on template so the next coroutine starts clean */
+	pdo_pool_reset_error(binding->dbh);
 
 	/* Remove binding from pool_bindings */
 	if (binding->dbh->pool_bindings != NULL) {
@@ -341,12 +360,14 @@ pdo_dbh_t *pdo_pool_acquire_conn(pdo_dbh_t *dbh)
 			return binding->conn;
 		}
 
-		/* Connection was released earlier, acquire a new one into the same binding */
+		/* Connection was released earlier, acquire a new one into the same binding.
+		 * Reset error state on the template so the new coroutine starts clean. */
 		zval resource;
 		if (UNEXPECTED(!ZEND_ASYNC_POOL_ACQUIRE(dbh->pool, &resource, 0))) {
 			return NULL;
 		}
 		binding->conn = Z_PTR(resource);
+		pdo_pool_reset_error(dbh);
 		return binding->conn;
 	}
 
@@ -372,6 +393,7 @@ pdo_dbh_t *pdo_pool_acquire_conn(pdo_dbh_t *dbh)
 		binding->has_coro_callback = true;
 	}
 
+	pdo_pool_reset_error(dbh);
 	return binding->conn;
 }
 
