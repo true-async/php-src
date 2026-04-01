@@ -106,6 +106,7 @@ static bool pdo_pool_factory(zend_async_pool_t *pool, zval *result)
 	/* Only fields the driver factory actually reads */
 	conn->driver = dbh->driver;
 	conn->auto_commit = dbh->auto_commit;
+	memcpy(conn->error_code, PDO_ERR_NONE, sizeof(pdo_error_type));
 
 	/* Copy template strings — drivers may mutate, reallocate, or overwrite
 	 * these fields during factory (e.g. PgSQL replaces ';' with ' ',
