@@ -528,6 +528,7 @@ struct _pdo_dbh_t {
 	HashTable *pool_bindings;	/* coroutine_id => pdo_pool_binding_t* */
 	zend_object *pool_wrapper;		/* cached PHP Async\Pool object for getPool() */
 	uint32_t pool_slot_refcount;	/* number of statements borrowing this pooled connection */
+	bool conn_broken:1;				/* connection lost or protocol desynchronized — must not return to pool */
 };
 
 /* represents a connection to a database */

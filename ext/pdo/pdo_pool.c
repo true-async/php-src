@@ -159,12 +159,18 @@ static bool pdo_pool_healthcheck(zend_async_pool_t *pool, zval *resource)
 	return true;
 }
 
-/* Before release: cleanup connection state */
+/* Before release: cleanup connection state.
+ * Returns false if connection is broken — pool will destroy it. */
 static bool pdo_pool_before_release(zend_async_pool_t *pool, zval *resource)
 {
 	pdo_dbh_t *const conn = Z_PTR_P(resource);
 
 	if (UNEXPECTED(conn == NULL)) {
+		return false;
+	}
+
+	/* Broken connection — must not return to pool */
+	if (conn->conn_broken) {
 		return false;
 	}
 
@@ -209,6 +215,11 @@ static void pdo_pool_binding_on_coroutine_finish(
 		return;
 	}
 
+	/* Clear stale error state on template BEFORE release — query_stmt may
+	 * reference the pooled conn via pooled_conn pointer, and release with
+	 * conn_broken will destroy the conn. Must release query_stmt first. */
+	pdo_pool_reset_error(binding->dbh);
+
 	/* Connection still held — return it to pool (rolls back uncommitted transactions) */
 	if (binding->conn != NULL) {
 		binding->conn->pool_slot_refcount = 0;
@@ -218,9 +229,6 @@ static void pdo_pool_binding_on_coroutine_finish(
 		ZEND_ASYNC_POOL_RELEASE(binding->dbh->pool, &conn_zval);
 		binding->conn = NULL;
 	}
-
-	/* Clear stale error state on template so the next coroutine starts clean */
-	pdo_pool_reset_error(binding->dbh);
 
 	/* Remove binding from pool_bindings */
 	if (binding->dbh->pool_bindings != NULL) {
@@ -357,8 +365,20 @@ pdo_dbh_t *pdo_pool_acquire_conn(pdo_dbh_t *dbh)
 	pdo_pool_binding_t *binding = zend_hash_index_find_ptr(dbh->pool_bindings, coro_key);
 	if (binding != NULL) {
 		/* Binding exists — reuse active connection or acquire a new one */
-		if (binding->conn != NULL) {
-			return binding->conn;
+		if (EXPECTED(binding->conn != NULL)) {
+			if (EXPECTED(false == binding->conn->conn_broken)) {
+				return binding->conn;
+			}
+
+			/* Connection is broken (cancelled I/O, server gone, etc.)
+			 * Release query_stmt FIRST — it may reference this conn via pooled_conn.
+			 * Then release conn — pool's before_release will destroy it. */
+			pdo_pool_reset_error(dbh);
+			binding->conn->pool_slot_refcount = 0;
+			zval conn_zval;
+			ZVAL_PTR(&conn_zval, binding->conn);
+			ZEND_ASYNC_POOL_RELEASE(dbh->pool, &conn_zval);
+			binding->conn = NULL;
 		}
 
 		/* Connection was released earlier, acquire a new one into the same binding.
