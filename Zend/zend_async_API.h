@@ -369,6 +369,14 @@ typedef void *(*zend_async_thread_snapshot_create_t)(
 typedef void (*zend_async_thread_snapshot_destroy_t)(void *snapshot);
 typedef void (*zend_async_thread_run_t)(void *arg);
 typedef void (*zend_async_thread_load_result_t)(zend_async_thread_event_t *event);
+
+/* Thread transfer context — tracks identity (xlat table) and nesting depth
+ * during deep copy of zvals between threads. */
+typedef struct _zend_async_thread_transfer_ctx_s {
+	HashTable xlat;   /* old_ptr → new_ptr mapping */
+	uint32_t depth;
+} zend_async_thread_transfer_ctx_t;
+
 typedef void (*zend_async_trigger_event_trigger_fn)(zend_async_trigger_event_t *event);
 typedef zend_async_trigger_event_t *(*zend_async_new_trigger_event_t)(size_t extra_size);
 typedef zend_async_filesystem_event_t *(*zend_async_new_filesystem_event_t)(
