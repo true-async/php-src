@@ -1166,6 +1166,25 @@ PHP_METHOD(PDO, getAttribute)
 		case PDO_ATTR_STRINGIFY_FETCHES:
 			RETURN_BOOL(dbh->stringify);
 
+		case PDO_ATTR_POOL_ENABLED:
+			RETURN_BOOL(dbh->pool != NULL);
+
+		case PDO_ATTR_POOL_MIN:
+			if (dbh->pool) {
+				RETURN_LONG(dbh->pool->min_size);
+			}
+			RETURN_FALSE;
+
+		case PDO_ATTR_POOL_MAX:
+			if (dbh->pool) {
+				RETURN_LONG(dbh->pool->max_size);
+			}
+			RETURN_FALSE;
+
+		case PDO_ATTR_POOL_HEALTHCHECK_INTERVAL:
+			pdo_raise_impl_error(dbh, NULL, "IM001", "PDO::ATTR_POOL_HEALTHCHECK_INTERVAL is a construction-only attribute and cannot be read at runtime");
+			RETURN_FALSE;
+
 		default:
 			break;
 	}

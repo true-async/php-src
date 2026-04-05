@@ -1950,6 +1950,9 @@ static void zend_do_extended_stmt(znode* result) /* {{{ */
 
 	opline->opcode = ZEND_EXT_STMT;
 	if (result) {
+		if (result->op_type == IS_CONST) {
+			Z_TRY_ADDREF(result->u.constant);
+		}
 		SET_NODE(opline->op1, result);
 	}
 }
@@ -8024,6 +8027,7 @@ static void zend_compile_params(zend_ast *ast, zend_ast *return_type_ast, uint32
 		} else {
 			arg_infos->type = (zend_type) ZEND_TYPE_INIT_CODE(fallback_return_type, 0, 0);
 		}
+		arg_infos->doc_comment = NULL;
 		arg_infos++;
 		op_array->fn_flags |= ZEND_ACC_HAS_RETURN_TYPE;
 
@@ -8122,6 +8126,7 @@ static void zend_compile_params(zend_ast *ast, zend_ast *return_type_ast, uint32
 		arg_info->name = zend_string_copy(name);
 		arg_info->type = (zend_type) ZEND_TYPE_INIT_NONE(0);
 		arg_info->default_value = NULL;
+		arg_info->doc_comment = doc_comment_ast ? zend_string_copy(zend_ast_get_str(doc_comment_ast)) : NULL;
 
 		if (attributes_ast) {
 			zend_compile_attributes(

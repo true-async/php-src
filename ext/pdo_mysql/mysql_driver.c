@@ -65,6 +65,14 @@ int _pdo_mysql_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt, const char *file, int lin
 		einfo->errcode = mysql_errno(H->server);
 	}
 
+	/* Mark connection as broken on fatal connection errors.
+	 * Pool will destroy instead of reusing.
+	 * In pool mode with stmt, dbh is template — use stmt->pooled_conn for the real connection. */
+	if (einfo->errcode == CR_SERVER_GONE_ERROR || einfo->errcode == CR_SERVER_LOST) {
+		pdo_dbh_t *conn_dbh = (stmt && stmt->pooled_conn) ? stmt->pooled_conn : dbh;
+		conn_dbh->conn_broken = true;
+	}
+
 	einfo->file = file;
 	einfo->line = line;
 

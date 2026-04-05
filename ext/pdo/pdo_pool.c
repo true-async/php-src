@@ -54,6 +54,19 @@ typedef struct {
 	bool has_coro_callback;              /* true if registered with coroutine event */
 } pdo_pool_binding_t;
 
+/* Reset error state on the template dbh.
+ * Called on acquire so a new coroutine never sees stale errors. */
+static void pdo_pool_reset_error(pdo_dbh_t *dbh)
+{
+	memcpy(dbh->error_code, PDO_ERR_NONE, sizeof(pdo_error_type));
+
+	if (dbh->query_stmt) {
+		OBJ_RELEASE(dbh->query_stmt_obj);
+		dbh->query_stmt_obj = NULL;
+		dbh->query_stmt = NULL;
+	}
+}
+
 /*
  * Pool internal handlers
  */
@@ -93,6 +106,7 @@ static bool pdo_pool_factory(zend_async_pool_t *pool, zval *result)
 	/* Only fields the driver factory actually reads */
 	conn->driver = dbh->driver;
 	conn->auto_commit = dbh->auto_commit;
+	memcpy(conn->error_code, PDO_ERR_NONE, sizeof(pdo_error_type));
 
 	/* Copy template strings — drivers may mutate, reallocate, or overwrite
 	 * these fields during factory (e.g. PgSQL replaces ';' with ' ',
@@ -145,12 +159,18 @@ static bool pdo_pool_healthcheck(zend_async_pool_t *pool, zval *resource)
 	return true;
 }
 
-/* Before release: cleanup connection state */
+/* Before release: cleanup connection state.
+ * Returns false if connection is broken — pool will destroy it. */
 static bool pdo_pool_before_release(zend_async_pool_t *pool, zval *resource)
 {
 	pdo_dbh_t *const conn = Z_PTR_P(resource);
 
 	if (UNEXPECTED(conn == NULL)) {
+		return false;
+	}
+
+	/* Broken connection — must not return to pool */
+	if (conn->conn_broken) {
 		return false;
 	}
 
@@ -161,6 +181,9 @@ static bool pdo_pool_before_release(zend_async_pool_t *pool, zval *resource)
 		}
 		conn->in_txn = false;
 	}
+
+	/* Clear error state so the next coroutine starts clean */
+	memcpy(conn->error_code, PDO_ERR_NONE, sizeof(pdo_error_type));
 
 	return true;
 }
@@ -191,6 +214,11 @@ static void pdo_pool_binding_on_coroutine_finish(
 	if (binding->dbh == NULL) {
 		return;
 	}
+
+	/* Clear stale error state on template BEFORE release — query_stmt may
+	 * reference the pooled conn via pooled_conn pointer, and release with
+	 * conn_broken will destroy the conn. Must release query_stmt first. */
+	pdo_pool_reset_error(binding->dbh);
 
 	/* Connection still held — return it to pool (rolls back uncommitted transactions) */
 	if (binding->conn != NULL) {
@@ -337,16 +365,30 @@ pdo_dbh_t *pdo_pool_acquire_conn(pdo_dbh_t *dbh)
 	pdo_pool_binding_t *binding = zend_hash_index_find_ptr(dbh->pool_bindings, coro_key);
 	if (binding != NULL) {
 		/* Binding exists — reuse active connection or acquire a new one */
-		if (binding->conn != NULL) {
-			return binding->conn;
+		if (EXPECTED(binding->conn != NULL)) {
+			if (EXPECTED(false == binding->conn->conn_broken)) {
+				return binding->conn;
+			}
+
+			/* Connection is broken (cancelled I/O, server gone, etc.)
+			 * Release query_stmt FIRST — it may reference this conn via pooled_conn.
+			 * Then release conn — pool's before_release will destroy it. */
+			pdo_pool_reset_error(dbh);
+			binding->conn->pool_slot_refcount = 0;
+			zval conn_zval;
+			ZVAL_PTR(&conn_zval, binding->conn);
+			ZEND_ASYNC_POOL_RELEASE(dbh->pool, &conn_zval);
+			binding->conn = NULL;
 		}
 
-		/* Connection was released earlier, acquire a new one into the same binding */
+		/* Connection was released earlier, acquire a new one into the same binding.
+		 * Reset error state on the template so the new coroutine starts clean. */
 		zval resource;
 		if (UNEXPECTED(!ZEND_ASYNC_POOL_ACQUIRE(dbh->pool, &resource, 0))) {
 			return NULL;
 		}
 		binding->conn = Z_PTR(resource);
+		pdo_pool_reset_error(dbh);
 		return binding->conn;
 	}
 
@@ -372,6 +414,7 @@ pdo_dbh_t *pdo_pool_acquire_conn(pdo_dbh_t *dbh)
 		binding->has_coro_callback = true;
 	}
 
+	pdo_pool_reset_error(dbh);
 	return binding->conn;
 }
 

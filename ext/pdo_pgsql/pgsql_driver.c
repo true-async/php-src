@@ -314,6 +314,22 @@ int _pdo_pgsql_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt, int errcode, const char *
 	einfo->file = file;
 	einfo->line = line;
 
+	/* Mark connection as broken when it cannot be safely reused.
+	 * Pool will destroy instead of returning to idle buffer.
+	 * In pool mode with stmt, dbh is template — use stmt->pooled_conn for the real connection.
+	 *
+	 * CONNECTION_BAD:   server disconnected
+	 * PQTRANS_ACTIVE:  command in progress, result not read (e.g. cancelled during I/O)
+	 * PQTRANS_UNKNOWN: connection state cannot be determined */
+	{
+		PGTransactionStatusType txs = PQtransactionStatus(H->server);
+		if (PQstatus(H->server) == CONNECTION_BAD ||
+			txs == PQTRANS_ACTIVE || txs == PQTRANS_UNKNOWN) {
+			pdo_dbh_t *conn_dbh = (stmt && stmt->pooled_conn) ? stmt->pooled_conn : dbh;
+			conn_dbh->conn_broken = true;
+		}
+	}
+
 	if (einfo->errmsg) {
 		pefree(einfo->errmsg, dbh->is_persistent);
 		einfo->errmsg = NULL;

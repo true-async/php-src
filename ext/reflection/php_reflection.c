@@ -2649,6 +2649,22 @@ ZEND_METHOD(ReflectionParameter, __toString)
 
 /* }}} */
 
+/* {{{ Returns the doc comment for this parameter */
+ZEND_METHOD(ReflectionParameter, getDocComment)
+{
+	reflection_object *intern;
+	parameter_reference *param;
+
+	ZEND_PARSE_PARAMETERS_NONE();
+
+	GET_REFLECTION_OBJECT_PTR(param);
+	if (param->arg_info->doc_comment) {
+		RETURN_STR_COPY(param->arg_info->doc_comment);
+	}
+	RETURN_FALSE;
+}
+/* }}} */
+
 /* {{{ Returns this parameter's name */
 ZEND_METHOD(ReflectionParameter, getName)
 {
