@@ -360,8 +360,7 @@ typedef zend_async_process_event_t *(*zend_async_new_process_event_t)(
 		zend_process_t process_handle, size_t extra_size);
 typedef void (*zend_async_thread_entry_t)(void *arg, size_t extra_size);
 typedef zend_async_thread_event_t *(*zend_async_new_thread_event_t)(
-		const zend_fcall_t *entry, const zend_fcall_t *bootloader, uint32_t thread_flags, size_t extra_size,
-		void (*c_entry)(zend_async_thread_event_t *event));
+		const zend_fcall_t *entry, const zend_fcall_t *bootloader, uint32_t thread_flags, size_t extra_size);
 
 /* Thread lifecycle: snapshot create/destroy and thread entry point.
  * Implemented by thread module, called by reactor backend. */
@@ -969,14 +968,16 @@ struct _zend_async_thread_event_s {
 	 * Set in child thread after zend_catch, read in parent by load_result. */
 	char *bailout_error_message;
 
-	/** Optional C-level entry point (alternative to PHP entry closure).
-	 * If non-NULL, async_thread_run calls this instead of the PHP closure.
-	 * TSRM and request lifecycle are still managed by async_thread_run. */
-	void (*c_entry)(zend_async_thread_event_t *event);
+	/** Optional internal entry point (pemalloc'd, alternative to PHP closure).
+	 * If non-NULL, async_thread_run calls handler instead of PHP closure.
+	 * The structure is pefree'd by the worker after copying ctx locally. */
+	struct _zend_async_thread_internal_entry_s {
+		void (*handler)(zend_async_thread_event_t *event, void *ctx);
+		void *ctx;
+	} *internal_entry;
 };
 
-/** C-level thread entry function signature. */
-typedef void (*zend_async_thread_c_entry_t)(zend_async_thread_event_t *event);
+typedef struct _zend_async_thread_internal_entry_s zend_async_thread_internal_entry_t;
 
 /* Filesystem event types (backend-agnostic) */
 #define ZEND_ASYNC_FS_EVENT_RENAME    (1u << 0)
@@ -2183,11 +2184,9 @@ END_EXTERN_C()
 #define ZEND_ASYNC_NEW_PROCESS_EVENT_EX(process_handle, extra_size) \
 	zend_async_new_process_event_fn(process_handle, extra_size)
 #define ZEND_ASYNC_NEW_THREAD_EVENT(entry, bootloader) \
-	zend_async_new_thread_event_fn(entry, bootloader, 0, 0, NULL)
+	zend_async_new_thread_event_fn(entry, bootloader, 0, 0)
 #define ZEND_ASYNC_NEW_THREAD_EVENT_EX(entry, bootloader, flags, extra_size) \
-	zend_async_new_thread_event_fn(entry, bootloader, flags, extra_size, NULL)
-#define ZEND_ASYNC_NEW_THREAD_EVENT_C(c_entry_fn, flags, extra_size) \
-	zend_async_new_thread_event_fn(NULL, NULL, flags, extra_size, c_entry_fn)
+	zend_async_new_thread_event_fn(entry, bootloader, flags, extra_size)
 #define ZEND_ASYNC_THREAD_SNAPSHOT_CREATE(entry, bootloader) \
 	zend_async_thread_snapshot_create_fn(entry, bootloader)
 #define ZEND_ASYNC_THREAD_SNAPSHOT_DESTROY(snapshot) \

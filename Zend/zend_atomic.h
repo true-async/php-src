@@ -522,6 +522,33 @@ ZEND_API int zend_atomic_int_load(const zend_atomic_int *obj);
 ZEND_API int64_t zend_atomic_int64_load(const zend_atomic_int64 *obj);
 #endif
 
+/**
+ * @brief Atomically increment an integer. Returns the previous value.
+ */
+static zend_always_inline int zend_atomic_int_fetch_add(zend_atomic_int *obj, int val)
+{
+	int old;
+	do {
+		old = zend_atomic_int_load(obj);
+	} while (!zend_atomic_int_compare_exchange(obj, &old, old + val));
+	return old;
+}
+
+/**
+ * @brief Atomically decrement an integer. Returns the previous value.
+ */
+static zend_always_inline int zend_atomic_int_fetch_sub(zend_atomic_int *obj, int val)
+{
+	int old;
+	do {
+		old = zend_atomic_int_load(obj);
+	} while (!zend_atomic_int_compare_exchange(obj, &old, old - val));
+	return old;
+}
+
+#define zend_atomic_int_inc(obj) zend_atomic_int_fetch_add((obj), 1)
+#define zend_atomic_int_dec(obj) zend_atomic_int_fetch_sub((obj), 1)
+
 END_EXTERN_C()
 
 #endif
