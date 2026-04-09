@@ -203,6 +203,7 @@ typedef void (*zend_coroutine_entry_t)(void);
 /* Channel method function types */
 typedef bool (*zend_channel_send_t)(zend_async_channel_t *channel, zval *value);
 typedef bool (*zend_channel_receive_t)(zend_async_channel_t *channel, zval *result);
+typedef void (*zend_channel_close_t)(zend_async_channel_t *channel);
 
 /* Pool CircuitBreaker state */
 typedef enum {
@@ -1563,6 +1564,7 @@ struct _zend_async_channel_s {
 	/* Channel-specific method pointers */
 	zend_channel_send_t send; /* Send method */
 	zend_channel_receive_t receive; /* Receive method */
+	zend_channel_close_t close; /* Close method */
 };
 
 /* Channel flags (bits 13+, bits 10-12 reserved for event flags) */
