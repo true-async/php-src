@@ -191,6 +191,7 @@ typedef struct _zend_future_s zend_future_t;
  */
 typedef struct _zend_async_channel_s zend_async_channel_t;
 typedef struct _zend_async_pool_s zend_async_pool_t;
+typedef struct _zend_async_thread_pool_s zend_async_thread_pool_t;
 typedef struct _zend_async_context_s zend_async_context_t;
 typedef struct _zend_async_waker_s zend_async_waker_t;
 typedef struct _zend_async_microtask_s zend_async_microtask_t;
@@ -1571,6 +1572,59 @@ struct _zend_async_channel_s {
 #define ZEND_ASYNC_CHANNEL_F_THREAD_SAFE (1u << 13)
 
 ///////////////////////////////////////////////////////////////
+/// Thread Pool
+///////////////////////////////////////////////////////////////
+
+/* Thread pool method function types */
+typedef void (*zend_thread_pool_close_t)(zend_async_thread_pool_t *pool);
+typedef void (*zend_thread_pool_dispose_t)(zend_async_thread_pool_t *pool);
+typedef void (*zend_thread_pool_drain_t)(zend_async_thread_pool_t *pool, bool reject);
+
+/**
+ * zend_async_thread_pool_t — base structure for a thread pool.
+ * Manages a fixed set of worker threads with atomic counters
+ * for pending/running tasks and a close/dispose lifecycle.
+ *
+ * Concrete implementations (e.g. ext/async) embed this as the
+ * first member and add implementation-specific fields (task channel, etc.).
+ */
+struct _zend_async_thread_pool_s {
+	/* Reference count for cross-thread sharing (atomic) */
+	zend_atomic_int ref_count;
+
+	/* Number of worker threads */
+	int32_t worker_count;
+
+	/* Counts (atomic — accessed from multiple threads) */
+	zend_atomic_int pending_count;
+	zend_atomic_int running_count;
+
+	/* State flags */
+	zend_atomic_int closed;
+
+	/* Worker thread events (array of worker_count, pemalloc'd) */
+	zend_async_thread_event_t **workers;
+
+	/* Methods */
+	zend_thread_pool_close_t close;
+	zend_thread_pool_dispose_t dispose;
+	zend_thread_pool_drain_t drain;
+};
+
+/* Thread pool refcount helpers */
+#define ZEND_THREAD_POOL_ADDREF(pool) \
+	zend_atomic_int_inc(&(pool)->ref_count)
+
+#define ZEND_THREAD_POOL_DELREF(pool) do { \
+	int _old = zend_atomic_int_dec(&(pool)->ref_count); \
+	if (_old == 1) { (pool)->dispose(pool); } \
+} while (0)
+
+/* Factory type for creating thread pools */
+typedef zend_async_thread_pool_t *(*zend_async_new_thread_pool_t)(
+	int32_t worker_count, int32_t queue_size);
+
+///////////////////////////////////////////////////////////////
 /// Group (TaskGroup)
 ///////////////////////////////////////////////////////////////
 
@@ -1897,6 +1951,10 @@ ZEND_API extern zend_async_waker_destroy_t zend_async_waker_destroy_fn;
 ZEND_API bool zend_async_thread_pool_is_enabled(void);
 ZEND_API extern zend_async_new_task_t zend_async_new_task_fn;
 ZEND_API extern zend_async_queue_task_t zend_async_queue_task_fn;
+ZEND_API extern zend_async_new_thread_pool_t zend_async_new_thread_pool_fn;
+
+#define ZEND_ASYNC_NEW_THREAD_POOL(worker_count, queue_size) \
+	zend_async_new_thread_pool_fn((worker_count), (queue_size))
 
 /* Trigger Event API */
 ZEND_API extern zend_async_new_trigger_event_t zend_async_new_trigger_event_fn;
@@ -1954,7 +2012,8 @@ ZEND_API bool zend_async_reactor_register(char *module, bool allow_override,
 
 ZEND_API void zend_async_thread_pool_register(
 		char *module, bool allow_override,
-		zend_async_new_task_t new_task_fn, zend_async_queue_task_t queue_task_fn);
+		zend_async_new_task_t new_task_fn, zend_async_queue_task_t queue_task_fn,
+		zend_async_new_thread_pool_t new_thread_pool_fn);
 
 
 ZEND_API void zend_async_pool_api_register(
