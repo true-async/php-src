@@ -1578,8 +1578,6 @@ struct _zend_async_channel_s {
 /* Thread pool method function types */
 typedef void (*zend_thread_pool_close_t)(zend_async_thread_pool_t *pool);
 typedef void (*zend_thread_pool_dispose_t)(zend_async_thread_pool_t *pool);
-typedef void (*zend_thread_pool_drain_t)(zend_async_thread_pool_t *pool, bool reject);
-
 /**
  * zend_async_thread_pool_t — base structure for a thread pool.
  * Manages a fixed set of worker threads with atomic counters
@@ -1608,7 +1606,6 @@ struct _zend_async_thread_pool_s {
 	/* Methods */
 	zend_thread_pool_close_t close;
 	zend_thread_pool_dispose_t dispose;
-	zend_thread_pool_drain_t drain;
 };
 
 /* Thread pool refcount helpers */
