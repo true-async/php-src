@@ -215,6 +215,7 @@ zend_async_reactor_shutdown_t zend_async_reactor_shutdown_fn = NULL;
 zend_async_reactor_execute_t zend_async_reactor_execute_fn = NULL;
 zend_async_reactor_loop_alive_t zend_async_reactor_loop_alive_fn = NULL;
 zend_async_reactor_tick_t zend_async_reactor_tick_fn = NULL;
+zend_async_reactor_quiesce_t zend_async_reactor_quiesce_fn = NULL;
 zend_async_new_socket_event_t zend_async_new_socket_event_fn = NULL;
 zend_async_new_poll_event_t zend_async_new_poll_event_fn = NULL;
 zend_async_new_poll_proxy_event_t zend_async_new_poll_proxy_event_fn = NULL;
@@ -248,6 +249,7 @@ static char *pool_module_name = NULL;
 zend_async_new_task_t zend_async_new_task_fn = NULL;
 zend_async_queue_task_t zend_async_queue_task_fn = NULL;
 zend_async_new_thread_pool_t zend_async_new_thread_pool_fn = NULL;
+zend_async_start_thread_t zend_async_start_thread_fn = NULL;
 zend_async_thread_snapshot_create_t zend_async_thread_snapshot_create_fn = NULL;
 zend_async_thread_snapshot_destroy_t zend_async_thread_snapshot_destroy_fn = NULL;
 zend_async_thread_run_t zend_async_thread_run_fn = NULL;
@@ -346,6 +348,7 @@ void zend_async_api_shutdown(void)
 	pool_module_name = NULL;
 	thread_pool_module_name = NULL;
 	zend_async_new_thread_pool_fn = NULL;
+	zend_async_reactor_quiesce_fn = NULL;
 }
 
 ZEND_API int zend_async_get_api_version_number(void)
@@ -444,6 +447,7 @@ ZEND_API bool zend_async_reactor_register(char *module, bool allow_override,
 		zend_async_reactor_shutdown_t reactor_shutdown_fn,
 		zend_async_reactor_execute_t reactor_execute_fn,
 		zend_async_reactor_loop_alive_t reactor_loop_alive_fn,
+		zend_async_reactor_quiesce_t reactor_quiesce_fn,
 		zend_async_new_socket_event_t new_socket_event_fn,
 		zend_async_new_poll_event_t new_poll_event_fn,
 		zend_async_new_poll_proxy_event_t new_poll_proxy_event_fn,
@@ -478,6 +482,7 @@ ZEND_API bool zend_async_reactor_register(char *module, bool allow_override,
 	zend_async_reactor_shutdown_fn = reactor_shutdown_fn;
 	zend_async_reactor_execute_fn = reactor_execute_fn;
 	zend_async_reactor_loop_alive_fn = reactor_loop_alive_fn;
+	zend_async_reactor_quiesce_fn = reactor_quiesce_fn;
 
 	zend_async_new_socket_event_fn = new_socket_event_fn;
 	zend_async_new_poll_event_fn = new_poll_event_fn;
@@ -506,7 +511,8 @@ ZEND_API bool zend_async_reactor_register(char *module, bool allow_override,
 ZEND_API void zend_async_thread_pool_register(
 		char *module, bool allow_override,
 		zend_async_new_task_t new_task_fn, zend_async_queue_task_t queue_task_fn,
-		zend_async_new_thread_pool_t new_thread_pool_fn)
+		zend_async_new_thread_pool_t new_thread_pool_fn,
+		zend_async_start_thread_t start_thread_fn)
 {
 	if (thread_pool_module_name != NULL && false == allow_override) {
 		zend_error(E_CORE_ERROR,
@@ -519,6 +525,7 @@ ZEND_API void zend_async_thread_pool_register(
 	zend_async_new_task_fn = new_task_fn;
 	zend_async_queue_task_fn = queue_task_fn;
 	zend_async_new_thread_pool_fn = new_thread_pool_fn;
+	zend_async_start_thread_fn = start_thread_fn;
 }
 
 ZEND_API bool zend_async_thread_pool_is_enabled(void)

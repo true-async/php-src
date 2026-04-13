@@ -281,6 +281,8 @@ typedef struct _zend_async_filesystem_event_s zend_async_filesystem_event_t;
 
 typedef struct _zend_async_process_event_s zend_async_process_event_t;
 typedef struct _zend_async_thread_event_s zend_async_thread_event_t;
+typedef struct _zend_async_thread_context_s zend_async_thread_context_t;
+typedef struct _zend_async_thread_internal_entry_s zend_async_thread_internal_entry_t;
 typedef struct _zend_async_trigger_event_s zend_async_trigger_event_t;
 
 typedef struct _zend_async_dns_nameinfo_s zend_async_dns_nameinfo_t;
@@ -349,6 +351,12 @@ typedef bool (*zend_async_reactor_execute_t)(bool no_wait);
 typedef bool (*zend_async_reactor_loop_alive_t)(void);
 typedef void (*zend_async_reactor_tick_t)(void);
 
+/* Quiesce — wait until all reactor-owned child threads have released TSRM
+ * and it is safe for the main thread to proceed into php_module_shutdown.
+ * Must be called only from the main thread. Returns when the internal
+ * thread registry is drained. */
+typedef void (*zend_async_reactor_quiesce_t)(void);
+
 typedef zend_async_poll_event_t *(*zend_async_new_socket_event_t)(
 		zend_socket_t socket, async_poll_event events, size_t extra_size);
 typedef zend_async_poll_event_t *(*zend_async_new_poll_event_t)(zend_file_descriptor_t fh,
@@ -407,6 +415,15 @@ typedef int (*zend_async_exec_t)(zend_async_exec_mode exec_mode, const char *cmd
 typedef void (*zend_async_task_run_t)(zend_async_task_t *task);
 typedef bool (*zend_async_queue_task_t)(zend_async_task_t *task);
 typedef zend_async_task_t *(*zend_async_new_task_t)(zend_async_task_run_t run, void *data, size_t extra_size);
+
+/* Thread handle — opaque OS thread identifier returned by start_thread */
+typedef uintptr_t zend_async_thread_handle_t;
+
+/* Start a lightweight thread with internal entry + context (no event needed).
+ * The reactor creates the OS thread, runs TSRM/request init, calls handler, shuts down.
+ * context ref_count is incremented for the thread runner. */
+typedef zend_async_thread_handle_t (*zend_async_start_thread_t)(
+	zend_async_thread_internal_entry_t *entry, zend_async_thread_context_t *context);
 
 typedef void (*zend_async_microtask_handler_t)(zend_async_microtask_t *microtask);
 
@@ -940,6 +957,34 @@ struct _zend_async_process_event_s {
 #define ZEND_THREAD_SET_RESULT_LOADED(ev) ((ev)->base.flags |= ZEND_THREAD_F_RESULT_LOADED)
 #define ZEND_THREAD_IS_RESULT_LOADED(ev) (((ev)->base.flags & ZEND_THREAD_F_RESULT_LOADED) != 0)
 
+/* Thread context — shared runtime data for a thread, pemalloc'd persistent.
+ * Owned by ref_count: event holds one ref, thread runner holds another.
+ * Whoever drops the last ref frees it. */
+struct _zend_async_thread_context_s {
+	zend_atomic_int ref_count;
+
+	/* Opaque pointer to thread snapshot (owned by ext, not by core) */
+	void *snapshot;
+
+	/* OS thread ID, set atomically inside the thread entry */
+	zend_atomic_int64 thread_id;
+
+	/* Bailout error message (pemalloc'd C string, NULL if no bailout).
+	 * Set in child thread after zend_catch, read in parent by load_result. */
+	char *bailout_error_message;
+
+	/* Back-pointer to event (NULL for lightweight/pool threads) */
+	zend_async_thread_event_t *event;
+
+	/* C-level entry point (NULL when using PHP closure via snapshot) */
+	zend_async_thread_internal_entry_t *internal_entry;
+
+	/* OS thread handle, written by start_thread before the runner starts.
+	 * Used by the runner as its own key when self-removing from the
+	 * reactor's thread registry during quiesce. */
+	zend_async_thread_handle_t handle;
+};
+
 struct _zend_async_thread_event_s {
 	zend_async_event_t base;
 
@@ -952,34 +997,25 @@ struct _zend_async_thread_event_s {
 	/* Exception from the thread, if any */
 	zend_object *exception;
 
-	/* OS thread ID, set atomically inside the thread entry */
-	zend_atomic_int64 thread_id;
-
 	/* Spawn location tracking */
 	zend_string *filename;
 	uint32_t lineno;
 
-	/* Opaque pointer to thread snapshot (owned by ext, not by core) */
-	void *snapshot;
+	/* Thread context (pemalloc'd, ref-counted, shared with runner) */
+	zend_async_thread_context_t *context;
 
 	/* Notify parent event loop that thread has finished.
 	 * Set by the reactor backend, called from child thread. */
 	void (*notify_parent)(zend_async_thread_event_t *event);
-
-	/* Bailout error message (pemalloc'd C string, NULL if no bailout).
-	 * Set in child thread after zend_catch, read in parent by load_result. */
-	char *bailout_error_message;
-
-	/** Optional internal entry point (pemalloc'd, alternative to PHP closure).
-	 * If non-NULL, async_thread_run calls handler instead of PHP closure.
-	 * The structure is pefree'd by the worker after copying ctx locally. */
-	struct _zend_async_thread_internal_entry_s {
-		void (*handler)(zend_async_thread_event_t *event, void *ctx);
-		void *ctx;
-	} *internal_entry;
 };
 
-typedef struct _zend_async_thread_internal_entry_s zend_async_thread_internal_entry_t;
+/* Internal entry point for C-level thread handlers (pemalloc'd persistent).
+ * When set on context, async_thread_run calls handler instead of PHP closure.
+ * event may be NULL (lightweight/pool threads). */
+struct _zend_async_thread_internal_entry_s {
+	void (*handler)(zend_async_thread_event_t *event, void *ctx);
+	void *ctx;
+};
 
 /* Filesystem event types (backend-agnostic) */
 #define ZEND_ASYNC_FS_EVENT_RENAME    (1u << 0)
@@ -1600,8 +1636,8 @@ struct _zend_async_thread_pool_s {
 	/* State flags */
 	zend_atomic_int closed;
 
-	/* Worker thread events (array of worker_count, pemalloc'd) */
-	zend_async_thread_event_t **workers;
+	/* OS thread handles (array of worker_count, pemalloc'd) */
+	zend_async_thread_handle_t *workers;
 
 	/* Methods */
 	zend_thread_pool_close_t close;
@@ -1907,6 +1943,7 @@ ZEND_API extern zend_async_reactor_shutdown_t zend_async_reactor_shutdown_fn;
 ZEND_API extern zend_async_reactor_execute_t zend_async_reactor_execute_fn;
 ZEND_API extern zend_async_reactor_loop_alive_t zend_async_reactor_loop_alive_fn;
 ZEND_API extern zend_async_reactor_tick_t zend_async_reactor_tick_fn;
+ZEND_API extern zend_async_reactor_quiesce_t zend_async_reactor_quiesce_fn;
 ZEND_API extern zend_async_new_socket_event_t zend_async_new_socket_event_fn;
 ZEND_API extern zend_async_new_poll_event_t zend_async_new_poll_event_fn;
 ZEND_API extern zend_async_new_poll_proxy_event_t zend_async_new_poll_proxy_event_fn;
@@ -1949,9 +1986,12 @@ ZEND_API bool zend_async_thread_pool_is_enabled(void);
 ZEND_API extern zend_async_new_task_t zend_async_new_task_fn;
 ZEND_API extern zend_async_queue_task_t zend_async_queue_task_fn;
 ZEND_API extern zend_async_new_thread_pool_t zend_async_new_thread_pool_fn;
+ZEND_API extern zend_async_start_thread_t zend_async_start_thread_fn;
 
 #define ZEND_ASYNC_NEW_THREAD_POOL(worker_count, queue_size) \
 	zend_async_new_thread_pool_fn((worker_count), (queue_size))
+#define ZEND_ASYNC_START_THREAD(entry, context) \
+	zend_async_start_thread_fn((entry), (context))
 
 /* Trigger Event API */
 ZEND_API extern zend_async_new_trigger_event_t zend_async_new_trigger_event_fn;
@@ -1995,6 +2035,7 @@ ZEND_API bool zend_async_reactor_register(char *module, bool allow_override,
 		zend_async_reactor_shutdown_t reactor_shutdown_fn,
 		zend_async_reactor_execute_t reactor_execute_fn,
 		zend_async_reactor_loop_alive_t reactor_loop_alive_fn,
+		zend_async_reactor_quiesce_t reactor_quiesce_fn,
 		zend_async_new_socket_event_t new_socket_event_fn,
 		zend_async_new_poll_event_t new_poll_event_fn,
 		zend_async_new_poll_proxy_event_t new_poll_proxy_event_fn,
@@ -2010,7 +2051,8 @@ ZEND_API bool zend_async_reactor_register(char *module, bool allow_override,
 ZEND_API void zend_async_thread_pool_register(
 		char *module, bool allow_override,
 		zend_async_new_task_t new_task_fn, zend_async_queue_task_t queue_task_fn,
-		zend_async_new_thread_pool_t new_thread_pool_fn);
+		zend_async_new_thread_pool_t new_thread_pool_fn,
+		zend_async_start_thread_t start_thread_fn);
 
 
 ZEND_API void zend_async_pool_api_register(
@@ -2209,6 +2251,8 @@ END_EXTERN_C()
 #define ZEND_ASYNC_REACTOR_IS_ENABLED() zend_async_reactor_is_enabled()
 #define ZEND_ASYNC_REACTOR_STARTUP() zend_async_reactor_startup_fn()
 #define ZEND_ASYNC_REACTOR_SHUTDOWN() zend_async_reactor_shutdown_fn()
+#define ZEND_ASYNC_REACTOR_QUIESCE() \
+	do { if (zend_async_reactor_quiesce_fn != NULL) zend_async_reactor_quiesce_fn(); } while (0)
 
 #define ZEND_ASYNC_REACTOR_EXECUTE(no_wait) zend_async_reactor_execute_fn(no_wait)
 #define ZEND_ASYNC_REACTOR_LOOP_ALIVE() zend_async_reactor_loop_alive_fn()
@@ -2249,6 +2293,23 @@ END_EXTERN_C()
 	zend_async_thread_snapshot_create_fn(entry, bootloader)
 #define ZEND_ASYNC_THREAD_SNAPSHOT_DESTROY(snapshot) \
 	zend_async_thread_snapshot_destroy_fn(snapshot)
+
+#define ZEND_ASYNC_THREAD_CONTEXT_ADDREF(ctx) \
+	zend_atomic_int_inc(&(ctx)->ref_count)
+
+#define ZEND_ASYNC_THREAD_CONTEXT_RELEASE(ctx) do { \
+	int _old = zend_atomic_int_dec(&(ctx)->ref_count); \
+	if (_old == 1) { \
+		if ((ctx)->snapshot) { \
+			ZEND_ASYNC_THREAD_SNAPSHOT_DESTROY((ctx)->snapshot); \
+		} \
+		if ((ctx)->bailout_error_message) { \
+			pefree((ctx)->bailout_error_message, 1); \
+		} \
+		pefree((ctx), 1); \
+	} \
+} while (0)
+
 #define ZEND_ASYNC_THREAD_RUN(arg) \
 	zend_async_thread_run_fn(arg)
 #define ZEND_ASYNC_THREAD_LOAD_RESULT(event) \
