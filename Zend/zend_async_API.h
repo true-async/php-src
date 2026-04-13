@@ -385,7 +385,31 @@ typedef void (*zend_async_thread_load_result_t)(zend_async_thread_event_t *event
 typedef struct _zend_async_thread_transfer_ctx_s {
 	HashTable xlat;   /* old_ptr → new_ptr mapping */
 	uint32_t depth;
+	/* Deferred-release list (LOAD side, lazily allocated). Used by
+	 * transfer_obj handlers that cannot immediately drop a temporary zval
+	 * without dangling an xlat entry (e.g. WeakReference load: the handler
+	 * creates a fresh referent, registers a weak ref to it, but has nowhere
+	 * strong to hand the temporary +1 ownership over to). Handlers push the
+	 * zval here instead of calling zval_ptr_dtor; the HashTable is destroyed
+	 * at ctx teardown, releasing all refcounts in one shot. Pointer to a
+	 * HashTable of zval values (ZVAL_PTR_DTOR). */
+	HashTable *defer_release;
 } zend_async_thread_transfer_ctx_t;
+
+/* Recursive zval transfer/load helpers. Used by transfer_obj handlers in
+ * Zend core classes (e.g. WeakReference, WeakMap) that need to deep-copy
+ * child zvals within an existing context, preserving identity and cycles
+ * via the shared xlat table. Implemented by the thread module. */
+typedef void (*zend_async_thread_transfer_zval_t)(
+		zend_async_thread_transfer_ctx_t *ctx, zval *dst, const zval *src);
+typedef void (*zend_async_thread_load_zval_t)(
+		zend_async_thread_transfer_ctx_t *ctx, zval *dst, const zval *src);
+typedef void (*zend_async_thread_xlat_put_t)(
+		zend_async_thread_transfer_ctx_t *ctx, const void *src, void *dst);
+/* Defer release of an emalloc zval until the load ctx is torn down. The zval
+ * is consumed (moved) — caller must treat it as undefined after the call. */
+typedef void (*zend_async_thread_defer_release_t)(
+		zend_async_thread_transfer_ctx_t *ctx, zval *z);
 
 typedef void (*zend_async_trigger_event_trigger_fn)(zend_async_trigger_event_t *event);
 typedef zend_async_trigger_event_t *(*zend_async_new_trigger_event_t)(size_t extra_size);
@@ -1955,6 +1979,19 @@ ZEND_API extern zend_async_thread_snapshot_create_t zend_async_thread_snapshot_c
 ZEND_API extern zend_async_thread_snapshot_destroy_t zend_async_thread_snapshot_destroy_fn;
 ZEND_API extern zend_async_thread_run_t zend_async_thread_run_fn;
 ZEND_API extern zend_async_thread_load_result_t zend_async_thread_load_result_fn;
+ZEND_API extern zend_async_thread_transfer_zval_t zend_async_thread_transfer_zval_fn;
+ZEND_API extern zend_async_thread_load_zval_t zend_async_thread_load_zval_fn;
+ZEND_API extern zend_async_thread_xlat_put_t zend_async_thread_xlat_put_fn;
+ZEND_API extern zend_async_thread_defer_release_t zend_async_thread_defer_release_fn;
+
+#define ZEND_ASYNC_THREAD_TRANSFER_ZVAL(ctx, dst, src) \
+	zend_async_thread_transfer_zval_fn((ctx), (dst), (src))
+#define ZEND_ASYNC_THREAD_LOAD_ZVAL(ctx, dst, src) \
+	zend_async_thread_load_zval_fn((ctx), (dst), (src))
+#define ZEND_ASYNC_THREAD_XLAT_PUT(ctx, src, dst) \
+	zend_async_thread_xlat_put_fn((ctx), (src), (dst))
+#define ZEND_ASYNC_THREAD_DEFER_RELEASE(ctx, z) \
+	zend_async_thread_defer_release_fn((ctx), (z))
 ZEND_API extern zend_async_new_filesystem_event_t zend_async_new_filesystem_event_fn;
 
 /* Socket Listening API */
@@ -2052,7 +2089,11 @@ ZEND_API void zend_async_thread_pool_register(
 		char *module, bool allow_override,
 		zend_async_new_task_t new_task_fn, zend_async_queue_task_t queue_task_fn,
 		zend_async_new_thread_pool_t new_thread_pool_fn,
-		zend_async_start_thread_t start_thread_fn);
+		zend_async_start_thread_t start_thread_fn,
+		zend_async_thread_transfer_zval_t transfer_zval_fn,
+		zend_async_thread_load_zval_t load_zval_fn,
+		zend_async_thread_xlat_put_t xlat_put_fn,
+		zend_async_thread_defer_release_t defer_release_fn);
 
 
 ZEND_API void zend_async_pool_api_register(
