@@ -1,12 +1,12 @@
 /*
    +----------------------------------------------------------------------+
-   | This source file is subject to version 3.01 of the PHP license,      |
-   | that is bundled with this package in the file LICENSE, and is        |
-   | available through the world-wide-web at the following url:           |
-   | https://www.php.net/license/3_01.txt                                 |
-   | If you did not receive a copy of the PHP license and are unable to   |
-   | obtain it through the world-wide-web, please send a note to          |
-   | license@php.net so we can mail you a copy immediately.               |
+   | Copyright © The PHP Group and Contributors.                          |
+   +----------------------------------------------------------------------+
+   | This source file is subject to the Modified BSD License that is      |
+   | bundled with this package in the file LICENSE, and is available      |
+   | through the World Wide Web at <https://www.php.net/license/>.        |
+   |                                                                      |
+   | SPDX-License-Identifier: BSD-3-Clause                                |
    +----------------------------------------------------------------------+
    | Authors: Levi Morrison <morrison.levi@gmail.com>                     |
    +----------------------------------------------------------------------+
@@ -40,7 +40,7 @@
  * and alignment purposes.
  */
 
-#if defined(ZEND_WIN32) || defined(HAVE_SYNC_ATOMICS)
+#if (defined(ZEND_WIN32) || defined(HAVE_SYNC_ATOMICS)) && !defined(HAVE_C11_ATOMICS)
 typedef struct zend_atomic_bool_s {
 	volatile char value;
 } zend_atomic_bool;
@@ -82,7 +82,7 @@ typedef struct zend_atomic_int64_s {
 
 BEGIN_EXTERN_C()
 
-#ifdef ZEND_WIN32
+#if defined(ZEND_WIN32) && !defined(HAVE_C11_ATOMICS)
 
 #ifndef InterlockedExchange8
 #define InterlockedExchange8 _InterlockedExchange8
@@ -153,7 +153,7 @@ static zend_always_inline bool zend_atomic_int64_compare_exchange_ex(zend_atomic
 	}
 }
 
-/* On this platform it is non-const due to Iterlocked API*/
+/* On this platform it is non-const due to Interlocked API */
 static zend_always_inline bool zend_atomic_bool_load_ex(zend_atomic_bool *obj) {
 	/* Or'ing with false won't change the value. */
 	return InterlockedOr8(&obj->value, false);
@@ -511,7 +511,7 @@ ZEND_API void zend_atomic_bool_store(zend_atomic_bool *obj, bool desired);
 ZEND_API void zend_atomic_int_store(zend_atomic_int *obj, int desired);
 ZEND_API void zend_atomic_int64_store(zend_atomic_int64 *obj, int64_t desired);
 
-#if defined(ZEND_WIN32) || defined(HAVE_SYNC_ATOMICS)
+#if (defined(ZEND_WIN32) && !defined(HAVE_C11_ATOMICS)) || defined(HAVE_SYNC_ATOMICS)
 /* On these platforms it is non-const due to underlying APIs. */
 ZEND_API bool zend_atomic_bool_load(zend_atomic_bool *obj);
 ZEND_API int zend_atomic_int_load(zend_atomic_int *obj);
