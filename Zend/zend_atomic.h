@@ -124,7 +124,7 @@ static zend_always_inline int64_t zend_atomic_int64_exchange_ex(zend_atomic_int6
 }
 
 static zend_always_inline bool zend_atomic_bool_compare_exchange_ex(zend_atomic_bool *obj, bool *expected, bool desired) {
-	bool prev = (bool) InterlockedCompareExchange8(&obj->value, *expected, desired);
+	const bool prev = (bool) InterlockedCompareExchange8(&obj->value, desired, *expected);
 	if (prev == *expected) {
 		return true;
 	} else {
@@ -134,7 +134,7 @@ static zend_always_inline bool zend_atomic_bool_compare_exchange_ex(zend_atomic_
 }
 
 static zend_always_inline bool zend_atomic_int_compare_exchange_ex(zend_atomic_int *obj, int *expected, int desired) {
-	int prev = (int) InterlockedCompareExchange(&obj->value, *expected, desired);
+	const int prev = (int) InterlockedCompareExchange(&obj->value, desired, *expected);
 	if (prev == *expected) {
 		return true;
 	} else {
@@ -144,7 +144,7 @@ static zend_always_inline bool zend_atomic_int_compare_exchange_ex(zend_atomic_i
 }
 
 static zend_always_inline bool zend_atomic_int64_compare_exchange_ex(zend_atomic_int64 *obj, int64_t *expected, int64_t desired) {
-	int64_t prev = (int64_t) InterlockedCompareExchange64(&obj->value, *expected, desired);
+	const int64_t prev = (int64_t) InterlockedCompareExchange64(&obj->value, desired, *expected);
 	if (prev == *expected) {
 		return true;
 	} else {
