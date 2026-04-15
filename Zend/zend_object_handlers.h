@@ -27,6 +27,7 @@
 #include "zend_lazy_objects.h"
 
 struct _zend_property_info;
+struct _zend_async_thread_transfer_ctx_s;
 
 #define ZEND_WRONG_PROPERTY_INFO \
 	((struct _zend_property_info*)((intptr_t)-1))
@@ -181,6 +182,18 @@ typedef void (*zend_object_dtor_obj_t)(zend_object *object);
 typedef zend_object* (*zend_object_clone_obj_t)(zend_object *object);
 typedef zend_object* (*zend_object_clone_obj_with_t)(zend_object *object, const zend_class_entry *scope, const HashTable *properties);
 
+typedef enum {
+	ZEND_OBJECT_TRANSFER,  /* emalloc → pemalloc (send to another thread) */
+	ZEND_OBJECT_LOAD,      /* pemalloc → emalloc (receive in target thread) */
+} zend_object_transfer_kind_t;
+
+typedef zend_object* (*zend_object_transfer_default_fn)(
+	const zend_object *src, struct _zend_async_thread_transfer_ctx_s *ctx, size_t alloc_size);
+
+typedef zend_object* (*zend_object_transfer_obj_t)(
+	zend_object *object, struct _zend_async_thread_transfer_ctx_s *ctx,
+	zend_object_transfer_kind_t kind, zend_object_transfer_default_fn default_fn);
+
 /* Get class name for display in var_dump and other debugging functions.
  * Must be defined and must return a non-NULL value. */
 typedef zend_string *(*zend_object_get_class_name_t)(const zend_object *object);
@@ -231,6 +244,7 @@ struct _zend_object_handlers {
 	zend_object_do_operation_t				do_operation;         /* optional */
 	zend_object_compare_t					compare;              /* required */
 	zend_object_get_properties_for_t		get_properties_for;   /* optional */
+	zend_object_transfer_obj_t				transfer_obj;         /* optional */
 };
 
 BEGIN_EXTERN_C()

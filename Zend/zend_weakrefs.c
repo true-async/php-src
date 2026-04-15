@@ -18,6 +18,7 @@
 #include "zend_types.h"
 #include "zend_weakrefs.h"
 #include "zend_weakrefs_arginfo.h"
+#include "zend_async_API.h"
 
 typedef struct _zend_weakref {
 	zend_object *referent;
@@ -788,6 +789,149 @@ ZEND_METHOD(WeakMap, getIterator)
 	zend_create_internal_iterator_zval(return_value, ZEND_THIS);
 }
 
+/* {{{ Cross-thread transfer handlers for WeakReference and WeakMap.
+ *
+ * Default byte-wise object transfer silently drops the referent (WR) / all
+ * entries (WM) because these classes store thread-local pointers in private
+ * fields that fall outside the std zend_object memcpy range.
+ *
+ * Transit layout reuses the default object transit convention:
+ *   dst->ce       = class name (persistent zend_string)
+ *   dst->handlers = prop_count cast to pointer
+ *   dst->properties_table[] = transferred child zvals
+ *   dst->extra_flags = wrapper offset for release (0 here, plain zend_object)
+ *
+ * WeakReference uses prop_count=1, slot[0] = referent (IS_OBJECT) or IS_NULL.
+ * WeakMap uses prop_count=2*N with alternating [key, value, key, value, ...].
+ * Both handlers push themselves into xlat early so self-referential cycles
+ * ($wm[$obj] = $wm) resolve correctly.
+ *
+ * On LOAD, a fresh referent/key may be created with no other strong holder
+ * in sight; we cannot zval_ptr_dtor the temporary immediately because the
+ * xlat still holds its pointer for subsequent lookups. We hand the temporary
+ * over to the ctx's defer_release list, which frees everything in one shot
+ * at ctx teardown after the whole graph has been loaded.
+ */
+static zend_object *zend_weakref_transfer_obj(
+	zend_object *object, zend_async_thread_transfer_ctx_t *ctx,
+	zend_object_transfer_kind_t kind, zend_object_transfer_default_fn default_fn)
+{
+	(void) default_fn;
+
+	if (kind == ZEND_OBJECT_TRANSFER) {
+		zend_weakref *wr = zend_weakref_from(object);
+		zend_object *referent = wr->referent;
+
+		/* Transit wrapper: plain zend_object with 1 inline prop slot. */
+		zend_object *dst = pemalloc(sizeof(zend_object), 1);
+		memset(dst, 0, sizeof(zend_object));
+		GC_SET_REFCOUNT(dst, 1);
+		GC_TYPE_INFO(dst) = GC_OBJECT;
+		dst->ce = (zend_class_entry *) zend_string_init(
+			ZSTR_VAL(object->ce->name), ZSTR_LEN(object->ce->name), 1);
+		dst->handlers = (const zend_object_handlers *)(uintptr_t) 1; /* prop_count */
+		dst->properties = NULL;
+		dst->extra_flags = 0; /* offset */
+
+		ZEND_ASYNC_THREAD_XLAT_PUT(ctx, object, dst);
+
+		if (referent) {
+			zval ref_zv;
+			ZVAL_OBJ(&ref_zv, referent);
+			ZEND_ASYNC_THREAD_TRANSFER_ZVAL(ctx, &dst->properties_table[0], &ref_zv);
+		} else {
+			ZVAL_NULL(&dst->properties_table[0]);
+		}
+		return dst;
+	}
+
+	/* ZEND_OBJECT_LOAD: transit → emalloc */
+	zval ref_zv;
+	ZEND_ASYNC_THREAD_LOAD_ZVAL(ctx, &ref_zv, &object->properties_table[0]);
+
+	if (Z_TYPE(ref_zv) == IS_OBJECT) {
+		zval wr_zv;
+		if (!zend_weakref_find(Z_OBJ(ref_zv), &wr_zv)) {
+			zend_weakref_create(Z_OBJ(ref_zv), &wr_zv);
+		}
+		/* Hand the temporary +1 on the referent over to the ctx. It will be
+		 * released at ctx teardown, by which point xlat is no longer consulted
+		 * and the referent can safely go to refcount 0 (if nothing else holds
+		 * it, which matches PHP WeakReference semantics). */
+		ZEND_ASYNC_THREAD_DEFER_RELEASE(ctx, &ref_zv);
+		return Z_OBJ(wr_zv);
+	}
+
+	/* Source-side referent was already dead — fresh empty WR. */
+	return zend_weakref_new(zend_ce_weakref);
+}
+
+static zend_object *zend_weakmap_transfer_obj(
+	zend_object *object, zend_async_thread_transfer_ctx_t *ctx,
+	zend_object_transfer_kind_t kind, zend_object_transfer_default_fn default_fn)
+{
+	(void) default_fn;
+
+	if (kind == ZEND_OBJECT_TRANSFER) {
+		zend_weakmap *wm = zend_weakmap_from(object);
+		const uint32_t num = zend_hash_num_elements(&wm->ht);
+		const uint32_t prop_count = 2 * num;
+
+		size_t obj_size = sizeof(zend_object);
+		if (prop_count > 1) {
+			obj_size += (prop_count - 1) * sizeof(zval);
+		}
+
+		zend_object *dst = pemalloc(obj_size, 1);
+		memset(dst, 0, obj_size);
+		GC_SET_REFCOUNT(dst, 1);
+		GC_TYPE_INFO(dst) = GC_OBJECT;
+		dst->ce = (zend_class_entry *) zend_string_init(
+			ZSTR_VAL(object->ce->name), ZSTR_LEN(object->ce->name), 1);
+		dst->handlers = (const zend_object_handlers *)(uintptr_t) prop_count;
+		dst->properties = NULL;
+		dst->extra_flags = 0;
+
+		ZEND_ASYNC_THREAD_XLAT_PUT(ctx, object, dst);
+
+		uint32_t i = 0;
+		zend_ulong obj_key;
+		zval *val;
+		ZEND_HASH_MAP_FOREACH_NUM_KEY_VAL(&wm->ht, obj_key, val) {
+			zval key_zv;
+			ZVAL_OBJ(&key_zv, zend_weakref_key_to_object(obj_key));
+			ZEND_ASYNC_THREAD_TRANSFER_ZVAL(ctx, &dst->properties_table[i++], &key_zv);
+			ZEND_ASYNC_THREAD_TRANSFER_ZVAL(ctx, &dst->properties_table[i++], val);
+		} ZEND_HASH_FOREACH_END();
+
+		return dst;
+	}
+
+	/* ZEND_OBJECT_LOAD: transit → emalloc */
+	const uint32_t prop_count = (uint32_t)(uintptr_t) object->handlers;
+	zend_object *dst = zend_weakmap_create_object(zend_ce_weakmap);
+	ZEND_ASYNC_THREAD_XLAT_PUT(ctx, object, dst);
+
+	for (uint32_t i = 0; i < prop_count; i += 2) {
+		zval key_zv, val_zv;
+		ZEND_ASYNC_THREAD_LOAD_ZVAL(ctx, &key_zv, &object->properties_table[i]);
+		ZEND_ASYNC_THREAD_LOAD_ZVAL(ctx, &val_zv, &object->properties_table[i + 1]);
+
+		if (Z_TYPE(key_zv) == IS_OBJECT) {
+			zend_weakmap_write_dimension(dst, &key_zv, &val_zv);
+		}
+		/* Key temporary goes to defer_release for the same reason as in WR:
+		 * write_dimension does not strongly hold the key (it's a weak map),
+		 * so a direct dtor could dangle xlat if the key was freshly loaded. */
+		ZEND_ASYNC_THREAD_DEFER_RELEASE(ctx, &key_zv);
+		/* Value was addref'd by write_dimension, our temp can go away now. */
+		zval_ptr_dtor(&val_zv);
+	}
+
+	return dst;
+}
+/* }}} */
+
 void zend_register_weakref_ce(void) /* {{{ */
 {
 	zend_ce_weakref = register_class_WeakReference();
@@ -801,6 +945,7 @@ void zend_register_weakref_ce(void) /* {{{ */
 	zend_weakref_handlers.free_obj = zend_weakref_free;
 	zend_weakref_handlers.get_debug_info = zend_weakref_get_debug_info;
 	zend_weakref_handlers.clone_obj = NULL;
+	zend_weakref_handlers.transfer_obj = zend_weakref_transfer_obj;
 
 	zend_ce_weakmap = register_class_WeakMap(zend_ce_arrayaccess, zend_ce_countable, zend_ce_aggregate);
 
@@ -819,6 +964,7 @@ void zend_register_weakref_ce(void) /* {{{ */
 	zend_weakmap_handlers.get_properties_for = zend_weakmap_get_properties_for;
 	zend_weakmap_handlers.get_gc = zend_weakmap_get_gc;
 	zend_weakmap_handlers.clone_obj = zend_weakmap_clone_obj;
+	zend_weakmap_handlers.transfer_obj = zend_weakmap_transfer_obj;
 }
 /* }}} */
 

@@ -2517,6 +2517,11 @@ void php_module_shutdown(void)
 		return;
 	}
 
+	/* Drain child threads spawned via the async reactor before any module
+	 * gets destroyed. Workers may still be running their own request
+	 * shutdown and touching TSRM globals of modules we are about to free. */
+	ZEND_ASYNC_REACTOR_QUIESCE();
+
 	zend_interned_strings_switch_storage(0);
 
 #if ZEND_RC_DEBUG
