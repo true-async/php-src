@@ -31,12 +31,20 @@ ZEND_API void zend_atomic_int_init(zend_atomic_int *obj, int desired) {
 	ZEND_ATOMIC_INT_INIT(obj, desired);
 }
 
+ZEND_API void zend_atomic_int64_init(zend_atomic_int64 *obj, int64_t desired) {
+	ZEND_ATOMIC_INT64_INIT(obj, desired);
+}
+
 ZEND_API bool zend_atomic_bool_exchange(zend_atomic_bool *obj, bool desired) {
 	return zend_atomic_bool_exchange_ex(obj, desired);
 }
 
 ZEND_API int zend_atomic_int_exchange(zend_atomic_int *obj, int desired) {
 	return zend_atomic_int_exchange_ex(obj, desired);
+}
+
+ZEND_API int64_t zend_atomic_int64_exchange(zend_atomic_int64 *obj, int64_t desired) {
+	return zend_atomic_int64_exchange_ex(obj, desired);
 }
 
 ZEND_API bool zend_atomic_bool_compare_exchange(zend_atomic_bool *obj, bool *expected, bool desired)
@@ -49,12 +57,21 @@ ZEND_API bool zend_atomic_int_compare_exchange(zend_atomic_int *obj, int *expect
 	return zend_atomic_int_compare_exchange_ex(obj, expected, desired);
 }
 
+ZEND_API bool zend_atomic_int64_compare_exchange(zend_atomic_int64 *obj, int64_t *expected, int64_t desired)
+{
+	return zend_atomic_int64_compare_exchange_ex(obj, expected, desired);
+}
+
 ZEND_API void zend_atomic_bool_store(zend_atomic_bool *obj, bool desired) {
 	zend_atomic_bool_store_ex(obj, desired);
 }
 
 ZEND_API void zend_atomic_int_store(zend_atomic_int *obj, int desired) {
 	zend_atomic_int_store_ex(obj, desired);
+}
+
+ZEND_API void zend_atomic_int64_store(zend_atomic_int64 *obj, int64_t desired) {
+	zend_atomic_int64_store_ex(obj, desired);
 }
 
 #if (defined(ZEND_WIN32) || defined(HAVE_SYNC_ATOMICS)) && !defined(HAVE_C11_ATOMICS)
@@ -65,11 +82,17 @@ ZEND_API bool zend_atomic_bool_load(zend_atomic_bool *obj) {
 ZEND_API int zend_atomic_int_load(zend_atomic_int *obj) {
 	return zend_atomic_int_load_ex(obj);
 }
+ZEND_API int64_t zend_atomic_int64_load(zend_atomic_int64 *obj) {
+	return zend_atomic_int64_load_ex(obj);
+}
 #else
 ZEND_API bool zend_atomic_bool_load(const zend_atomic_bool *obj) {
 	return zend_atomic_bool_load_ex(obj);
 }
 ZEND_API int zend_atomic_int_load(const zend_atomic_int *obj) {
 	return zend_atomic_int_load_ex(obj);
+}
+ZEND_API int64_t zend_atomic_int64_load(const zend_atomic_int64 *obj) {
+	return zend_atomic_int64_load_ex(obj);
 }
 #endif

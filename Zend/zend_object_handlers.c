@@ -2672,6 +2672,7 @@ ZEND_API const zend_object_handlers std_object_handlers = {
 	NULL,									/* do_operation */
 	zend_std_compare_objects,				/* compare */
 	NULL,									/* get_properties_for */
+	NULL,									/* transfer_obj */
 };
 
 void zend_object_handlers_startup(void) {
