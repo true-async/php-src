@@ -84,8 +84,11 @@ static void copy_zend_constant(zval *zv)
 		c->filename = zend_string_copy(c->filename);
 	}
 	if (c->attributes != NULL) {
-		// Use the same attributes table
-		GC_ADDREF(c->attributes);
+		/* Duplicate rather than addref: attributes live in persistent memory
+		 * (pemalloc) and GC_ADDREF on persistent violates ZEND_RC_DEBUG.
+		 * Also a non-atomic refcount bump is a data race under ZTS.
+		 * See https://github.com/php/php-src/issues/21774 */
+		c->attributes = zend_array_dup(c->attributes);
 	}
 	if (Z_TYPE(c->value) == IS_STRING) {
 		Z_STR(c->value) = zend_string_dup(Z_STR(c->value), 1);
