@@ -2711,7 +2711,12 @@ ZEND_RINIT_FUNCTION(zend_accelerator)
 #endif
 
 	HANDLE_BLOCK_INTERRUPTIONS();
+	/* SHM_UNPROTECT/PROTECT pair temporarily disabled for ZTS.
+	 * mprotect() is process-global and races with JIT trace compilation
+	 * in other threads. See https://github.com/php/php-src/issues/21772 */
+#ifndef ZTS
 	SHM_UNPROTECT();
+#endif
 
 	if (ZCG(counted)) {
 #ifdef ZTS
@@ -2775,7 +2780,9 @@ ZEND_RINIT_FUNCTION(zend_accelerator)
 
 	ZCG(accelerator_enabled) = ZCSG(accelerator_enabled);
 
+#ifndef ZTS
 	SHM_PROTECT();
+#endif
 	HANDLE_UNBLOCK_INTERRUPTIONS();
 
 	if (ZCG(accelerator_enabled) && ZCSG(last_restart_time) != ZCG(last_restart_time)) {
