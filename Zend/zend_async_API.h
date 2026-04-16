@@ -394,6 +394,10 @@ typedef struct _zend_async_thread_transfer_ctx_s {
 	 * at ctx teardown, releasing all refcounts in one shot. Pointer to a
 	 * HashTable of zval values (ZVAL_PTR_DTOR). */
 	HashTable *defer_release;
+	/* Error message from transfer failure (depth limit, unsupported type).
+	 * Set instead of throwing to avoid zend_bailout() when there is no
+	 * active execute_data. Caller checks after transfer and throws. */
+	const char *error;
 } zend_async_thread_transfer_ctx_t;
 
 /* Recursive zval transfer/load helpers. Used by transfer_obj handlers in

@@ -114,6 +114,7 @@ char pgsql_libpq_version[16];
 
 ZEND_DECLARE_MODULE_GLOBALS(pgsql)
 static PHP_GINIT_FUNCTION(pgsql);
+static PHP_GSHUTDOWN_FUNCTION(pgsql);
 
 static const zend_module_dep pgsql_module_deps[] = {
 	ZEND_MOD_REQUIRED("pcre")
@@ -134,7 +135,7 @@ zend_module_entry pgsql_module_entry = {
 	PHP_PGSQL_VERSION,
 	PHP_MODULE_GLOBALS(pgsql),
 	PHP_GINIT(pgsql),
-	NULL,
+	PHP_GSHUTDOWN(pgsql),
 	NULL,
 	STANDARD_MODULE_PROPERTIES_EX
 };
@@ -725,6 +726,17 @@ static PHP_GINIT_FUNCTION(pgsql)
 	ADD_REGEX("#^([0-9a-f]{2,2}:){5,5}[0-9a-f]{2,2}$#ni");
 }
 
+static PHP_GSHUTDOWN_FUNCTION(pgsql)
+{
+	for (size_t i = 0; i < PGSQL_MAX_REGEXES; i++) {
+		if (pgsql_globals->regexes[i]) {
+			zend_string_release_ex(pgsql_globals->regexes[i], true);
+			pgsql_globals->regexes[i] = NULL;
+		}
+	}
+	zend_hash_destroy(&pgsql_globals->connections);
+}
+
 static void php_libpq_version(char *buf, size_t len)
 {
 	int version = PQlibVersion();
@@ -789,11 +801,9 @@ PHP_MINIT_FUNCTION(pgsql)
 PHP_MSHUTDOWN_FUNCTION(pgsql)
 {
 	UNREGISTER_INI_ENTRIES();
-	zend_hash_destroy(&PGG(connections));
-
-	for (size_t i = 0; i < PGSQL_MAX_REGEXES; i ++)
-		zend_string_release_ex(PGG(regexes[i]), true);
-
+	/* Per-thread globals (connections hash, regex zend_strings) are released
+	 * by PHP_GSHUTDOWN(pgsql), which runs for every thread that allocated
+	 * per-thread globals — including the main thread. */
 	return SUCCESS;
 }
 
