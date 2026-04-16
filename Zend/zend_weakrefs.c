@@ -827,8 +827,11 @@ static zend_object *zend_weakref_transfer_obj(
 		memset(dst, 0, sizeof(zend_object));
 		GC_SET_REFCOUNT(dst, 1);
 		GC_TYPE_INFO(dst) = GC_OBJECT;
-		dst->ce = (zend_class_entry *) zend_string_init(
+		GC_MAKE_PERSISTENT_LOCAL(dst);
+		zend_string *name_copy = zend_string_init(
 			ZSTR_VAL(object->ce->name), ZSTR_LEN(object->ce->name), 1);
+		GC_MAKE_PERSISTENT_LOCAL(name_copy);
+		dst->ce = (zend_class_entry *) name_copy;
 		dst->handlers = (const zend_object_handlers *)(uintptr_t) 1; /* prop_count */
 		dst->properties = NULL;
 		dst->extra_flags = 0; /* offset */
@@ -886,8 +889,11 @@ static zend_object *zend_weakmap_transfer_obj(
 		memset(dst, 0, obj_size);
 		GC_SET_REFCOUNT(dst, 1);
 		GC_TYPE_INFO(dst) = GC_OBJECT;
-		dst->ce = (zend_class_entry *) zend_string_init(
+		GC_MAKE_PERSISTENT_LOCAL(dst);
+		zend_string *name_copy = zend_string_init(
 			ZSTR_VAL(object->ce->name), ZSTR_LEN(object->ce->name), 1);
+		GC_MAKE_PERSISTENT_LOCAL(name_copy);
+		dst->ce = (zend_class_entry *) name_copy;
 		dst->handlers = (const zend_object_handlers *)(uintptr_t) prop_count;
 		dst->properties = NULL;
 		dst->extra_flags = 0;
