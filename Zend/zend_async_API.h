@@ -1794,6 +1794,13 @@ typedef struct {
 	 * suspended execute_data instead of EG(current_execute_data).
 	 * Used by scheduler code acting on behalf of a specific coroutine. */
 	zend_coroutine_t *acting_coroutine;
+
+	/* Per-thread vector of main-coroutine start handlers. Copied into each
+	 * fresh main coroutine's switch_handlers by
+	 * zend_async_call_main_coroutine_start_handlers(). Per-thread storage
+	 * avoids the realloc race a shared global vector would have when
+	 * worker threads register lazily from request-shutdown paths. */
+	zend_coroutine_switch_handlers_vector_t main_coroutine_start_handlers;
 } zend_async_globals_t;
 
 BEGIN_EXTERN_C()

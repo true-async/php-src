@@ -2232,8 +2232,6 @@ zend_result php_module_startup(sapi_module_struct *sf, zend_module_entry *additi
 
 	sapi_module = *sf;
 
-	php_output_startup();
-
 #ifdef ZTS
 	ts_allocate_fast_id(&core_globals_id, &core_globals_offset, sizeof(php_core_globals), (ts_allocate_ctor) core_globals_ctor, (ts_allocate_dtor) core_globals_dtor);
 #ifdef PHP_WIN32
@@ -2245,6 +2243,8 @@ zend_result php_module_startup(sapi_module_struct *sf, zend_module_entry *additi
 #endif
 	gc_globals_ctor();
 	zend_async_globals_ctor();
+
+	php_output_startup();
 
 	zend_observer_startup();
 #if ZEND_DEBUG

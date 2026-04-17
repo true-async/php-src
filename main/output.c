@@ -35,6 +35,7 @@
 
 # include "Zend/zend_async_API.h"
 static void php_output_async_init(void);
+static bool php_output_main_coroutine_start_handler(zend_coroutine_t *coroutine, bool is_enter, bool is_finishing);
 uint32_t php_output_context_key = 0;
 
 PHPAPI ZEND_DECLARE_MODULE_GLOBALS(output)
@@ -200,6 +201,12 @@ PHPAPI int php_output_activate(void)
 
 	zend_stack_init(&ASYNC_OG(handlers), sizeof(php_output_handler *));
 	ASYNC_OG(flags) |= PHP_OUTPUT_ACTIVATED;
+
+	/* Per-thread registration of the main-coroutine start handler. The
+	 * vector lives in async TLS, and add_main_coroutine_start_handler is
+	 * idempotent (duplicate check), so calling it on every activate is
+	 * cheap and ensures worker threads also get the handler. */
+	ZEND_ASYNC_ADD_MAIN_COROUTINE_START_HANDLER(php_output_main_coroutine_start_handler);
 
 	return SUCCESS;
 }
@@ -1733,12 +1740,11 @@ static void php_output_coroutine_cleanup_callback(
 	}
 }
 
-/* Initialize output context key and register global main coroutine handler */
+/* Initialize output context key (allocated once, process-wide). */
 static void php_output_async_init(void)
 {
 	if (php_output_context_key == 0) {
 		php_output_context_key = ZEND_ASYNC_INTERNAL_CONTEXT_KEY_ALLOC("php_output_context");
-		ZEND_ASYNC_ADD_MAIN_COROUTINE_START_HANDLER(php_output_main_coroutine_start_handler);
 	}
 }
 

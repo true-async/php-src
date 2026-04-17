@@ -32,9 +32,6 @@ static zend_always_inline zend_ulong ptr_to_index(void *ptr)
 	return (key >> 3) | (key << ((sizeof(key) * 8) - 3));
 }
 
-/* Forward declarations */
-static void zend_async_main_handlers_shutdown(void);
-
 static zend_coroutine_t *spawn(
 		zend_async_scope_t *scope, zend_object *scope_provider, int32_t priority)
 {
@@ -310,10 +307,18 @@ static void internal_globals_ctor(zend_async_globals_t *globals)
 	globals->exit_exception = NULL;
 	globals->heartbeat_handler = NULL;
 	globals->acting_coroutine = NULL;
+	globals->main_coroutine_start_handlers.length = 0;
+	globals->main_coroutine_start_handlers.capacity = 0;
+	globals->main_coroutine_start_handlers.data = NULL;
+	globals->main_coroutine_start_handlers.in_execution = false;
 }
 
 static void internal_globals_dtor(zend_async_globals_t *globals)
 {
+	if (globals->main_coroutine_start_handlers.data != NULL) {
+		pefree(globals->main_coroutine_start_handlers.data, 1);
+		globals->main_coroutine_start_handlers.data = NULL;
+	}
 }
 
 void zend_async_globals_ctor(void)
@@ -341,10 +346,7 @@ void zend_async_globals_dtor(void)
 void zend_async_api_shutdown(void)
 {
 	zend_async_internal_context_api_shutdown();
-	zend_async_main_handlers_shutdown();
-#ifndef ZTS
 	zend_async_globals_dtor();
-#endif
 
 	/* Reset module registration guards so re-init (e.g. phpdbg) works */
 	scheduler_module_name = NULL;
@@ -2009,15 +2011,12 @@ ZEND_API bool zend_coroutine_call_switch_handlers(
 }
 
 ///////////////////////////////////////////////////////////////
-/// Global Main Coroutine Switch Handlers Implementation
+/// Per-Thread Main Coroutine Switch Handlers Implementation
 ///////////////////////////////////////////////////////////////
-
-static zend_coroutine_switch_handlers_vector_t global_main_coroutine_start_handlers
-		= { 0, 0, NULL, false };
 
 ZEND_API bool zend_async_add_main_coroutine_start_handler(zend_coroutine_switch_handler_fn handler)
 {
-	zend_coroutine_switch_handlers_vector_t *vector = &global_main_coroutine_start_handlers;
+	zend_coroutine_switch_handlers_vector_t *vector = &ZEND_ASYNC_G(main_coroutine_start_handlers);
 
 	/* Check for duplicate handler */
 	for (uint32_t i = 0; i < vector->length; i++) {
@@ -2042,9 +2041,9 @@ ZEND_API bool zend_async_add_main_coroutine_start_handler(zend_coroutine_switch_
 
 ZEND_API bool zend_async_call_main_coroutine_start_handlers(zend_coroutine_t *main_coroutine)
 {
-	zend_coroutine_switch_handlers_vector_t *global_vector = &global_main_coroutine_start_handlers;
+	zend_coroutine_switch_handlers_vector_t *vector = &ZEND_ASYNC_G(main_coroutine_start_handlers);
 
-	if (UNEXPECTED(global_vector->length == 0)) {
+	if (UNEXPECTED(vector->length == 0)) {
 		return true;
 	}
 
@@ -2053,9 +2052,9 @@ ZEND_API bool zend_async_call_main_coroutine_start_handlers(zend_coroutine_t *ma
 		zend_coroutine_switch_handlers_init(main_coroutine);
 	}
 
-	/* Copy all global handlers to main coroutine first */
-	for (uint32_t i = 0; i < global_vector->length; i++) {
-		zend_coroutine_add_switch_handler(main_coroutine, global_vector->data[i].handler);
+	/* Copy all per-thread handlers to main coroutine first */
+	for (uint32_t i = 0; i < vector->length; i++) {
+		zend_coroutine_add_switch_handler(main_coroutine, vector->data[i].handler);
 	}
 
 	/* Now call the standard switch handlers function which will handle removal logic */
@@ -2088,16 +2087,3 @@ ZEND_API void zend_fcall_release(zend_fcall_t *fcall)
 	efree(fcall);
 }
 
-/* Global cleanup function - called during PHP shutdown */
-static void zend_async_main_handlers_shutdown(void)
-{
-	zend_coroutine_switch_handlers_vector_t *vector = &global_main_coroutine_start_handlers;
-
-	if (vector->data != NULL) {
-		pefree(vector->data, 1);
-		vector->data = NULL;
-		vector->length = 0;
-		vector->capacity = 0;
-		vector->in_execution = false;
-	}
-}
