@@ -1660,6 +1660,7 @@ struct _zend_async_thread_pool_s {
 	/* Counts (atomic — accessed from multiple threads) */
 	zend_atomic_int pending_count;
 	zend_atomic_int running_count;
+	zend_atomic_int completed_count;
 
 	/* State flags */
 	zend_atomic_int closed;
