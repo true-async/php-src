@@ -980,10 +980,14 @@ struct _zend_async_process_event_s {
 #define ZEND_THREAD_F_INHERIT        (1u << 0)  /* Inherit parent's function/class tables */
 
 /* Thread event flags (bits 13+, bits 0-12 reserved for base event flags) */
-#define ZEND_THREAD_F_RESULT_LOADED  (1u << 13) /* result/exception converted from pemalloc to emalloc */
+#define ZEND_THREAD_F_RESULT_LOADED       (1u << 13) /* result/exception converted from pemalloc to emalloc */
+#define ZEND_THREAD_F_EXCEPTION_CONSUMED  (1u << 14) /* exception ownership taken by a consumer */
 
 #define ZEND_THREAD_SET_RESULT_LOADED(ev) ((ev)->base.flags |= ZEND_THREAD_F_RESULT_LOADED)
 #define ZEND_THREAD_IS_RESULT_LOADED(ev) (((ev)->base.flags & ZEND_THREAD_F_RESULT_LOADED) != 0)
+
+#define ZEND_THREAD_SET_EXCEPTION_CONSUMED(ev) ((ev)->base.flags |= ZEND_THREAD_F_EXCEPTION_CONSUMED)
+#define ZEND_THREAD_IS_EXCEPTION_CONSUMED(ev) (((ev)->base.flags & ZEND_THREAD_F_EXCEPTION_CONSUMED) != 0)
 
 /* Thread context — shared runtime data for a thread, pemalloc'd persistent.
  * Owned by ref_count: event holds one ref, thread runner holds another.
