@@ -842,6 +842,16 @@ typedef struct {
 #define ZEND_ASYNC_EVENT_SET_BAILOUT(ev) ((ev)->flags |= ZEND_ASYNC_EVENT_F_BAILOUT)
 #define ZEND_ASYNC_EVENT_IS_BAILOUT(ev) (((ev)->flags & ZEND_ASYNC_EVENT_F_BAILOUT) != 0)
 
+/* IO flags (bits 13+, bits 0-12 reserved for event flags).
+ * These flags live on zend_async_io_t->event.flags and are scoped to IO events
+ * only — they share the bit range with coroutine-specific flags, but the event
+ * subclasses are mutually exclusive. */
+#define ZEND_ASYNC_IO_F_MULTISHOT (1u << 13) /* IO op stays armed after data is received */
+
+#define ZEND_ASYNC_IO_IS_MULTISHOT(io) (((io)->event.flags & ZEND_ASYNC_IO_F_MULTISHOT) != 0)
+#define ZEND_ASYNC_IO_SET_MULTISHOT(io) ((io)->event.flags |= ZEND_ASYNC_IO_F_MULTISHOT)
+#define ZEND_ASYNC_IO_CLR_MULTISHOT(io) ((io)->event.flags &= ~ZEND_ASYNC_IO_F_MULTISHOT)
+
 // Convert awaitable Zend object to zend_async_event_t pointer
 #define ZEND_ASYNC_EVENT_IS_REFERENCE(ptr) \
 	(*((const uint32_t *) (ptr)) == ZEND_ASYNC_EVENT_REFERENCE_PREFIX)
