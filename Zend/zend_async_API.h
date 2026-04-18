@@ -292,6 +292,11 @@ typedef struct _zend_async_exec_event_s zend_async_exec_event_t;
 
 typedef struct _zend_async_listen_event_s zend_async_listen_event_t;
 
+/* Flags for zend_async_socket_listen_fn. Bitfield; unknown bits must be
+ * ignored by reactors for forward compatibility. */
+#define ZEND_ASYNC_LISTEN_F_REUSEPORT  (1u << 0) /* SO_REUSEPORT / UV_TCP_REUSEPORT */
+#define ZEND_ASYNC_LISTEN_F_IPV6ONLY   (1u << 1) /* IPV6_V6ONLY on AF_INET6 */
+
 typedef struct _zend_async_task_s zend_async_task_t;
 
 /* Internal context typedefs removed - using direct functions */
@@ -431,7 +436,7 @@ typedef zend_async_exec_event_t *(*zend_async_new_exec_event_t)(zend_async_exec_
 		const char *env, size_t extra_size);
 
 typedef zend_async_listen_event_t *(*zend_async_socket_listen_t)(
-		const char *host, int port, int backlog, size_t extra_size);
+		const char *host, int port, int backlog, uint32_t flags, size_t extra_size);
 
 typedef int (*zend_async_listen_get_local_address_t)(
 		zend_async_listen_event_t *listen_event, char *host, size_t host_len, int *port);
@@ -2414,11 +2419,15 @@ END_EXTERN_C()
 #define ZEND_ASYNC_NEW_TRIGGER_EVENT() zend_async_new_trigger_event_fn(0)
 #define ZEND_ASYNC_NEW_TRIGGER_EVENT_EX(extra_size) zend_async_new_trigger_event_fn(extra_size)
 
-/* Socket Listening API Macros */
+/* Socket Listening API Macros.
+ *
+ * flags: bitmask of ZEND_ASYNC_LISTEN_F_* (0 = defaults). REUSEPORT enables
+ * kernel-level load balancing across processes/threads bound to the same
+ * host:port. Reactors must silently ignore unknown flag bits. */
 #define ZEND_ASYNC_SOCKET_LISTEN(host, port, backlog) \
-	zend_async_socket_listen_fn(host, port, backlog, 0)
-#define ZEND_ASYNC_SOCKET_LISTEN_EX(host, port, backlog, extra_size) \
-	zend_async_socket_listen_fn(host, port, backlog, extra_size)
+	zend_async_socket_listen_fn(host, port, backlog, 0, 0)
+#define ZEND_ASYNC_SOCKET_LISTEN_EX(host, port, backlog, flags, extra_size) \
+	zend_async_socket_listen_fn(host, port, backlog, flags, extra_size)
 
 /* Async IO API Macros */
 #define ZEND_ASYNC_IO_CREATE(fd, type, state)  zend_async_io_create_fn(fd, type, state)
