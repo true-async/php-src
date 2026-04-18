@@ -1782,7 +1782,7 @@ ZEND_API void zend_async_callbacks_vector_free(
 ///////////////////////////////////////////////////////////////
 /* Socket listening stubs */
 static zend_async_listen_event_t *socket_listen_stub(
-		const char *host, int port, int backlog, size_t extra_size)
+		const char *host, int port, int backlog, unsigned int flags, size_t extra_size)
 {
 	ASYNC_THROW_ERROR("Socket listening API is not enabled");
 	return NULL;
