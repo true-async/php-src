@@ -380,6 +380,9 @@ static zend_async_scope_t *curl_async_get_scope(curl_async_event_t *curl_event)
 		return NULL;
 	}
 
+	/* Pin this owned scope: parent-cascade disposal must not free it while
+	 * curl_event still holds a raw pointer. Released in curl_event_dtor. */
+	ZEND_ASYNC_SCOPE_SET_OWNER_PINNED(curl_event->scope);
 	ZEND_ASYNC_EVENT_ADD_REF(&curl_event->scope->event);
 	return curl_event->scope;
 }
@@ -462,9 +465,8 @@ static bool curl_async_event_dtor(zend_async_event_t *event)
 
 	curl_async_event_t *curl_event = (curl_async_event_t *) event;
 
-	/* Close the scope and dispose it.
-	 * If ref_count > 1, just decrement. If ref_count == 1, try_to_dispose
-	 * will handle the final cleanup. */
+	/* Release the owned scope. CLR_OWNER_PINNED lifts the pin set at creation,
+	 * then SCOPE_RELEASE decrements our +1 ref and tries to dispose. */
 	if (curl_event->scope != NULL) {
 		zend_async_scope_t *scope = curl_event->scope;
 		curl_event->scope = NULL;
@@ -473,13 +475,8 @@ static bool curl_async_event_dtor(zend_async_event_t *event)
 			ZEND_ASYNC_SCOPE_CLOSE(scope, true);
 		}
 
-		if (scope->event.ref_count > 1) {
-			scope->event.ref_count--;
-		}
-
-		if (scope->event.ref_count == 1) {
-			scope->try_to_dispose(scope);
-		}
+		ZEND_ASYNC_SCOPE_CLR_OWNER_PINNED(scope);
+		ZEND_ASYNC_SCOPE_RELEASE(scope);
 	}
 
 	/* Release stored callback exception if not consumed */

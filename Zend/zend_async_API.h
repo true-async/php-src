@@ -1232,6 +1232,10 @@ struct _zend_async_scope_s {
 #define ZEND_ASYNC_SCOPE_F_DISPOSE_SAFELY (1u << 14) /* scope will be disposed safely */
 #define ZEND_ASYNC_SCOPE_F_CANCELLED (1u << 15) /* scope was cancelled */
 #define ZEND_ASYNC_SCOPE_F_DISPOSING (1u << 16) /* scope disposing */
+/* scope is owned by an external C-level owner (e.g. TaskGroup, curl event) that holds a raw pointer.
+ * Such a scope must not be disposed by parent-cascade or automatic flow; the owner is responsible for
+ * clearing this flag and calling ZEND_ASYNC_SCOPE_RELEASE when its work is done. */
+#define ZEND_ASYNC_SCOPE_F_OWNER_PINNED (1u << 17)
 
 #define ZEND_ASYNC_SCOPE_IS_CLOSED(scope) (((scope)->event.flags & ZEND_ASYNC_SCOPE_F_CLOSED) != 0)
 #define ZEND_ASYNC_SCOPE_IS_NO_FREE_MEMORY(scope) \
@@ -1242,6 +1246,12 @@ struct _zend_async_scope_s {
 	(((scope)->event.flags & ZEND_ASYNC_SCOPE_F_CANCELLED) != 0)
 #define ZEND_ASYNC_SCOPE_IS_DISPOSING(scope) \
 	(((scope)->event.flags & ZEND_ASYNC_SCOPE_F_DISPOSING) != 0)
+#define ZEND_ASYNC_SCOPE_IS_OWNER_PINNED(scope) \
+	(((scope)->event.flags & ZEND_ASYNC_SCOPE_F_OWNER_PINNED) != 0)
+#define ZEND_ASYNC_SCOPE_SET_OWNER_PINNED(scope) \
+	((scope)->event.flags |= ZEND_ASYNC_SCOPE_F_OWNER_PINNED)
+#define ZEND_ASYNC_SCOPE_CLR_OWNER_PINNED(scope) \
+	((scope)->event.flags &= ~ZEND_ASYNC_SCOPE_F_OWNER_PINNED)
 #define ZEND_ASYNC_SCOPE_IS_BAILOUT(scope) \
 	ZEND_ASYNC_EVENT_IS_BAILOUT(&(scope)->event)
 #define ZEND_ASYNC_SCOPE_SET_BAILOUT(scope) \
