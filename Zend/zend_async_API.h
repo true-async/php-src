@@ -297,6 +297,13 @@ typedef struct _zend_async_listen_event_s zend_async_listen_event_t;
 #define ZEND_ASYNC_LISTEN_F_REUSEPORT  (1u << 0) /* SO_REUSEPORT / UV_TCP_REUSEPORT */
 #define ZEND_ASYNC_LISTEN_F_IPV6ONLY   (1u << 1) /* IPV6_V6ONLY on AF_INET6 */
 
+/* Flags for zend_async_udp_bind_fn. Bitfield; unknown bits must be ignored
+ * by reactors for forward compatibility. Added for HTTP/3 UDP listeners —
+ * symmetric with the TCP listen flags but with UDP-specific additions. */
+#define ZEND_ASYNC_UDP_F_REUSEPORT     (1u << 0) /* SO_REUSEPORT / UV_UDP_REUSEPORT (libuv ≥ 1.49) */
+#define ZEND_ASYNC_UDP_F_IPV6ONLY      (1u << 1) /* IPV6_V6ONLY on AF_INET6 */
+#define ZEND_ASYNC_UDP_F_RECV_GSO      (1u << 2) /* Enable UDP_GRO on recv (Linux; silently ignored elsewhere) */
+
 typedef struct _zend_async_task_s zend_async_task_t;
 
 /* Internal context typedefs removed - using direct functions */
@@ -494,6 +501,13 @@ typedef int (*zend_async_io_set_option_t)(
 typedef int (*zend_async_udp_set_membership_t)(
 		zend_async_io_t *io, const char *multicast_addr,
 		const char *interface_addr, bool join);
+
+/* Bind a UDP socket on host:port and return a ready-to-recvfrom IO handle.
+ * Symmetric with zend_async_socket_listen_t but for datagram transport —
+ * needed by HTTP/3 listeners where one socket multiplexes N QUIC connections
+ * by DCID in user-space. flags is a bitmask of ZEND_ASYNC_UDP_F_*. */
+typedef zend_async_io_t *(*zend_async_udp_bind_t)(
+		const char *host, int port, uint32_t flags, size_t extra_size);
 
 struct _zend_fcall_s {
 	zend_fcall_info fci;
@@ -2087,6 +2101,7 @@ ZEND_API extern zend_async_udp_sendto_t zend_async_udp_sendto_fn;
 ZEND_API extern zend_async_udp_recvfrom_t zend_async_udp_recvfrom_fn;
 ZEND_API extern zend_async_io_set_option_t zend_async_io_set_option_fn;
 ZEND_API extern zend_async_udp_set_membership_t zend_async_udp_set_membership_fn;
+ZEND_API extern zend_async_udp_bind_t zend_async_udp_bind_fn;
 
 ZEND_API bool zend_async_scheduler_register(char *module, bool allow_override,
 		zend_async_scheduler_launch_t scheduler_launch_fn,
@@ -2155,7 +2170,8 @@ ZEND_API bool zend_async_io_register(char *module, bool allow_override,
 		zend_async_io_await_t await_fn, zend_async_io_flush_t flush_fn,
 		zend_async_io_stat_t stat_fn, zend_async_io_seek_t seek_fn,
 		zend_async_udp_sendto_t udp_sendto_fn, zend_async_udp_recvfrom_t udp_recvfrom_fn,
-		zend_async_io_set_option_t set_option_fn, zend_async_udp_set_membership_t udp_set_membership_fn);
+		zend_async_io_set_option_t set_option_fn, zend_async_udp_set_membership_t udp_set_membership_fn,
+		zend_async_udp_bind_t udp_bind_fn);
 
 ZEND_API zend_string *zend_coroutine_gen_info(
 		zend_coroutine_t *coroutine, char *zend_coroutine_name);
@@ -2454,6 +2470,16 @@ END_EXTERN_C()
 #define ZEND_ASYNC_IO_SET_OPTION(io, opt, val) zend_async_io_set_option_fn(io, opt, val)
 #define ZEND_ASYNC_UDP_SET_MEMBERSHIP(io, mcast, iface, join) \
 	zend_async_udp_set_membership_fn(io, mcast, iface, join)
+
+/* UDP Bind API Macros.
+ *
+ * flags: bitmask of ZEND_ASYNC_UDP_F_* (0 = defaults). Returns a
+ * zend_async_io_t* bound to host:port, ready for ZEND_ASYNC_UDP_RECVFROM.
+ * Reactors must silently ignore unknown flag bits. */
+#define ZEND_ASYNC_UDP_BIND(host, port) \
+	zend_async_udp_bind_fn(host, port, 0, 0)
+#define ZEND_ASYNC_UDP_BIND_EX(host, port, flags, extra_size) \
+	zend_async_udp_bind_fn(host, port, flags, extra_size)
 
 /* Iterator API Macros */
 #define ZEND_ASYNC_NEW_ITERATOR_SCOPE( \

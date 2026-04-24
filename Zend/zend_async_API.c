@@ -275,6 +275,7 @@ zend_async_udp_sendto_t zend_async_udp_sendto_fn = NULL;
 zend_async_udp_recvfrom_t zend_async_udp_recvfrom_fn = NULL;
 zend_async_io_set_option_t zend_async_io_set_option_fn = NULL;
 zend_async_udp_set_membership_t zend_async_udp_set_membership_fn = NULL;
+zend_async_udp_bind_t zend_async_udp_bind_fn = NULL;
 
 /* Internal Context API - now uses direct functions */
 
@@ -1830,7 +1831,8 @@ ZEND_API bool zend_async_io_register(char *module, bool allow_override,
 		zend_async_io_await_t await_fn, zend_async_io_flush_t flush_fn,
 		zend_async_io_stat_t stat_fn, zend_async_io_seek_t seek_fn,
 		zend_async_udp_sendto_t udp_sendto_fn, zend_async_udp_recvfrom_t udp_recvfrom_fn,
-		zend_async_io_set_option_t set_option_fn, zend_async_udp_set_membership_t udp_set_membership_fn)
+		zend_async_io_set_option_t set_option_fn, zend_async_udp_set_membership_t udp_set_membership_fn,
+		zend_async_udp_bind_t udp_bind_fn)
 {
 	if (zend_atomic_bool_exchange(&io_lock, 1)) {
 		return false;
@@ -1861,6 +1863,7 @@ ZEND_API bool zend_async_io_register(char *module, bool allow_override,
 	zend_async_udp_recvfrom_fn = udp_recvfrom_fn;
 	zend_async_io_set_option_fn = set_option_fn;
 	zend_async_udp_set_membership_fn = udp_set_membership_fn;
+	zend_async_udp_bind_fn = udp_bind_fn;
 
 	zend_atomic_bool_store(&io_lock, 0);
 
