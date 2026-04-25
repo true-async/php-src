@@ -736,12 +736,31 @@ struct _zend_async_io_req_s {
 	void (*dispose)(zend_async_io_req_t *req);
 };
 
+/* Lifecycle flags for zend_async_udp_req_t.
+ *
+ * The reactor sets these to coordinate dispose() with an in-flight backend
+ * callback. A caller doing fire-and-forget sendto can call req->dispose(req)
+ * synchronously while the kernel still owns the datagram and the backend
+ * send-completion callback still holds a pointer to the request. Without a
+ * rendezvous this is a UAF: dispose frees req, then the callback fires and
+ * reads through the freed pointer.
+ *
+ * Contract: the backend sets CALLBACK_DONE first thing in its completion
+ * callback. dispose() reads CALLBACK_DONE — if not set, it sets
+ * DISPOSE_PENDING and returns without freeing; the callback finishes the
+ * deferred free. If CALLBACK_DONE is already set, dispose() frees normally.
+ *
+ * Owned by the reactor — public callers MUST NOT read or write these bits. */
+#define ZEND_ASYNC_UDP_REQ_F_CALLBACK_DONE   (1u << 0) /* backend callback has fired */
+#define ZEND_ASYNC_UDP_REQ_F_DISPOSE_PENDING (1u << 1) /* dispose requested while in flight */
+
 /* Async UDP request — for sendto/recvfrom operations */
 struct _zend_async_udp_req_s {
 	ssize_t transferred;
 	zend_object *exception;
 	char *buf;
 	bool completed;
+	uint32_t flags;                /* ZEND_ASYNC_UDP_REQ_F_* — reactor-private */
 	void (*dispose)(zend_async_udp_req_t *req);
 	struct sockaddr_storage addr;  /* destination (sendto) or source (recvfrom) */
 	socklen_t addr_len;
