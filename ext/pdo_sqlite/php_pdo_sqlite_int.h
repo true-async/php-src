@@ -67,6 +67,42 @@ extern int _pdo_sqlite_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt, const char *file,
 #define pdo_sqlite_error(s) _pdo_sqlite_error(s, NULL, __FILE__, __LINE__)
 #define pdo_sqlite_error_stmt(s) _pdo_sqlite_error(stmt->dbh, stmt, __FILE__, __LINE__)
 
+/* Returns true and throws PDOException if dbh is a pool template.
+ * Pool templates carry no driver_data; SQLite extension methods that
+ * touch the underlying sqlite3* must not be called on them until the
+ * registry / per-slot dispatch lands in later phases.
+ */
+extern bool pdo_sqlite_reject_in_pool_mode(const pdo_dbh_t *dbh, const char *method_name);
+
+/* Per-template UDF/collation registry stored in dbh->driver_pool_data.
+ *
+ * Functions are keyed by "name/argc" so different arities of the same
+ * name can co-exist (sqlite3 allows that). Collations are keyed by name
+ * (sqlite3 has no per-collation arity).
+ *
+ * Entries are owned by the registry (HashTable destructors free them).
+ * Each entry pointer is also handed to sqlite3_create_function_v2 /
+ * sqlite3_create_collation as pUserData on every slot — those calls do
+ * NOT take ownership (we pass NULL destructor) so the registry can free
+ * the entries safely after all slots have been closed.
+ */
+typedef struct {
+	HashTable funcs;       /* "name/argc" → struct pdo_sqlite_func* */
+	HashTable collations;  /* name → struct pdo_sqlite_collation* */
+} pdo_sqlite_pool_registry;
+
+/* Lazily allocates the registry on the template handle. Returns NULL
+ * and throws if dbh is not a pool template. */
+extern pdo_sqlite_pool_registry *pdo_sqlite_pool_registry_get_or_init(pdo_dbh_t *dbh);
+
+/* Apply every registered function/collation to a fresh slot's sqlite3*.
+ * Used from pdo_sqlite_handle_factory when conn->pool is non-NULL. */
+extern bool pdo_sqlite_pool_registry_apply(const pdo_sqlite_pool_registry *reg, sqlite3 *db);
+
+/* Free the registry and all owned entries. Called from sqlite_handle_closer
+ * when invoked on a pool template. */
+extern void pdo_sqlite_pool_registry_free(pdo_sqlite_pool_registry *reg);
+
 extern const struct pdo_stmt_methods sqlite_stmt_methods;
 
 enum {

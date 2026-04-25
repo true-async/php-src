@@ -26,6 +26,26 @@
 #include "zend_exceptions.h"
 #include "sqlite_driver_arginfo.h"
 
+/* True iff dbh is a pool template: pool exists but no per-slot connection
+ * (slots get their own driver_data via pdo_sqlite_handle_factory; only the
+ * template handle, on which createFunction etc. are invoked, stays NULL). */
+static inline bool pdo_sqlite_is_pool_template(const pdo_dbh_t *dbh)
+{
+	return dbh->pool != NULL && dbh->driver_data == NULL;
+}
+
+bool pdo_sqlite_reject_in_pool_mode(const pdo_dbh_t *dbh, const char *method_name)
+{
+	if (!pdo_sqlite_is_pool_template(dbh)) {
+		return false;
+	}
+	zend_throw_exception_ex(php_pdo_get_exception(), 0,
+		"PDO_SQLite: %s() is not yet supported when "
+		"PDO::ATTR_POOL_ENABLED is set",
+		method_name);
+	return true;
+}
+
 int _pdo_sqlite_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt, const char *file, int line) /* {{{ */
 {
 	pdo_sqlite_db_handle *H = (pdo_sqlite_db_handle *)dbh->driver_data;
@@ -172,6 +192,16 @@ static void sqlite_handle_closer(pdo_dbh_t *dbh) /* {{{ */
 		}
 		pefree(H, dbh->is_persistent);
 		dbh->driver_data = NULL;
+	}
+
+	/* Pool template path: no driver_data, but the UDF registry lives on
+	 * dbh->driver_pool_data. By the time we get here, pdo_pool_destroy()
+	 * has already closed every slot, so registry entries (used as
+	 * pUserData on slot sqlite3*) are no longer referenced. */
+	if (dbh->driver_pool_data) {
+		pdo_sqlite_pool_registry_free(
+			(pdo_sqlite_pool_registry *) dbh->driver_pool_data);
+		dbh->driver_pool_data = NULL;
 	}
 }
 /* }}} */
@@ -539,6 +569,153 @@ static void php_sqlite3_func_callback(sqlite3_context *context, int argc, sqlite
 	do_callback(&func->func, argc, argv, context, 0);
 }
 
+/* ----- pool registry: per-template UDF/collation table -------------------
+ * Stored in template_dbh->driver_pool_data. Entries are owned by the
+ * registry HashTables; each entry pointer is also handed to SQLite as
+ * pUserData on every slot. We pass NULL destructors to sqlite3_create_*,
+ * so SQLite never calls back into the entry — we control free order
+ * (slots closed first by pdo_pool_destroy, then closer() frees entries). */
+
+static void pdo_sqlite_func_free(struct pdo_sqlite_func *func)
+{
+	if (ZEND_FCC_INITIALIZED(func->func)) zend_fcc_dtor(&func->func);
+	if (ZEND_FCC_INITIALIZED(func->step)) zend_fcc_dtor(&func->step);
+	if (ZEND_FCC_INITIALIZED(func->fini)) zend_fcc_dtor(&func->fini);
+	zend_string_release(func->funcname);
+	efree(func);
+}
+
+static void pdo_sqlite_collation_free(struct pdo_sqlite_collation *coll)
+{
+	if (ZEND_FCC_INITIALIZED(coll->callback)) zend_fcc_dtor(&coll->callback);
+	zend_string_release(coll->name);
+	efree(coll);
+}
+
+static void pdo_sqlite_pool_funcs_dtor(zval *zv)
+{
+	pdo_sqlite_func_free((struct pdo_sqlite_func *) Z_PTR_P(zv));
+}
+
+static void pdo_sqlite_pool_collations_dtor(zval *zv)
+{
+	pdo_sqlite_collation_free((struct pdo_sqlite_collation *) Z_PTR_P(zv));
+}
+
+pdo_sqlite_pool_registry *pdo_sqlite_pool_registry_get_or_init(pdo_dbh_t *dbh)
+{
+	if (UNEXPECTED(!pdo_sqlite_is_pool_template(dbh))) {
+		zend_throw_exception_ex(php_pdo_get_exception(), 0,
+			"PDO_SQLite: UDF registration without an acquired connection "
+			"requires PDO::ATTR_POOL_ENABLED on the template handle");
+		return NULL;
+	}
+
+	pdo_sqlite_pool_registry *reg = (pdo_sqlite_pool_registry *) dbh->driver_pool_data;
+	if (reg != NULL) {
+		return reg;
+	}
+
+	reg = emalloc(sizeof(*reg));
+	zend_hash_init(&reg->funcs, 0, NULL, pdo_sqlite_pool_funcs_dtor, 0);
+	zend_hash_init(&reg->collations, 0, NULL, pdo_sqlite_pool_collations_dtor, 0);
+	dbh->driver_pool_data = reg;
+	return reg;
+}
+
+void pdo_sqlite_pool_registry_free(pdo_sqlite_pool_registry *reg)
+{
+	zend_hash_destroy(&reg->funcs);
+	zend_hash_destroy(&reg->collations);
+	efree(reg);
+}
+
+/* Add a UDF entry to the template registry. Throws and returns false on
+ * duplicate "name/argc". Caller still owns its FCC and must release it. */
+static bool pdo_sqlite_pool_register_func(pdo_dbh_t *dbh,
+	zend_string *name, zend_long argc,
+	zend_fcall_info_cache *func_fcc,
+	zend_fcall_info_cache *step_fcc,
+	zend_fcall_info_cache *fini_fcc)
+{
+	pdo_sqlite_pool_registry *reg = pdo_sqlite_pool_registry_get_or_init(dbh);
+	if (UNEXPECTED(reg == NULL)) {
+		return false;
+	}
+
+	zend_string *key = zend_strpprintf(0, "%s/" ZEND_LONG_FMT, ZSTR_VAL(name), argc);
+
+	struct pdo_sqlite_func *func = ecalloc(1, sizeof(*func));
+	func->funcname = zend_string_copy(name);
+	func->argc = (int) argc;
+	if (func_fcc) zend_fcc_dup(&func->func, func_fcc);
+	if (step_fcc) zend_fcc_dup(&func->step, step_fcc);
+	if (fini_fcc) zend_fcc_dup(&func->fini, fini_fcc);
+
+	if (UNEXPECTED(zend_hash_add_ptr(&reg->funcs, key, func) == NULL)) {
+		zend_throw_exception_ex(php_pdo_get_exception(), 0,
+			"PDO_SQLite: function \"%s\" with " ZEND_LONG_FMT
+			" argument(s) is already registered on the pool template",
+			ZSTR_VAL(name), argc);
+		pdo_sqlite_func_free(func);
+		zend_string_release(key);
+		return false;
+	}
+	zend_string_release(key);
+	return true;
+}
+
+static bool pdo_sqlite_pool_register_collation(pdo_dbh_t *dbh,
+	zend_string *name, zend_fcall_info_cache *cb_fcc)
+{
+	pdo_sqlite_pool_registry *reg = pdo_sqlite_pool_registry_get_or_init(dbh);
+	if (UNEXPECTED(reg == NULL)) {
+		return false;
+	}
+
+	struct pdo_sqlite_collation *coll = ecalloc(1, sizeof(*coll));
+	coll->name = zend_string_copy(name);
+	if (cb_fcc) zend_fcc_dup(&coll->callback, cb_fcc);
+
+	if (UNEXPECTED(zend_hash_add_ptr(&reg->collations, name, coll) == NULL)) {
+		zend_throw_exception_ex(php_pdo_get_exception(), 0,
+			"PDO_SQLite: collation \"%s\" is already registered on the pool template",
+			ZSTR_VAL(name));
+		pdo_sqlite_collation_free(coll);
+		return false;
+	}
+	return true;
+}
+
+bool pdo_sqlite_pool_registry_apply(const pdo_sqlite_pool_registry *reg, sqlite3 *db)
+{
+	struct pdo_sqlite_func *func;
+	ZEND_HASH_FOREACH_PTR(&reg->funcs, func) {
+		const bool is_aggregate = ZEND_FCC_INITIALIZED(func->step);
+		const int rc = is_aggregate
+			? sqlite3_create_function(db, ZSTR_VAL(func->funcname), func->argc,
+				SQLITE_UTF8, func, NULL,
+				php_sqlite3_func_step_callback,
+				php_sqlite3_func_final_callback)
+			: sqlite3_create_function(db, ZSTR_VAL(func->funcname), func->argc,
+				SQLITE_UTF8, func,
+				php_sqlite3_func_callback, NULL, NULL);
+		if (rc != SQLITE_OK) {
+			return false;
+		}
+	} ZEND_HASH_FOREACH_END();
+
+	struct pdo_sqlite_collation *coll;
+	ZEND_HASH_FOREACH_PTR(&reg->collations, coll) {
+		if (sqlite3_create_collation(db, ZSTR_VAL(coll->name), SQLITE_UTF8,
+				coll, php_sqlite3_collation_callback) != SQLITE_OK) {
+			return false;
+		}
+	} ZEND_HASH_FOREACH_END();
+
+	return true;
+}
+
 void pdo_sqlite_create_function_internal(INTERNAL_FUNCTION_PARAMETERS)
 {
 	struct pdo_sqlite_func *func;
@@ -562,6 +739,16 @@ void pdo_sqlite_create_function_internal(INTERNAL_FUNCTION_PARAMETERS)
 	dbh = Z_PDO_DBH_P(ZEND_THIS);
 	PDO_CONSTRUCT_CHECK_WITH_CLEANUP(error);
 
+	if (pdo_sqlite_is_pool_template(dbh)) {
+		const bool ok = pdo_sqlite_pool_register_func(dbh, func_name, argc,
+			&fcc, /* step */ NULL, /* fini */ NULL);
+		zend_release_fcall_info_cache(&fcc);
+		if (!ok) {
+			RETURN_THROWS();
+		}
+		RETURN_TRUE;
+	}
+
 	H = (pdo_sqlite_db_handle *)dbh->driver_data;
 
 	func = (struct pdo_sqlite_func*)ecalloc(1, sizeof(*func));
@@ -584,6 +771,9 @@ void pdo_sqlite_create_function_internal(INTERNAL_FUNCTION_PARAMETERS)
 
 error:
 	zend_release_fcall_info_cache(&fcc);
+	if (EG(exception)) {
+		RETURN_THROWS();
+	}
 	RETURN_FALSE;
 }
 
@@ -619,6 +809,17 @@ void pdo_sqlite_create_aggregate_internal(INTERNAL_FUNCTION_PARAMETERS)
 	dbh = Z_PDO_DBH_P(ZEND_THIS);
 	PDO_CONSTRUCT_CHECK_WITH_CLEANUP(error);
 
+	if (pdo_sqlite_is_pool_template(dbh)) {
+		const bool ok = pdo_sqlite_pool_register_func(dbh, func_name, argc,
+			/* func */ NULL, &step_fcc, &fini_fcc);
+		zend_release_fcall_info_cache(&step_fcc);
+		zend_release_fcall_info_cache(&fini_fcc);
+		if (!ok) {
+			RETURN_THROWS();
+		}
+		RETURN_TRUE;
+	}
+
 	H = (pdo_sqlite_db_handle *)dbh->driver_data;
 
 	func = (struct pdo_sqlite_func*)ecalloc(1, sizeof(*func));
@@ -644,6 +845,9 @@ void pdo_sqlite_create_aggregate_internal(INTERNAL_FUNCTION_PARAMETERS)
 error:
 	zend_release_fcall_info_cache(&step_fcc);
 	zend_release_fcall_info_cache(&fini_fcc);
+	if (EG(exception)) {
+		RETURN_THROWS();
+	}
 	RETURN_FALSE;
 }
 
@@ -689,6 +893,15 @@ void pdo_sqlite_create_collation_internal(INTERNAL_FUNCTION_PARAMETERS, pdo_sqli
 
 	dbh = Z_PDO_DBH_P(ZEND_THIS);
 	PDO_CONSTRUCT_CHECK_WITH_CLEANUP(cleanup_fcc);
+
+	if (pdo_sqlite_is_pool_template(dbh)) {
+		const bool ok = pdo_sqlite_pool_register_collation(dbh, collation_name, &fcc);
+		zend_release_fcall_info_cache(&fcc);
+		if (!ok) {
+			RETURN_THROWS();
+		}
+		RETURN_TRUE;
+	}
 
 	H = (pdo_sqlite_db_handle *)dbh->driver_data;
 
@@ -945,6 +1158,20 @@ static int pdo_sqlite_handle_factory(pdo_dbh_t *dbh, zval *driver_options) /* {{
 	dbh->alloc_own_columns = 1;
 	dbh->max_escaped_char_length = 2;
 
+	/* Pool-slot context: replay the template's UDF/collation registry onto
+	 * this fresh sqlite3*. Template is reachable via pool->user_data. */
+	if (dbh->pool != NULL) {
+		const pdo_dbh_t *template = (const pdo_dbh_t *) dbh->pool->user_data;
+		if (template != NULL && template->driver_pool_data != NULL) {
+			const pdo_sqlite_pool_registry *reg =
+				(const pdo_sqlite_pool_registry *) template->driver_pool_data;
+			if (UNEXPECTED(!pdo_sqlite_pool_registry_apply(reg, H->db))) {
+				pdo_sqlite_error(dbh);
+				goto cleanup;
+			}
+		}
+	}
+
 	ret = 1;
 
 cleanup:
@@ -954,11 +1181,85 @@ cleanup:
 }
 /* }}} */
 
+/* Detect DSNs that open a private in-memory database which cannot be
+ * shared between pool slots. Returns true if the DSN must be rejected
+ * in pool mode.
+ *
+ * Rejected:
+ *   ""                                empty → private temp DB
+ *   ":memory:"                        classic in-memory
+ *   "file::memory:" (no cache=shared) URI in-memory without sharing
+ *   "file:...?mode=memory" (no cache=shared)
+ *
+ * The DSN passed in is the data_source after the "sqlite:" prefix has
+ * been stripped by the PDO core (see pdo_dbh.c).
+ */
+static bool pdo_sqlite_dsn_is_unshareable_memory(const char *dsn)
+{
+	if (*dsn == '\0' || strcmp(dsn, ":memory:") == 0) {
+		return true;
+	}
+
+	if (strncmp(dsn, "file:", sizeof("file:") - 1) != 0) {
+		return false;
+	}
+
+	const char *path = dsn + sizeof("file:") - 1;
+	const char *query = strchr(path, '?');
+	const size_t path_len = query ? (size_t)(query - path) : strlen(path);
+
+	const bool path_is_memory =
+		(path_len == 0) /* file: alone */
+		|| (path_len == sizeof(":memory:") - 1
+			&& memcmp(path, ":memory:", sizeof(":memory:") - 1) == 0);
+
+	bool query_mode_memory = false;
+	bool query_cache_shared = false;
+
+	if (query) {
+		const char *p = query + 1;
+		while (*p) {
+			const char *amp = strchr(p, '&');
+			const size_t kv_len = amp ? (size_t)(amp - p) : strlen(p);
+
+			if (kv_len == sizeof("mode=memory") - 1
+				&& memcmp(p, "mode=memory", sizeof("mode=memory") - 1) == 0) {
+				query_mode_memory = true;
+			} else if (kv_len == sizeof("cache=shared") - 1
+				&& memcmp(p, "cache=shared", sizeof("cache=shared") - 1) == 0) {
+				query_cache_shared = true;
+			}
+
+			if (!amp) {
+				break;
+			}
+			p = amp + 1;
+		}
+	}
+
+	return (path_is_memory || query_mode_memory) && !query_cache_shared;
+}
+
 static void pdo_sqlite_init_methods(pdo_dbh_t *dbh, bool *supports_pool)
 {
 	dbh->methods = &sqlite_methods;
 	dbh->alloc_own_columns = 1;
 	dbh->max_escaped_char_length = 2;
+
+	if (supports_pool) {
+		if (pdo_sqlite_dsn_is_unshareable_memory(dbh->data_source)) {
+			zend_throw_exception_ex(php_pdo_get_exception(), 0,
+				"PDO_SQLite: in-memory databases cannot be used with "
+				"PDO::ATTR_POOL_ENABLED (DSN \"%s\" opens a private database "
+				"that cannot be shared between pool connections; use "
+				"\"file:<name>?mode=memory&cache=shared\" if you need a "
+				"shared in-memory database)",
+				dbh->data_source);
+			*supports_pool = false;
+			return;
+		}
+		*supports_pool = true;
+	}
 }
 
 const pdo_driver_t pdo_sqlite_driver = {

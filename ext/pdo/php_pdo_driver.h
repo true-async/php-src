@@ -527,6 +527,11 @@ struct _pdo_dbh_t {
 	zend_object *pool_wrapper;		/* cached PHP Async\Pool object for getPool() */
 	uint32_t pool_slot_refcount;	/* number of statements borrowing this pooled connection */
 	bool conn_broken:1;				/* connection lost or protocol desynchronized — must not return to pool */
+
+	/* Driver-owned per-template auxiliary state for pool mode (e.g. SQLite UDF
+	 * registry). NULL by default. Lifetime: allocated by driver on demand,
+	 * released by driver via dbh->methods->closer when dbh_free runs. */
+	void *driver_pool_data;
 };
 
 /* represents a connection to a database */

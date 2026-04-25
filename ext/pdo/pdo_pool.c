@@ -116,6 +116,11 @@ static bool pdo_pool_factory(zend_async_pool_t *pool, zval *result)
 	conn->username = dbh->username ? estrdup(dbh->username) : NULL;
 	conn->password = dbh->password ? estrdup(dbh->password) : NULL;
 
+	/* Expose owning pool to driver factory so it can recognize pool-slot
+	 * context and reach the template via pool->user_data. Drivers that need
+	 * per-template auxiliary state (e.g. SQLite UDF registry) read it here. */
+	conn->pool = pool;
+
 	/* Call driver factory to create actual connection */
 	if (UNEXPECTED(!dbh->driver->db_handle_factory(conn, NULL))) {
 		pdo_pool_free_conn(conn);
