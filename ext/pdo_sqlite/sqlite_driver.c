@@ -21,6 +21,7 @@
 #include "ext/standard/info.h"
 #include "ext/pdo/php_pdo.h"
 #include "ext/pdo/php_pdo_driver.h"
+#include "ext/pdo/pdo_pool.h"
 #include "php_pdo_sqlite.h"
 #include "php_pdo_sqlite_int.h"
 #include "zend_exceptions.h"
@@ -194,10 +195,10 @@ static void sqlite_handle_closer(pdo_dbh_t *dbh) /* {{{ */
 		dbh->driver_data = NULL;
 	}
 
-	/* Pool template path: no driver_data, but the UDF registry lives on
-	 * dbh->driver_pool_data. By the time we get here, pdo_pool_destroy()
-	 * has already closed every slot, so registry entries (used as
-	 * pUserData on slot sqlite3*) are no longer referenced. */
+	/* Pool template path (no driver_data, but pool is set): driver_pool_data
+	 * holds pdo_sqlite_pool_registry. pdo_pool_destroy() has already closed
+	 * every slot before we get here, so registry entries (used as pUserData
+	 * on slot sqlite3*) are no longer referenced and can be freed. */
 	if (dbh->driver_pool_data) {
 		pdo_sqlite_pool_registry_free(
 			(pdo_sqlite_pool_registry *) dbh->driver_pool_data);
@@ -570,11 +571,10 @@ static void php_sqlite3_func_callback(sqlite3_context *context, int argc, sqlite
 }
 
 /* ----- pool registry: per-template UDF/collation table -------------------
- * Stored in template_dbh->driver_pool_data. Entries are owned by the
- * registry HashTables; each entry pointer is also handed to SQLite as
- * pUserData on every slot. We pass NULL destructors to sqlite3_create_*,
- * so SQLite never calls back into the entry — we control free order
- * (slots closed first by pdo_pool_destroy, then closer() frees entries). */
+ * Stored in template_dbh->driver_pool_data. Holds entries to apply to each
+ * pool slot's sqlite3* on first acquire. After the first acquire the
+ * template freezes — further createFunction / createCollation calls throw,
+ * keeping the registry stable for the lifetime of the pool. */
 
 static void pdo_sqlite_func_free(struct pdo_sqlite_func *func)
 {
@@ -592,12 +592,12 @@ static void pdo_sqlite_collation_free(struct pdo_sqlite_collation *coll)
 	efree(coll);
 }
 
-static void pdo_sqlite_pool_funcs_dtor(zval *zv)
+static void pdo_sqlite_template_funcs_dtor(zval *zv)
 {
 	pdo_sqlite_func_free((struct pdo_sqlite_func *) Z_PTR_P(zv));
 }
 
-static void pdo_sqlite_pool_collations_dtor(zval *zv)
+static void pdo_sqlite_template_collations_dtor(zval *zv)
 {
 	pdo_sqlite_collation_free((struct pdo_sqlite_collation *) Z_PTR_P(zv));
 }
@@ -616,9 +616,9 @@ pdo_sqlite_pool_registry *pdo_sqlite_pool_registry_get_or_init(pdo_dbh_t *dbh)
 		return reg;
 	}
 
-	reg = emalloc(sizeof(*reg));
-	zend_hash_init(&reg->funcs, 0, NULL, pdo_sqlite_pool_funcs_dtor, 0);
-	zend_hash_init(&reg->collations, 0, NULL, pdo_sqlite_pool_collations_dtor, 0);
+	reg = ecalloc(1, sizeof(*reg));
+	zend_hash_init(&reg->funcs, 0, NULL, pdo_sqlite_template_funcs_dtor, 0);
+	zend_hash_init(&reg->collations, 0, NULL, pdo_sqlite_template_collations_dtor, 0);
 	dbh->driver_pool_data = reg;
 	return reg;
 }
@@ -630,8 +630,23 @@ void pdo_sqlite_pool_registry_free(pdo_sqlite_pool_registry *reg)
 	efree(reg);
 }
 
-/* Add a UDF entry to the template registry. Throws and returns false on
- * duplicate "name/argc". Caller still owns its FCC and must release it. */
+/* Throws if the template registry is frozen. Callers must check before
+ * adding new entries during the pre-work phase. */
+static bool pdo_sqlite_check_not_frozen(pdo_sqlite_pool_registry *reg,
+	const char *kind, const char *name)
+{
+	if (UNEXPECTED(reg->frozen)) {
+		zend_throw_exception_ex(php_pdo_get_exception(), 0,
+			"PDO_SQLite: cannot register %s \"%s\" after the pool has "
+			"acquired its first connection — register all UDFs/collations "
+			"before any query/exec/prepare on the pooled handle",
+			kind, name);
+		return false;
+	}
+	return true;
+}
+
+/* Add a UDF entry to the template registry. Caller owns its FCC. */
 static bool pdo_sqlite_pool_register_func(pdo_dbh_t *dbh,
 	zend_string *name, zend_long argc,
 	zend_fcall_info_cache *func_fcc,
@@ -640,6 +655,9 @@ static bool pdo_sqlite_pool_register_func(pdo_dbh_t *dbh,
 {
 	pdo_sqlite_pool_registry *reg = pdo_sqlite_pool_registry_get_or_init(dbh);
 	if (UNEXPECTED(reg == NULL)) {
+		return false;
+	}
+	if (!pdo_sqlite_check_not_frozen(reg, "function", ZSTR_VAL(name))) {
 		return false;
 	}
 
@@ -672,6 +690,9 @@ static bool pdo_sqlite_pool_register_collation(pdo_dbh_t *dbh,
 	if (UNEXPECTED(reg == NULL)) {
 		return false;
 	}
+	if (!pdo_sqlite_check_not_frozen(reg, "collation", ZSTR_VAL(name))) {
+		return false;
+	}
 
 	struct pdo_sqlite_collation *coll = ecalloc(1, sizeof(*coll));
 	coll->name = zend_string_copy(name);
@@ -698,21 +719,50 @@ bool pdo_sqlite_pool_registry_apply(const pdo_sqlite_pool_registry *reg, sqlite3
 				php_sqlite3_func_step_callback,
 				php_sqlite3_func_final_callback)
 			: sqlite3_create_function(db, ZSTR_VAL(func->funcname), func->argc,
-				SQLITE_UTF8, func,
-				php_sqlite3_func_callback, NULL, NULL);
-		if (rc != SQLITE_OK) {
+				SQLITE_UTF8, func, php_sqlite3_func_callback, NULL, NULL);
+		if (UNEXPECTED(rc != SQLITE_OK)) {
 			return false;
 		}
 	} ZEND_HASH_FOREACH_END();
 
 	struct pdo_sqlite_collation *coll;
 	ZEND_HASH_FOREACH_PTR(&reg->collations, coll) {
-		if (sqlite3_create_collation(db, ZSTR_VAL(coll->name), SQLITE_UTF8,
-				coll, php_sqlite3_collation_callback) != SQLITE_OK) {
+		if (UNEXPECTED(sqlite3_create_collation(db, ZSTR_VAL(coll->name),
+				SQLITE_UTF8, coll, php_sqlite3_collation_callback) != SQLITE_OK)) {
 			return false;
 		}
 	} ZEND_HASH_FOREACH_END();
 
+	return true;
+}
+
+/* before_acquire: applies the template registry to this slot's sqlite3*
+ * the first time the slot is handed out. Idempotent (template_applied
+ * short-circuits subsequent acquires). Also flips template->frozen so
+ * later registrations on the template throw. */
+bool pdo_sqlite_pool_before_acquire(pdo_dbh_t *slot_dbh)
+{
+	pdo_sqlite_db_handle *H = (pdo_sqlite_db_handle *) slot_dbh->driver_data;
+	if (UNEXPECTED(H == NULL || slot_dbh->pool == NULL)) {
+		return false;
+	}
+
+	if (H->template_applied) {
+		return true;
+	}
+
+	pdo_dbh_t *template = (pdo_dbh_t *) slot_dbh->pool->user_data;
+	pdo_sqlite_pool_registry *reg = template
+		? (pdo_sqlite_pool_registry *) template->driver_pool_data
+		: NULL;
+
+	if (reg != NULL) {
+		if (UNEXPECTED(!pdo_sqlite_pool_registry_apply(reg, H->db))) {
+			return false;
+		}
+		reg->frozen = true;
+	}
+	H->template_applied = true;
 	return true;
 }
 
@@ -1006,7 +1056,9 @@ static const struct pdo_dbh_methods sqlite_methods = {
 	pdo_sqlite_request_shutdown,
 	pdo_sqlite_in_transaction,
 	pdo_sqlite_get_gc,
-	pdo_sqlite_scanner
+	pdo_sqlite_scanner,
+	pdo_sqlite_pool_before_acquire,
+	NULL,	/* pool_before_release: no per-slot UDF cleanup needed */
 };
 
 static char *make_filename_safe(const char *filename)
@@ -1158,19 +1210,9 @@ static int pdo_sqlite_handle_factory(pdo_dbh_t *dbh, zval *driver_options) /* {{
 	dbh->alloc_own_columns = 1;
 	dbh->max_escaped_char_length = 2;
 
-	/* Pool-slot context: replay the template's UDF/collation registry onto
-	 * this fresh sqlite3*. Template is reachable via pool->user_data. */
-	if (dbh->pool != NULL) {
-		const pdo_dbh_t *template = (const pdo_dbh_t *) dbh->pool->user_data;
-		if (template != NULL && template->driver_pool_data != NULL) {
-			const pdo_sqlite_pool_registry *reg =
-				(const pdo_sqlite_pool_registry *) template->driver_pool_data;
-			if (UNEXPECTED(!pdo_sqlite_pool_registry_apply(reg, H->db))) {
-				pdo_sqlite_error(dbh);
-				goto cleanup;
-			}
-		}
-	}
+	/* Pool-slot template sync happens in pool_before_acquire — fresh slots
+	 * may sit in the pool unused (POOL_MIN > 0) while the user is still
+	 * registering UDFs on the template. before_acquire catches up lazily. */
 
 	ret = 1;
 

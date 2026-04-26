@@ -164,6 +164,22 @@ static bool pdo_pool_healthcheck(zend_async_pool_t *pool, zval *resource)
 	return true;
 }
 
+/* Before acquire: forwards to driver pool_before_acquire if set. */
+static bool pdo_pool_before_acquire(zend_async_pool_t *pool, zval *resource)
+{
+	pdo_dbh_t *const conn = Z_PTR_P(resource);
+
+	if (UNEXPECTED(conn == NULL || conn->methods == NULL)) {
+		return false;
+	}
+
+	if (conn->methods->pool_before_acquire) {
+		return conn->methods->pool_before_acquire(conn);
+	}
+
+	return true;
+}
+
 /* Before release: cleanup connection state.
  * Returns false if connection is broken — pool will destroy it. */
 static bool pdo_pool_before_release(zend_async_pool_t *pool, zval *resource)
@@ -185,6 +201,14 @@ static bool pdo_pool_before_release(zend_async_pool_t *pool, zval *resource)
 			conn->methods->rollback(conn);
 		}
 		conn->in_txn = false;
+	}
+
+	/* Driver-specific per-slot cleanup (e.g. de-register personal UDFs).
+	 * Runs after rollback so transaction state is consistent. */
+	if (conn->methods && conn->methods->pool_before_release) {
+		if (!conn->methods->pool_before_release(conn)) {
+			return false;
+		}
 	}
 
 	/* Clear error state so the next coroutine starts clean */
@@ -265,7 +289,7 @@ bool pdo_pool_create(pdo_dbh_t *dbh, zval *options)
 		pdo_pool_factory,
 		pdo_pool_destructor,
 		pdo_pool_healthcheck,
-		NULL,  /* before_acquire */
+		pdo_pool_before_acquire,
 		pdo_pool_before_release,
 		(uint32_t)min_size,
 		(uint32_t)max_size,
