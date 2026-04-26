@@ -1210,9 +1210,25 @@ static int pdo_sqlite_handle_factory(pdo_dbh_t *dbh, zval *driver_options) /* {{
 	dbh->alloc_own_columns = 1;
 	dbh->max_escaped_char_length = 2;
 
-	/* Pool-slot template sync happens in pool_before_acquire — fresh slots
-	 * may sit in the pool unused (POOL_MIN > 0) while the user is still
-	 * registering UDFs on the template. before_acquire catches up lazily. */
+	/* Pool-slot context: apply the template registry now. Async pool only
+	 * fires before_acquire when a slot is popped from the idle buffer; a
+	 * brand-new factory slot is handed straight to the caller, so we must
+	 * apply here too. before_acquire still catches pre-warmed slots that
+	 * were created before the user finished registering UDFs. */
+	if (dbh->pool != NULL) {
+		pdo_dbh_t *template = (pdo_dbh_t *) dbh->pool->user_data;
+		pdo_sqlite_pool_registry *reg = template
+			? (pdo_sqlite_pool_registry *) template->driver_pool_data
+			: NULL;
+		if (reg != NULL) {
+			if (UNEXPECTED(!pdo_sqlite_pool_registry_apply(reg, H->db))) {
+				pdo_sqlite_error(dbh);
+				goto cleanup;
+			}
+			reg->frozen = true;
+		}
+		H->template_applied = true;
+	}
 
 	ret = 1;
 
