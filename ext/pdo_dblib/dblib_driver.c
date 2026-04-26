@@ -441,7 +441,9 @@ static const struct pdo_dbh_methods dblib_methods = {
 	NULL, /* request shutdown */
 	NULL, /* in transaction, use PDO's internal tracking mechanism */
 	NULL, /* get gc */
-	NULL /* scanner */
+	NULL, /* scanner */
+	NULL, /* pool_before_acquire */
+	NULL, /* pool_before_release */
 };
 
 static int pdo_dblib_handle_factory(pdo_dbh_t *dbh, zval *driver_options)

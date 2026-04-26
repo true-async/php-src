@@ -736,10 +736,11 @@ bool pdo_sqlite_pool_registry_apply(const pdo_sqlite_pool_registry *reg, sqlite3
 	return true;
 }
 
-/* before_acquire: applies the template registry to this slot's sqlite3*
- * the first time the slot is handed out. Idempotent (template_applied
- * short-circuits subsequent acquires). Also flips template->frozen so
- * later registrations on the template throw. */
+/* before_acquire: catches pre-warmed slots that were created before the
+ * user finished populating the template registry. Marks template_applied
+ * unconditionally on first hit so subsequent acquires of the same slot
+ * are zero-cost. Also flips template->frozen so any later registration on
+ * the template throws (the slot now diverges from the registry otherwise). */
 bool pdo_sqlite_pool_before_acquire(pdo_dbh_t *slot_dbh)
 {
 	pdo_sqlite_db_handle *H = (pdo_sqlite_db_handle *) slot_dbh->driver_data;
@@ -1210,24 +1211,28 @@ static int pdo_sqlite_handle_factory(pdo_dbh_t *dbh, zval *driver_options) /* {{
 	dbh->alloc_own_columns = 1;
 	dbh->max_escaped_char_length = 2;
 
-	/* Pool-slot context: apply the template registry now. Async pool only
-	 * fires before_acquire when a slot is popped from the idle buffer; a
-	 * brand-new factory slot is handed straight to the caller, so we must
-	 * apply here too. before_acquire still catches pre-warmed slots that
-	 * were created before the user finished registering UDFs. */
+	/* Pool-slot context: apply the template registry now if it already has
+	 * entries. Async pool only fires before_acquire when a slot is popped
+	 * from the idle buffer; a brand-new factory slot is handed straight to
+	 * the caller, so we must apply here for the lazy-create path. We mark
+	 * template_applied only when we actually applied something — pre-warmed
+	 * slots created against an empty registry stay unmarked so before_acquire
+	 * can catch them up the first time the user takes them out of the pool. */
 	if (dbh->pool != NULL) {
 		pdo_dbh_t *template = (pdo_dbh_t *) dbh->pool->user_data;
 		pdo_sqlite_pool_registry *reg = template
 			? (pdo_sqlite_pool_registry *) template->driver_pool_data
 			: NULL;
-		if (reg != NULL) {
+		if (reg != NULL
+				&& (zend_hash_num_elements(&reg->funcs) > 0
+				 || zend_hash_num_elements(&reg->collations) > 0)) {
 			if (UNEXPECTED(!pdo_sqlite_pool_registry_apply(reg, H->db))) {
 				pdo_sqlite_error(dbh);
 				goto cleanup;
 			}
 			reg->frozen = true;
+			H->template_applied = true;
 		}
-		H->template_applied = true;
 	}
 
 	ret = 1;

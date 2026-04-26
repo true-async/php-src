@@ -466,7 +466,9 @@ static const struct pdo_dbh_methods odbc_methods = {
 	NULL, /* request_shutdown */
 	NULL, /* in transaction, use PDO's internal tracking mechanism */
 	NULL, /* get_gc */
-	NULL /* scanner */
+	NULL, /* scanner */
+	NULL, /* pool_before_acquire */
+	NULL, /* pool_before_release */
 };
 
 static int pdo_odbc_handle_factory(pdo_dbh_t *dbh, zval *driver_options) /* {{{ */
