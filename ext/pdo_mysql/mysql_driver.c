@@ -668,7 +668,9 @@ static const struct pdo_dbh_methods mysql_methods = {
 	pdo_mysql_request_shutdown,
 	pdo_mysql_in_transaction,
 	NULL, /* get_gc */
-    pdo_mysql_scanner
+    pdo_mysql_scanner,
+	NULL, /* pool_before_acquire */
+	NULL, /* pool_before_release */
 };
 /* }}} */
 
