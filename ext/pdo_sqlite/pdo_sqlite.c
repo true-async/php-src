@@ -87,6 +87,10 @@ PHP_METHOD(Pdo_Sqlite, loadExtension)
 	dbh = Z_PDO_DBH_P(ZEND_THIS);
 	PDO_CONSTRUCT_CHECK;
 
+	if (pdo_sqlite_reject_in_pool_mode(dbh, "loadExtension")) {
+		RETURN_THROWS();
+	}
+
 	db_handle = (pdo_sqlite_db_handle *)dbh->driver_data;
 
 #ifdef ZTS
@@ -296,6 +300,11 @@ PHP_METHOD(Pdo_Sqlite, openBlob)
 
 	dbh = Z_PDO_DBH_P(ZEND_THIS);
 	PDO_CONSTRUCT_CHECK;
+
+	if (pdo_sqlite_reject_in_pool_mode(dbh, "openBlob")) {
+		RETURN_THROWS();
+	}
+
 	db_handle = (pdo_sqlite_db_handle *)dbh->driver_data;
 
 	if (zend_parse_parameters(ZEND_NUM_ARGS(), "ppl|pl", &table, &table_len, &column, &column_len, &rowid, &dbname, &dbname_len, &flags) == FAILURE) {
@@ -341,6 +350,11 @@ PHP_METHOD(Pdo_Sqlite, setAuthorizer)
 
 	pdo_dbh_t *dbh = Z_PDO_DBH_P(ZEND_THIS);
 	PDO_CONSTRUCT_CHECK_WITH_CLEANUP(free_fcc);
+
+	if (pdo_sqlite_reject_in_pool_mode(dbh, "setAuthorizer")) {
+		goto free_fcc;
+	}
+
 	pdo_sqlite_db_handle *db_handle = (pdo_sqlite_db_handle *) dbh->driver_data;
 
 	/* Clear previously set callback */

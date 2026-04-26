@@ -514,6 +514,12 @@ PDO_API void php_pdo_internal_construct_driver(INTERNAL_FUNCTION_PARAMETERS, zen
 		&& driver->db_handle_init_methods) {
 		bool supports_pool = false;
 		driver->db_handle_init_methods(dbh, &supports_pool);
+		if (UNEXPECTED(EG(exception))) {
+			/* Driver rejected the DSN/options for pool mode with its own message. */
+			dbh->methods = NULL;
+			zend_restore_error_handling(&zeh);
+			return;
+		}
 		if (!supports_pool) {
 			dbh->methods = NULL;
 			zend_throw_exception_ex(php_pdo_get_exception(), 0,
@@ -1775,7 +1781,9 @@ static void dbh_free(pdo_dbh_t *dbh, bool free_persistent)
 		}
 	}
 
-	if (dbh->methods && dbh->driver_data) {
+	/* Pool templates carry no driver_data but may carry driver_pool_data
+	 * (e.g. SQLite UDF registry). Either is enough to require closer(). */
+	if (dbh->methods && (dbh->driver_data || dbh->driver_pool_data)) {
 		dbh->methods->closer(dbh);
 	}
 

@@ -296,6 +296,14 @@ typedef void (*pdo_dbh_get_gc_func)(pdo_dbh_t *dbh, zend_get_gc_buffer *buffer);
 /* driver specific re2s sql parser, overrides the default one if present */
 typedef int (*pdo_dbh_sql_scanner)(pdo_scanner_t *s);
 
+/* Pool slot lifecycle hooks (NULL → no-op).
+ * Both receive the slot's pdo_dbh_t (driver_data is set). They run inside
+ * the pool's before_acquire / before_release callbacks before the slot is
+ * handed to the coroutine / returned to the pool. Returning false from the
+ * release hook signals a broken connection and the pool will destroy it. */
+typedef bool (*pdo_dbh_pool_acquire_func)(pdo_dbh_t *slot_dbh);
+typedef bool (*pdo_dbh_pool_release_func)(pdo_dbh_t *slot_dbh);
+
 /* for adding methods to the dbh or stmt objects
 pointer to a list of driver specific functions. The convention is
 to prefix the function names using the PDO driver name; this will
@@ -329,6 +337,9 @@ struct pdo_dbh_methods {
 	pdo_dbh_txn_func		in_transaction;
 	pdo_dbh_get_gc_func		get_gc;
 	pdo_dbh_sql_scanner		scanner;
+	/* Pool slot hooks — NULL for drivers without per-slot setup/teardown. */
+	pdo_dbh_pool_acquire_func	pool_before_acquire;
+	pdo_dbh_pool_release_func	pool_before_release;
 };
 
 /* }}} */
@@ -527,6 +538,11 @@ struct _pdo_dbh_t {
 	zend_object *pool_wrapper;		/* cached PHP Async\Pool object for getPool() */
 	uint32_t pool_slot_refcount;	/* number of statements borrowing this pooled connection */
 	bool conn_broken:1;				/* connection lost or protocol desynchronized — must not return to pool */
+
+	/* Driver-owned per-template auxiliary state for pool mode (e.g. SQLite UDF
+	 * registry). NULL by default. Lifetime: allocated by driver on demand,
+	 * released by driver via dbh->methods->closer when dbh_free runs. */
+	void *driver_pool_data;
 };
 
 /* represents a connection to a database */
