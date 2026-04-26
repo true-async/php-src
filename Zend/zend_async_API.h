@@ -495,6 +495,21 @@ typedef zend_async_udp_req_t *(*zend_async_udp_sendto_t)(
 typedef zend_async_udp_req_t *(*zend_async_udp_recvfrom_t)(
 		zend_async_io_t *io, size_t max_size);
 
+/* Synchronous best-effort UDP send. Calls sendmsg() immediately, no
+ * request struct, no callback, no allocation. Returns the number of
+ * bytes the kernel accepted (almost always == count for UDP), or a
+ * negative errno on failure. -EAGAIN signals "kernel buffer full,
+ * retry later" — caller should fall back to zend_async_udp_sendto_t
+ * (queued async path) or just drop the packet (QUIC layer recovers
+ * via retransmit).
+ *
+ * Use this on the hot path inside coroutines that don't yield between
+ * sends — the queued zend_async_udp_sendto_t needs a reactor tick to
+ * actually flush, which never happens in a tight handler loop. */
+typedef ssize_t (*zend_async_udp_try_send_t)(
+		zend_async_io_t *io, const char *buf, size_t count,
+		const struct sockaddr *addr, socklen_t addr_len);
+
 /* Socket option setting functions */
 typedef int (*zend_async_io_set_option_t)(
 		zend_async_io_t *io, zend_async_socket_option_t option, int value);
@@ -2117,6 +2132,7 @@ ZEND_API extern zend_async_io_flush_t zend_async_io_flush_fn;
 ZEND_API extern zend_async_io_stat_t zend_async_io_stat_fn;
 ZEND_API extern zend_async_io_seek_t zend_async_io_seek_fn;
 ZEND_API extern zend_async_udp_sendto_t zend_async_udp_sendto_fn;
+ZEND_API extern zend_async_udp_try_send_t zend_async_udp_try_send_fn;
 ZEND_API extern zend_async_udp_recvfrom_t zend_async_udp_recvfrom_fn;
 ZEND_API extern zend_async_io_set_option_t zend_async_io_set_option_fn;
 ZEND_API extern zend_async_udp_set_membership_t zend_async_udp_set_membership_fn;
@@ -2188,7 +2204,8 @@ ZEND_API bool zend_async_io_register(char *module, bool allow_override,
 		zend_async_io_write_t write_fn, zend_async_io_close_t close_fn,
 		zend_async_io_await_t await_fn, zend_async_io_flush_t flush_fn,
 		zend_async_io_stat_t stat_fn, zend_async_io_seek_t seek_fn,
-		zend_async_udp_sendto_t udp_sendto_fn, zend_async_udp_recvfrom_t udp_recvfrom_fn,
+		zend_async_udp_sendto_t udp_sendto_fn, zend_async_udp_try_send_t udp_try_send_fn,
+		zend_async_udp_recvfrom_t udp_recvfrom_fn,
 		zend_async_io_set_option_t set_option_fn, zend_async_udp_set_membership_t udp_set_membership_fn,
 		zend_async_udp_bind_t udp_bind_fn);
 
@@ -2485,6 +2502,8 @@ END_EXTERN_C()
 #define ZEND_ASYNC_IO_SEEK(io, offset, whence)  zend_async_io_seek_fn(io, offset, whence)
 #define ZEND_ASYNC_UDP_SENDTO(io, buf, count, addr, addr_len) \
 	zend_async_udp_sendto_fn(io, buf, count, addr, addr_len)
+#define ZEND_ASYNC_UDP_TRY_SEND(io, buf, count, addr, addr_len) \
+	zend_async_udp_try_send_fn(io, buf, count, addr, addr_len)
 #define ZEND_ASYNC_UDP_RECVFROM(io, max_size)  zend_async_udp_recvfrom_fn(io, max_size)
 #define ZEND_ASYNC_IO_SET_OPTION(io, opt, val) zend_async_io_set_option_fn(io, opt, val)
 #define ZEND_ASYNC_UDP_SET_MEMBERSHIP(io, mcast, iface, join) \
