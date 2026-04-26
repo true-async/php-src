@@ -377,6 +377,14 @@ typedef zend_async_poll_proxy_t *(*zend_async_new_poll_proxy_event_t)(
 		zend_async_poll_event_t *poll_event, async_poll_event events, size_t extra_size);
 typedef zend_async_timer_event_t *(*zend_async_new_timer_event_t)(const zend_ulong timeout,
 		const zend_ulong nanoseconds, const bool is_periodic, size_t extra_size);
+/* Reschedule an existing timer event. Avoids the new_timer_event +
+ * uv_close + dispose cycle on the hot path. Requires the event to be
+ * flagged ZEND_ASYNC_TIMER_F_MULTISHOT (otherwise the event would
+ * self-close on its first fire and rearm would race against teardown).
+ * Returns false on closed event or backend failure. Refcount and
+ * registered callbacks are preserved across rearm. */
+typedef bool (*zend_async_timer_rearm_t)(zend_async_timer_event_t *event,
+		const zend_ulong timeout, const zend_ulong nanoseconds);
 typedef zend_async_signal_event_t *(*zend_async_new_signal_event_t)(int signum, size_t extra_size);
 typedef zend_async_process_event_t *(*zend_async_new_process_event_t)(
 		zend_process_t process_handle, size_t extra_size);
@@ -1027,6 +1035,27 @@ struct _zend_async_timer_event_s {
 	/* The timer is periodic. */
 	bool is_periodic;
 };
+
+/* Timer event flags (bits 13+, bits 0-12 reserved for base event flags).
+ *
+ * MULTISHOT — timer stays armed across fires. The reactor must NOT close
+ *   the event automatically after a one-shot fire; the user is responsible
+ *   for either calling zend_async_timer_rearm_fn (to reschedule with a new
+ *   timeout) or dispose() to release. Designed for hot paths that would
+ *   otherwise pay a new_timer_event + uv_close + dispose cycle on every
+ *   reschedule (e.g. QUIC retransmission timers, idle reapers). The flag
+ *   is set by the caller after construction:
+ *     ev = ZEND_ASYNC_NEW_TIMER_EVENT_NS(...);
+ *     ZEND_ASYNC_TIMER_SET_MULTISHOT(ev);
+ */
+#define ZEND_ASYNC_TIMER_F_MULTISHOT (1u << 13)
+
+#define ZEND_ASYNC_TIMER_IS_MULTISHOT(ev) \
+	(((ev)->base.flags & ZEND_ASYNC_TIMER_F_MULTISHOT) != 0)
+#define ZEND_ASYNC_TIMER_SET_MULTISHOT(ev) \
+	((ev)->base.flags |= ZEND_ASYNC_TIMER_F_MULTISHOT)
+#define ZEND_ASYNC_TIMER_CLR_MULTISHOT(ev) \
+	((ev)->base.flags &= ~ZEND_ASYNC_TIMER_F_MULTISHOT)
 
 struct _zend_async_signal_event_s {
 	zend_async_event_t base;
@@ -2061,6 +2090,7 @@ ZEND_API extern zend_async_new_socket_event_t zend_async_new_socket_event_fn;
 ZEND_API extern zend_async_new_poll_event_t zend_async_new_poll_event_fn;
 ZEND_API extern zend_async_new_poll_proxy_event_t zend_async_new_poll_proxy_event_fn;
 ZEND_API extern zend_async_new_timer_event_t zend_async_new_timer_event_fn;
+ZEND_API extern zend_async_timer_rearm_t zend_async_timer_rearm_fn;
 ZEND_API extern zend_async_new_signal_event_t zend_async_new_signal_event_fn;
 ZEND_API extern zend_async_new_process_event_t zend_async_new_process_event_fn;
 ZEND_API extern zend_async_new_thread_event_t zend_async_new_thread_event_fn;
@@ -2168,6 +2198,7 @@ ZEND_API bool zend_async_reactor_register(char *module, bool allow_override,
 		zend_async_new_poll_event_t new_poll_event_fn,
 		zend_async_new_poll_proxy_event_t new_poll_proxy_event_fn,
 		zend_async_new_timer_event_t new_timer_event_fn,
+		zend_async_timer_rearm_t timer_rearm_fn,
 		zend_async_new_signal_event_t new_signal_event_fn,
 		zend_async_new_process_event_t new_process_event_fn,
 		zend_async_new_thread_event_t new_thread_event_fn,
@@ -2412,6 +2443,8 @@ END_EXTERN_C()
 	zend_async_new_timer_event_fn(timeout, nanoseconds, is_periodic, 0)
 #define ZEND_ASYNC_NEW_TIMER_EVENT_NS_EX(timeout, nanoseconds, is_periodic, extra_size) \
 	zend_async_new_timer_event_fn(timeout, nanoseconds, is_periodic, extra_size)
+#define ZEND_ASYNC_TIMER_REARM(event, timeout, nanoseconds) \
+	zend_async_timer_rearm_fn(event, timeout, nanoseconds)
 #define ZEND_ASYNC_NEW_SIGNAL_EVENT(signum) zend_async_new_signal_event_fn(signum, 0)
 #define ZEND_ASYNC_NEW_SIGNAL_EVENT_EX(signum, extra_size) \
 	zend_async_new_signal_event_fn(signum, extra_size)
