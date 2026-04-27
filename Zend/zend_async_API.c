@@ -217,6 +217,7 @@ zend_async_new_socket_event_t zend_async_new_socket_event_fn = NULL;
 zend_async_new_poll_event_t zend_async_new_poll_event_fn = NULL;
 zend_async_new_poll_proxy_event_t zend_async_new_poll_proxy_event_fn = NULL;
 zend_async_new_timer_event_t zend_async_new_timer_event_fn = NULL;
+zend_async_timer_rearm_t zend_async_timer_rearm_fn = NULL;
 zend_async_new_signal_event_t zend_async_new_signal_event_fn = NULL;
 zend_async_new_process_event_t zend_async_new_process_event_fn = NULL;
 zend_async_new_thread_event_t zend_async_new_thread_event_fn = NULL;
@@ -272,6 +273,7 @@ zend_async_io_flush_t zend_async_io_flush_fn = NULL;
 zend_async_io_stat_t zend_async_io_stat_fn = NULL;
 zend_async_io_seek_t zend_async_io_seek_fn = NULL;
 zend_async_udp_sendto_t zend_async_udp_sendto_fn = NULL;
+zend_async_udp_try_send_t zend_async_udp_try_send_fn = NULL;
 zend_async_udp_recvfrom_t zend_async_udp_recvfrom_fn = NULL;
 zend_async_io_set_option_t zend_async_io_set_option_fn = NULL;
 zend_async_udp_set_membership_t zend_async_udp_set_membership_fn = NULL;
@@ -459,6 +461,7 @@ ZEND_API bool zend_async_reactor_register(char *module, bool allow_override,
 		zend_async_new_poll_event_t new_poll_event_fn,
 		zend_async_new_poll_proxy_event_t new_poll_proxy_event_fn,
 		zend_async_new_timer_event_t new_timer_event_fn,
+		zend_async_timer_rearm_t timer_rearm_fn,
 		zend_async_new_signal_event_t new_signal_event_fn,
 		zend_async_new_process_event_t new_process_event_fn,
 		zend_async_new_thread_event_t new_thread_event_fn,
@@ -495,6 +498,7 @@ ZEND_API bool zend_async_reactor_register(char *module, bool allow_override,
 	zend_async_new_poll_event_fn = new_poll_event_fn;
 	zend_async_new_poll_proxy_event_fn = new_poll_proxy_event_fn;
 	zend_async_new_timer_event_fn = new_timer_event_fn;
+	zend_async_timer_rearm_fn = timer_rearm_fn;
 	zend_async_new_signal_event_fn = new_signal_event_fn;
 
 	zend_async_new_process_event_fn = new_process_event_fn;
@@ -1830,7 +1834,8 @@ ZEND_API bool zend_async_io_register(char *module, bool allow_override,
 		zend_async_io_write_t write_fn, zend_async_io_close_t close_fn,
 		zend_async_io_await_t await_fn, zend_async_io_flush_t flush_fn,
 		zend_async_io_stat_t stat_fn, zend_async_io_seek_t seek_fn,
-		zend_async_udp_sendto_t udp_sendto_fn, zend_async_udp_recvfrom_t udp_recvfrom_fn,
+		zend_async_udp_sendto_t udp_sendto_fn, zend_async_udp_try_send_t udp_try_send_fn,
+		zend_async_udp_recvfrom_t udp_recvfrom_fn,
 		zend_async_io_set_option_t set_option_fn, zend_async_udp_set_membership_t udp_set_membership_fn,
 		zend_async_udp_bind_t udp_bind_fn)
 {
@@ -1860,6 +1865,7 @@ ZEND_API bool zend_async_io_register(char *module, bool allow_override,
 	zend_async_io_stat_fn = stat_fn;
 	zend_async_io_seek_fn = seek_fn;
 	zend_async_udp_sendto_fn = udp_sendto_fn;
+	zend_async_udp_try_send_fn = udp_try_send_fn;
 	zend_async_udp_recvfrom_fn = udp_recvfrom_fn;
 	zend_async_io_set_option_fn = set_option_fn;
 	zend_async_udp_set_membership_fn = udp_set_membership_fn;
