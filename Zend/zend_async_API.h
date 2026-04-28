@@ -21,9 +21,9 @@
 #include "zend_globals.h"
 #include "zend_stream.h"
 
-#define ZEND_ASYNC_API "TrueAsync ABI v0.9.1"
+#define ZEND_ASYNC_API "TrueAsync ABI v0.10.0"
 #define ZEND_ASYNC_API_VERSION_MAJOR 0
-#define ZEND_ASYNC_API_VERSION_MINOR 9
+#define ZEND_ASYNC_API_VERSION_MINOR 10
 #define ZEND_ASYNC_API_VERSION_PATCH 0
 
 #define ZEND_ASYNC_API_VERSION_NUMBER \
@@ -459,6 +459,11 @@ typedef int (*zend_async_listen_get_local_address_t)(
 typedef int (*zend_async_exec_t)(zend_async_exec_mode exec_mode, const char *cmd,
 		zval *return_buffer, zval *return_value, zval *std_error, const char *cwd, const char *env,
 		const zend_ulong timeout);
+
+/* Returns the number of CPUs the current process can use ("available
+ * parallelism"). Honours cgroup CPU quotas, sched_setaffinity, etc. — the
+ * value libuv recommends for thread-pool/worker sizing. Always >= 1. */
+typedef unsigned int (*zend_async_available_parallelism_t)(void);
 
 typedef void (*zend_async_task_run_t)(zend_async_task_t *task);
 typedef bool (*zend_async_queue_task_t)(zend_async_task_t *task);
@@ -2152,6 +2157,9 @@ ZEND_API extern zend_async_start_thread_t zend_async_start_thread_fn;
 /* Trigger Event API */
 ZEND_API extern zend_async_new_trigger_event_t zend_async_new_trigger_event_fn;
 
+/* Available parallelism (libuv-backed) */
+ZEND_API extern zend_async_available_parallelism_t zend_async_available_parallelism_fn;
+
 /* Async IO API */
 ZEND_API extern zend_async_io_create_t zend_async_io_create_fn;
 ZEND_API extern zend_async_io_read_t zend_async_io_read_fn;
@@ -2205,7 +2213,8 @@ ZEND_API bool zend_async_reactor_register(char *module, bool allow_override,
 		zend_async_new_filesystem_event_t new_filesystem_event_fn,
 		zend_async_getnameinfo_t getnameinfo_fn, zend_async_getaddrinfo_t getaddrinfo_fn,
 		zend_async_freeaddrinfo_t freeaddrinfo_fn, zend_async_new_exec_event_t new_exec_event_fn,
-		zend_async_exec_t exec_fn, zend_async_new_trigger_event_t new_trigger_event_fn);
+		zend_async_exec_t exec_fn, zend_async_new_trigger_event_t new_trigger_event_fn,
+		zend_async_available_parallelism_t available_parallelism_fn);
 
 ZEND_API void zend_async_thread_pool_register(
 		char *module, bool allow_override,
@@ -2513,6 +2522,9 @@ END_EXTERN_C()
 /* Trigger Event API Macros */
 #define ZEND_ASYNC_NEW_TRIGGER_EVENT() zend_async_new_trigger_event_fn(0)
 #define ZEND_ASYNC_NEW_TRIGGER_EVENT_EX(extra_size) zend_async_new_trigger_event_fn(extra_size)
+
+/* Available parallelism — number of CPUs usable by this process. */
+#define ZEND_ASYNC_AVAILABLE_PARALLELISM() zend_async_available_parallelism_fn()
 
 /* Socket Listening API Macros.
  *
