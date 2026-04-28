@@ -233,6 +233,9 @@ zend_async_exec_t zend_async_exec_fn = NULL;
 /* Trigger Event API */
 zend_async_new_trigger_event_t zend_async_new_trigger_event_fn = NULL;
 
+/* Available parallelism */
+zend_async_available_parallelism_t zend_async_available_parallelism_fn = NULL;
+
 /* Coroutine VM execute data accessor */
 zend_async_coroutine_get_execute_data_t zend_async_coroutine_get_execute_data_fn = NULL;
 
@@ -468,7 +471,8 @@ ZEND_API bool zend_async_reactor_register(char *module, bool allow_override,
 		zend_async_new_filesystem_event_t new_filesystem_event_fn,
 		zend_async_getnameinfo_t getnameinfo_fn, zend_async_getaddrinfo_t getaddrinfo_fn,
 		zend_async_freeaddrinfo_t freeaddrinfo_fn, zend_async_new_exec_event_t new_exec_event_fn,
-		zend_async_exec_t exec_fn, zend_async_new_trigger_event_t new_trigger_event_fn)
+		zend_async_exec_t exec_fn, zend_async_new_trigger_event_t new_trigger_event_fn,
+		zend_async_available_parallelism_t available_parallelism_fn)
 {
 	if (zend_atomic_bool_exchange(&reactor_lock, 1)) {
 		return false;
@@ -513,6 +517,8 @@ ZEND_API bool zend_async_reactor_register(char *module, bool allow_override,
 	zend_async_exec_fn = exec_fn;
 
 	zend_async_new_trigger_event_fn = new_trigger_event_fn;
+
+	zend_async_available_parallelism_fn = available_parallelism_fn;
 
 	zend_atomic_bool_store(&reactor_lock, 0);
 
