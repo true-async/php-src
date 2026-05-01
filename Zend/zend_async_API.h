@@ -480,6 +480,23 @@ typedef zend_async_thread_handle_t (*zend_async_start_thread_t)(
 
 typedef void (*zend_async_microtask_handler_t)(zend_async_microtask_t *microtask);
 
+/* Per-chunk buffer descriptor returned by user alloc_cb. Layout matches
+ * libuv's uv_buf_t on Linux/macOS so the reactor can alias the pointer
+ * without copying; on Windows uv_buf_t reverses field order so the
+ * reactor copies. */
+typedef struct {
+	char *base;
+	size_t len;
+} zend_async_buf_t;
+
+/* User-controlled per-chunk allocator. When set on a zend_async_io_t (via
+ * io->alloc_cb + io->user_data), the reactor invokes it on every read
+ * chunk to ask where the bytes should land. Lets a streaming consumer
+ * advance into a sliding buffer without uv_read_stop/start between
+ * chunks. Set out->base=NULL or out->len=0 to signal back-pressure. */
+typedef void (*zend_async_io_alloc_cb_t)(
+		zend_async_io_t *io, size_t suggested, zend_async_buf_t *out);
+
 /* Async IO function pointer types */
 typedef zend_async_io_t *(*zend_async_io_create_t)(
 		zend_file_descriptor_t fd, zend_async_io_type type, uint32_t state);
@@ -750,6 +767,15 @@ struct _zend_async_io_s {
 	 * so the stream continues working synchronously. */
 	void (*on_detach)(zend_async_io_t *io, void *arg);
 	void *on_detach_arg;
+
+	/* User-controlled per-chunk allocator. When non-NULL, the reactor calls
+	 * it before every read into this handle to ask where the bytes should
+	 * land — replaces the static (buf, max_size) pair on the active req,
+	 * letting multishot stay armed across requests with sliding offsets.
+	 * user_data is opaque (typically a back-pointer to the owning
+	 * connection state). */
+	zend_async_io_alloc_cb_t alloc_cb;
+	void *user_data;
 };
 
 /* Async IO request — one-shot operation request */
