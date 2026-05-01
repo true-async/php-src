@@ -45,6 +45,10 @@ extern ZEND_API bool zend_observer_class_linked_observed;
 /* Omit zend_observer_fcall_internal_function_extension check, they are set at the same time. */
 #define ZEND_OBSERVER_ENABLED (zend_observer_fcall_op_array_extension != -1)
 
+extern ZEND_API zend_llist zend_observer_fiber_switch;
+#define ZEND_OBSERVER_FIBER_SWITCH_ENABLED \
+	(ZEND_OBSERVER_ENABLED || zend_observer_fiber_switch.head != NULL)
+
 #define ZEND_OBSERVER_FCALL_BEGIN(execute_data) do { \
 		if (ZEND_OBSERVER_ENABLED) { \
 			zend_observer_fcall_begin(execute_data); \
