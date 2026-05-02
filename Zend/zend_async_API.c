@@ -271,6 +271,7 @@ zend_async_new_context_t zend_async_new_context_fn = new_context;
 zend_async_io_create_t zend_async_io_create_fn = NULL;
 zend_async_io_read_t zend_async_io_read_fn = NULL;
 zend_async_io_write_t zend_async_io_write_fn = NULL;
+zend_async_io_writev_t zend_async_io_writev_fn = NULL;
 zend_async_io_close_t zend_async_io_close_fn = NULL;
 zend_async_io_await_t zend_async_io_await_fn = NULL;
 zend_async_io_flush_t zend_async_io_flush_fn = NULL;
@@ -1840,7 +1841,8 @@ static char *io_module_name = NULL;
 
 ZEND_API bool zend_async_io_register(char *module, bool allow_override,
 		zend_async_io_create_t create_fn, zend_async_io_read_t read_fn,
-		zend_async_io_write_t write_fn, zend_async_io_close_t close_fn,
+		zend_async_io_write_t write_fn, zend_async_io_writev_t writev_fn,
+		zend_async_io_close_t close_fn,
 		zend_async_io_await_t await_fn, zend_async_io_flush_t flush_fn,
 		zend_async_io_stat_t stat_fn, zend_async_io_seek_t seek_fn,
 		zend_async_udp_sendto_t udp_sendto_fn, zend_async_udp_try_send_t udp_try_send_fn,
@@ -1868,6 +1870,7 @@ ZEND_API bool zend_async_io_register(char *module, bool allow_override,
 	zend_async_io_create_fn = create_fn;
 	zend_async_io_read_fn = read_fn;
 	zend_async_io_write_fn = write_fn;
+	zend_async_io_writev_fn = writev_fn;
 	zend_async_io_close_fn = close_fn;
 	zend_async_io_await_fn = await_fn;
 	zend_async_io_flush_fn = flush_fn;
