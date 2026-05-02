@@ -465,6 +465,14 @@ typedef int (*zend_async_exec_t)(zend_async_exec_mode exec_mode, const char *cmd
  * value libuv recommends for thread-pool/worker sizing. Always >= 1. */
 typedef unsigned int (*zend_async_available_parallelism_t)(void);
 
+/* Cheap monotonic-ish "now" in milliseconds, sourced from the reactor's
+ * cached loop time. The reactor refreshes this once per uv_run / iteration
+ * tick; reads are a single load — no syscall, no vDSO. Suitable for
+ * deadline arithmetic and any timestamp where ~ms precision is enough.
+ * Distinct from zend_hrtime() which is monotonic ns from a real clock
+ * source and intended for sub-ms-precision telemetry samples. */
+typedef uint64_t (*zend_async_now_t)(void);
+
 typedef void (*zend_async_task_run_t)(zend_async_task_t *task);
 typedef bool (*zend_async_queue_task_t)(zend_async_task_t *task);
 typedef zend_async_task_t *(*zend_async_new_task_t)(zend_async_task_run_t run, void *data, size_t extra_size);
@@ -2200,6 +2208,7 @@ ZEND_API extern zend_async_new_trigger_event_t zend_async_new_trigger_event_fn;
 
 /* Available parallelism (libuv-backed) */
 ZEND_API extern zend_async_available_parallelism_t zend_async_available_parallelism_fn;
+ZEND_API extern zend_async_now_t zend_async_now_fn;
 
 /* Async IO API */
 ZEND_API extern zend_async_io_create_t zend_async_io_create_fn;
@@ -2255,7 +2264,8 @@ ZEND_API bool zend_async_reactor_register(char *module, bool allow_override,
 		zend_async_getnameinfo_t getnameinfo_fn, zend_async_getaddrinfo_t getaddrinfo_fn,
 		zend_async_freeaddrinfo_t freeaddrinfo_fn, zend_async_new_exec_event_t new_exec_event_fn,
 		zend_async_exec_t exec_fn, zend_async_new_trigger_event_t new_trigger_event_fn,
-		zend_async_available_parallelism_t available_parallelism_fn);
+		zend_async_available_parallelism_t available_parallelism_fn,
+		zend_async_now_t now_fn);
 
 ZEND_API void zend_async_thread_pool_register(
 		char *module, bool allow_override,
@@ -2566,6 +2576,7 @@ END_EXTERN_C()
 
 /* Available parallelism — number of CPUs usable by this process. */
 #define ZEND_ASYNC_AVAILABLE_PARALLELISM() zend_async_available_parallelism_fn()
+#define ZEND_ASYNC_NOW()                   zend_async_now_fn()
 
 /* Socket Listening API Macros.
  *

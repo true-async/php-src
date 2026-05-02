@@ -217,6 +217,7 @@ zend_async_new_socket_event_t zend_async_new_socket_event_fn = NULL;
 zend_async_new_poll_event_t zend_async_new_poll_event_fn = NULL;
 zend_async_new_poll_proxy_event_t zend_async_new_poll_proxy_event_fn = NULL;
 zend_async_new_timer_event_t zend_async_new_timer_event_fn = NULL;
+zend_async_now_t zend_async_now_fn = NULL;
 zend_async_timer_rearm_t zend_async_timer_rearm_fn = NULL;
 zend_async_new_signal_event_t zend_async_new_signal_event_fn = NULL;
 zend_async_new_process_event_t zend_async_new_process_event_fn = NULL;
@@ -472,7 +473,8 @@ ZEND_API bool zend_async_reactor_register(char *module, bool allow_override,
 		zend_async_getnameinfo_t getnameinfo_fn, zend_async_getaddrinfo_t getaddrinfo_fn,
 		zend_async_freeaddrinfo_t freeaddrinfo_fn, zend_async_new_exec_event_t new_exec_event_fn,
 		zend_async_exec_t exec_fn, zend_async_new_trigger_event_t new_trigger_event_fn,
-		zend_async_available_parallelism_t available_parallelism_fn)
+		zend_async_available_parallelism_t available_parallelism_fn,
+		zend_async_now_t now_fn)
 {
 	if (zend_atomic_bool_exchange(&reactor_lock, 1)) {
 		return false;
@@ -519,6 +521,7 @@ ZEND_API bool zend_async_reactor_register(char *module, bool allow_override,
 	zend_async_new_trigger_event_fn = new_trigger_event_fn;
 
 	zend_async_available_parallelism_fn = available_parallelism_fn;
+	zend_async_now_fn = now_fn;
 
 	zend_atomic_bool_store(&reactor_lock, 0);
 
