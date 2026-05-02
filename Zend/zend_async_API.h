@@ -501,7 +501,17 @@ typedef void (*zend_async_io_alloc_cb_t)(
 typedef zend_async_io_t *(*zend_async_io_create_t)(
 		zend_file_descriptor_t fd, zend_async_io_type type, uint32_t state);
 typedef zend_async_io_req_t *(*zend_async_io_read_t)(zend_async_io_t *io, char *buf, size_t max_size);
-typedef zend_async_io_req_t *(*zend_async_io_write_t)(zend_async_io_t *io, const char *buf, size_t count);
+/* Optional buffer-release callback for fire-and-forget writes. If non-NULL,
+ * the reactor takes over the buffer's lifetime: when the underlying kernel
+ * write completes (success or error), the reactor invokes free_cb(data, io)
+ * and disposes the request itself — the caller does NOT await the req and
+ * does NOT call req->dispose(). data is exactly the buf pointer the caller
+ * passed; the caller's free_cb knows how to reach the owning allocation
+ * (e.g. zend_string base via offsetof, custom slab, etc.). When free_cb is
+ * NULL the legacy contract holds: caller owns buf and must await + dispose. */
+typedef void (*zend_async_io_write_free_cb_t)(void *data, zend_async_io_t *io);
+typedef zend_async_io_req_t *(*zend_async_io_write_t)(zend_async_io_t *io, const char *buf, size_t count,
+		zend_async_io_write_free_cb_t free_cb);
 typedef bool (*zend_async_io_close_t)(zend_async_io_t *io);
 typedef int (*zend_async_io_await_t)(zend_async_io_t *io, uint32_t events, struct timeval *timeout);
 typedef zend_async_io_req_t *(*zend_async_io_flush_t)(zend_async_io_t *io);
@@ -787,6 +797,11 @@ struct _zend_async_io_req_s {
 	zend_object *exception;
 	char *buf;
 	bool completed;
+	/* Fire-and-forget buffer release callback. Set by ZEND_ASYNC_IO_WRITE_EX,
+	 * NULL for legacy await-style writes. When non-NULL, the reactor's write
+	 * completion path invokes free_cb(buf, io) and disposes the request
+	 * itself — no NOTIFY to a waiting coroutine. */
+	zend_async_io_write_free_cb_t free_cb;
 	void (*dispose)(zend_async_io_req_t *req);
 };
 
@@ -2565,7 +2580,9 @@ END_EXTERN_C()
 /* Async IO API Macros */
 #define ZEND_ASYNC_IO_CREATE(fd, type, state)  zend_async_io_create_fn(fd, type, state)
 #define ZEND_ASYNC_IO_READ(io, buf, max_size)  zend_async_io_read_fn(io, buf, max_size)
-#define ZEND_ASYNC_IO_WRITE(io, buf, count)    zend_async_io_write_fn(io, buf, count)
+#define ZEND_ASYNC_IO_WRITE(io, buf, count)    zend_async_io_write_fn(io, buf, count, NULL)
+#define ZEND_ASYNC_IO_WRITE_EX(io, buf, count, free_cb) \
+	zend_async_io_write_fn(io, buf, count, free_cb)
 #define ZEND_ASYNC_IO_CLOSE(io)                zend_async_io_close_fn(io)
 #define ZEND_ASYNC_IO_AWAIT(io, events, tv)    zend_async_io_await_fn(io, events, tv)
 #define ZEND_ASYNC_IO_FLUSH(io)                zend_async_io_flush_fn(io)
