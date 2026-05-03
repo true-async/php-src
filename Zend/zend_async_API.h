@@ -465,6 +465,14 @@ typedef int (*zend_async_exec_t)(zend_async_exec_mode exec_mode, const char *cmd
  * value libuv recommends for thread-pool/worker sizing. Always >= 1. */
 typedef unsigned int (*zend_async_available_parallelism_t)(void);
 
+/* Cheap monotonic-ish "now" in milliseconds, sourced from the reactor's
+ * cached loop time. The reactor refreshes this once per uv_run / iteration
+ * tick; reads are a single load — no syscall, no vDSO. Suitable for
+ * deadline arithmetic and any timestamp where ~ms precision is enough.
+ * Distinct from zend_hrtime() which is monotonic ns from a real clock
+ * source and intended for sub-ms-precision telemetry samples. */
+typedef uint64_t (*zend_async_now_t)(void);
+
 typedef void (*zend_async_task_run_t)(zend_async_task_t *task);
 typedef bool (*zend_async_queue_task_t)(zend_async_task_t *task);
 typedef zend_async_task_t *(*zend_async_new_task_t)(zend_async_task_run_t run, void *data, size_t extra_size);
@@ -501,7 +509,27 @@ typedef void (*zend_async_io_alloc_cb_t)(
 typedef zend_async_io_t *(*zend_async_io_create_t)(
 		zend_file_descriptor_t fd, zend_async_io_type type, uint32_t state);
 typedef zend_async_io_req_t *(*zend_async_io_read_t)(zend_async_io_t *io, char *buf, size_t max_size);
-typedef zend_async_io_req_t *(*zend_async_io_write_t)(zend_async_io_t *io, const char *buf, size_t count);
+/* Optional buffer-release callback for fire-and-forget writes. If non-NULL,
+ * the reactor takes over the buffer's lifetime: when the underlying kernel
+ * write completes (success or error), the reactor invokes free_cb(data, io)
+ * and disposes the request itself — the caller does NOT await the req and
+ * does NOT call req->dispose(). data is exactly the buf pointer the caller
+ * passed; the caller's free_cb knows how to reach the owning allocation
+ * (e.g. zend_string base via offsetof, custom slab, etc.). When free_cb is
+ * NULL the legacy contract holds: caller owns buf and must await + dispose. */
+typedef void (*zend_async_io_write_free_cb_t)(void *data, zend_async_io_t *io);
+typedef zend_async_io_req_t *(*zend_async_io_write_t)(zend_async_io_t *io, const char *buf, size_t count,
+		zend_async_io_write_free_cb_t free_cb);
+
+/* Vectored fire-and-forget write. Each entry of `bufs` is an OWNED zend_string
+ * reference: the reactor consumes one refcount per entry on completion via
+ * zend_string_release(). Caller bumps refcount before passing if it needs
+ * to keep its own reference. Buffer ordering on the wire matches array order.
+ * No await / no dispose: like ZEND_ASYNC_IO_WRITE_EX, returns NULL on submit
+ * failure (in which case the reactor has already released every buf). */
+typedef zend_async_io_req_t *(*zend_async_io_writev_t)(zend_async_io_t *io,
+		zend_string * const *bufs, unsigned nbufs);
+
 typedef bool (*zend_async_io_close_t)(zend_async_io_t *io);
 typedef int (*zend_async_io_await_t)(zend_async_io_t *io, uint32_t events, struct timeval *timeout);
 typedef zend_async_io_req_t *(*zend_async_io_flush_t)(zend_async_io_t *io);
@@ -787,6 +815,11 @@ struct _zend_async_io_req_s {
 	zend_object *exception;
 	char *buf;
 	bool completed;
+	/* Fire-and-forget buffer release callback. Set by ZEND_ASYNC_IO_WRITE_EX,
+	 * NULL for legacy await-style writes. When non-NULL, the reactor's write
+	 * completion path invokes free_cb(buf, io) and disposes the request
+	 * itself — no NOTIFY to a waiting coroutine. */
+	zend_async_io_write_free_cb_t free_cb;
 	void (*dispose)(zend_async_io_req_t *req);
 };
 
@@ -2185,11 +2218,13 @@ ZEND_API extern zend_async_new_trigger_event_t zend_async_new_trigger_event_fn;
 
 /* Available parallelism (libuv-backed) */
 ZEND_API extern zend_async_available_parallelism_t zend_async_available_parallelism_fn;
+ZEND_API extern zend_async_now_t zend_async_now_fn;
 
 /* Async IO API */
 ZEND_API extern zend_async_io_create_t zend_async_io_create_fn;
 ZEND_API extern zend_async_io_read_t zend_async_io_read_fn;
 ZEND_API extern zend_async_io_write_t zend_async_io_write_fn;
+ZEND_API extern zend_async_io_writev_t zend_async_io_writev_fn;
 ZEND_API extern zend_async_io_close_t zend_async_io_close_fn;
 ZEND_API extern zend_async_io_await_t zend_async_io_await_fn;
 ZEND_API extern zend_async_io_flush_t zend_async_io_flush_fn;
@@ -2240,7 +2275,8 @@ ZEND_API bool zend_async_reactor_register(char *module, bool allow_override,
 		zend_async_getnameinfo_t getnameinfo_fn, zend_async_getaddrinfo_t getaddrinfo_fn,
 		zend_async_freeaddrinfo_t freeaddrinfo_fn, zend_async_new_exec_event_t new_exec_event_fn,
 		zend_async_exec_t exec_fn, zend_async_new_trigger_event_t new_trigger_event_fn,
-		zend_async_available_parallelism_t available_parallelism_fn);
+		zend_async_available_parallelism_t available_parallelism_fn,
+		zend_async_now_t now_fn);
 
 ZEND_API void zend_async_thread_pool_register(
 		char *module, bool allow_override,
@@ -2267,7 +2303,8 @@ ZEND_API bool zend_async_socket_listening_register(
 
 ZEND_API bool zend_async_io_register(char *module, bool allow_override,
 		zend_async_io_create_t create_fn, zend_async_io_read_t read_fn,
-		zend_async_io_write_t write_fn, zend_async_io_close_t close_fn,
+		zend_async_io_write_t write_fn, zend_async_io_writev_t writev_fn,
+		zend_async_io_close_t close_fn,
 		zend_async_io_await_t await_fn, zend_async_io_flush_t flush_fn,
 		zend_async_io_stat_t stat_fn, zend_async_io_seek_t seek_fn,
 		zend_async_udp_sendto_t udp_sendto_fn, zend_async_udp_try_send_t udp_try_send_fn,
@@ -2551,6 +2588,7 @@ END_EXTERN_C()
 
 /* Available parallelism — number of CPUs usable by this process. */
 #define ZEND_ASYNC_AVAILABLE_PARALLELISM() zend_async_available_parallelism_fn()
+#define ZEND_ASYNC_NOW()                   zend_async_now_fn()
 
 /* Socket Listening API Macros.
  *
@@ -2565,7 +2603,15 @@ END_EXTERN_C()
 /* Async IO API Macros */
 #define ZEND_ASYNC_IO_CREATE(fd, type, state)  zend_async_io_create_fn(fd, type, state)
 #define ZEND_ASYNC_IO_READ(io, buf, max_size)  zend_async_io_read_fn(io, buf, max_size)
-#define ZEND_ASYNC_IO_WRITE(io, buf, count)    zend_async_io_write_fn(io, buf, count)
+#define ZEND_ASYNC_IO_WRITE(io, buf, count)    zend_async_io_write_fn(io, buf, count, NULL)
+#define ZEND_ASYNC_IO_WRITE_EX(io, buf, count, free_cb) \
+	zend_async_io_write_fn(io, buf, count, free_cb)
+/* Fire-and-forget vectored write. `bufs` is an array of OWNED zend_string
+ * references — reactor releases one ref per entry on completion. Wire
+ * ordering matches array order. Returns NULL on submit failure (in which
+ * case the reactor has already released every entry). */
+#define ZEND_ASYNC_IO_WRITEV(io, bufs, nbufs) \
+	zend_async_io_writev_fn(io, bufs, nbufs)
 #define ZEND_ASYNC_IO_CLOSE(io)                zend_async_io_close_fn(io)
 #define ZEND_ASYNC_IO_AWAIT(io, events, tv)    zend_async_io_await_fn(io, events, tv)
 #define ZEND_ASYNC_IO_FLUSH(io)                zend_async_io_flush_fn(io)
