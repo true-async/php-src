@@ -1,5 +1,5 @@
 /* This is a generated file, edit pdo_dbh.stub.php instead.
- * Stub hash: d0c708fcc043a6737223e79e724d81ab37d1ea0f */
+ * Stub hash: 1530c8cee7d85d5aa4b0f309748c4599a3e443a7 */
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_class_PDO___construct, 0, 0, 1)
 	ZEND_ARG_TYPE_INFO(0, dsn, IS_STRING, 0)
@@ -479,6 +479,12 @@ static zend_class_entry *register_class_PDO(void)
 	zend_string *const_ATTR_POOL_HEALTHCHECK_INTERVAL_name = zend_string_init_interned("ATTR_POOL_HEALTHCHECK_INTERVAL", sizeof("ATTR_POOL_HEALTHCHECK_INTERVAL") - 1, true);
 	zend_declare_typed_class_constant(class_entry, const_ATTR_POOL_HEALTHCHECK_INTERVAL_name, &const_ATTR_POOL_HEALTHCHECK_INTERVAL_value, ZEND_ACC_PUBLIC, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_LONG));
 	zend_string_release_ex(const_ATTR_POOL_HEALTHCHECK_INTERVAL_name, true);
+
+	zval const_ATTR_POOL_STMT_CACHE_SIZE_value;
+	ZVAL_LONG(&const_ATTR_POOL_STMT_CACHE_SIZE_value, LONG_CONST(PDO_ATTR_POOL_STMT_CACHE_SIZE));
+	zend_string *const_ATTR_POOL_STMT_CACHE_SIZE_name = zend_string_init_interned("ATTR_POOL_STMT_CACHE_SIZE", sizeof("ATTR_POOL_STMT_CACHE_SIZE") - 1, true);
+	zend_declare_typed_class_constant(class_entry, const_ATTR_POOL_STMT_CACHE_SIZE_name, &const_ATTR_POOL_STMT_CACHE_SIZE_value, ZEND_ACC_PUBLIC, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_LONG));
+	zend_string_release_ex(const_ATTR_POOL_STMT_CACHE_SIZE_name, true);
 
 	zval const_ERRMODE_SILENT_value;
 	ZVAL_LONG(&const_ERRMODE_SILENT_value, LONG_CONST(PDO_ERRMODE_SILENT));

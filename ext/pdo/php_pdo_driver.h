@@ -130,6 +130,7 @@ enum pdo_attribute_type {
 	PDO_ATTR_POOL_MIN,				/* minimum idle connections (int) */
 	PDO_ATTR_POOL_MAX,				/* maximum total connections (int) */
 	PDO_ATTR_POOL_HEALTHCHECK_INTERVAL,	/* healthcheck interval in ms (int, 0 = disabled) */
+	PDO_ATTR_POOL_STMT_CACHE_SIZE,	/* per-physical-connection prepared-stmt cache LRU capacity (int, 0 = disabled, default) */
 
 	/* this defines the start of the range for driver specific options.
 	 * Drivers should define their own attribute constants beginning with this
@@ -537,6 +538,7 @@ struct _pdo_dbh_t {
 	HashTable *pool_bindings;	/* coroutine_id => pdo_pool_binding_t* */
 	zend_object *pool_wrapper;		/* cached PHP Async\Pool object for getPool() */
 	uint32_t pool_slot_refcount;	/* number of statements borrowing this pooled connection */
+	uint32_t pool_stmt_cache_size;	/* configured per-conn prepared-stmt cache capacity (template only); 0 = disabled */
 	bool conn_broken:1;				/* connection lost or protocol desynchronized — must not return to pool */
 
 	/* Driver-owned per-template auxiliary state for pool mode (e.g. SQLite UDF

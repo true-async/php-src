@@ -94,7 +94,7 @@ static void pgsql_stmt_finish(pdo_pgsql_stmt *S, int fin_mode)
 		S->is_running_unbuffered = false;
 	}
 
-	if (S->stmt_name && S->is_prepared && (fin_mode & FIN_CLOSE)) {
+	if (S->stmt_name && S->is_prepared && (fin_mode & FIN_CLOSE) && !S->from_cache) {
 		PGresult *res;
 #ifndef HAVE_PQCLOSEPREPARED
 		// TODO (??) libpq does not support close statement protocol < postgres 17
@@ -179,6 +179,7 @@ static int pgsql_stmt_execute(pdo_stmt_t *stmt)
 	pdo_pgsql_db_handle *H = S->H;
 	ExecStatusType status;
 	int dispatch_result = 1;
+	bool plan_invalidation_retried = false;
 
 	pdo_dbh_t *active_dbh = stmt->pooled_conn ? stmt->pooled_conn : stmt->dbh;
 	const bool in_trans = active_dbh->methods->in_transaction(active_dbh);
@@ -226,6 +227,7 @@ static int pgsql_stmt_execute(pdo_stmt_t *stmt)
 		efree(q);
 	} else if (S->stmt_name) {
 		/* using a prepared statement */
+plan_invalidation_retry:
 
 		if (!S->is_prepared) {
 stmt_retry:
@@ -242,6 +244,30 @@ stmt_retry:
 					S->is_prepared = true;
 					PQclear(S->result);
 					S->result = NULL;
+					/* If we just re-prepared after a plan-invalidation eviction,
+					 * re-insert this name into the cache so subsequent prepares
+					 * on this conn collapse to the same server-side stmt again. */
+					if (plan_invalidation_retried && H->stmt_cache != NULL && S->from_cache) {
+						pdo_pool_stmt_cache_entry_t *evicted = NULL;
+						pdo_pool_stmt_cache_entry_t *e = pdo_pool_stmt_cache_insert(
+							H->stmt_cache, S->query, &evicted);
+						if (evicted != NULL) {
+							PGresult *r;
+#ifndef HAVE_PQCLOSEPREPARED
+							char *q = NULL;
+							spprintf(&q, 0, "DEALLOCATE %s", evicted->server_stmt_name);
+							r = pdo_pgsql_exec_concurrent(H, q);
+							efree(q);
+#else
+							r = pdo_pgsql_close_prepared_concurrent(H, evicted->server_stmt_name);
+#endif
+							if (r) PQclear(r);
+							pdo_pool_stmt_cache_entry_free(evicted);
+						}
+						if (e != NULL) {
+							e->server_stmt_name = estrdup(S->stmt_name);
+						}
+					}
 					break;
 				default: {
 					char *sqlstate = pdo_pgsql_sqlstate(S->result);
@@ -352,7 +378,54 @@ stmt_retry:
 	status = PQresultStatus(S->result);
 
 	if (status != PGRES_COMMAND_OK && status != PGRES_TUPLES_OK && status != PGRES_SINGLE_TUPLE) {
-		pdo_pgsql_error_stmt(stmt, status, pdo_pgsql_sqlstate(S->result));
+		/* Plan-invalidation handling for cache-backed prepared statements.
+		 * After DDL on referenced objects (ALTER TABLE, DROP INDEX, schema
+		 * resolution change, etc.) PostgreSQL invalidates cached plans and
+		 * fails the next EXECUTE with one of:
+		 *   0A000 — feature_not_supported (e.g. "cached plan must not change result type")
+		 *   26000 — invalid_sql_statement_name (server-side stmt vanished)
+		 * Evict from cache, DEALLOCATE on a best-effort basis, re-PQprepare
+		 * with the same name and retry once. The user never sees the error. */
+		/* Order from cheapest to most expensive: bool flags → pointer non-null
+		 * → strcmp. Plan invalidation is rare; strcmp must not run on the
+		 * common error path (most stmt errors are not from a cached plan). */
+		const char *const sqlstate = pdo_pgsql_sqlstate(S->result);
+		if (UNEXPECTED(
+			S->from_cache
+			&& !plan_invalidation_retried
+			&& S->stmt_name != NULL
+			&& sqlstate != NULL
+			&& (strcmp(sqlstate, "0A000") == 0 || strcmp(sqlstate, "26000") == 0)))
+		{
+			plan_invalidation_retried = true;
+
+			PQclear(S->result);
+			S->result = NULL;
+			S->is_prepared = false;
+			H->running_stmt = NULL;
+
+			pdo_pool_stmt_cache_entry_t *taken = pdo_pool_stmt_cache_take(H->stmt_cache, S->query);
+			if (taken != NULL) {
+				/* Best-effort DEALLOCATE — for 26000 the server already lost
+				 * the stmt, so failure is fine. For 0A000 it still exists
+				 * with a stale plan; drop it. */
+				PGresult *r;
+#ifndef HAVE_PQCLOSEPREPARED
+				char *q = NULL;
+				spprintf(&q, 0, "DEALLOCATE %s", taken->server_stmt_name);
+				r = pdo_pgsql_exec_concurrent(H, q);
+				efree(q);
+#else
+				r = pdo_pgsql_close_prepared_concurrent(H, taken->server_stmt_name);
+#endif
+				if (r) PQclear(r);
+				pdo_pool_stmt_cache_entry_free(taken);
+			}
+
+			goto plan_invalidation_retry;
+		}
+
+		pdo_pgsql_error_stmt(stmt, status, sqlstate);
 		return 0;
 	}
 

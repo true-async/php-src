@@ -131,6 +131,8 @@ class PDO
     public const int ATTR_POOL_MAX = UNKNOWN;
     /** @cvalue LONG_CONST(PDO_ATTR_POOL_HEALTHCHECK_INTERVAL) */
     public const int ATTR_POOL_HEALTHCHECK_INTERVAL = UNKNOWN;
+    /** @cvalue LONG_CONST(PDO_ATTR_POOL_STMT_CACHE_SIZE) */
+    public const int ATTR_POOL_STMT_CACHE_SIZE = UNKNOWN;
 
     /** @cvalue LONG_CONST(PDO_ERRMODE_SILENT) */
     public const int ERRMODE_SILENT = UNKNOWN;

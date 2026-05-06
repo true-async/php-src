@@ -24,6 +24,7 @@
 #include <php.h>
 #include "main/php_network.h"
 #include "zend_async_API.h"
+#include "ext/pdo/pdo_pool.h"
 
 #define PHP_PDO_PGSQL_CONNECTION_FAILURE_SQLSTATE "08006"
 
@@ -51,6 +52,7 @@ typedef struct {
 	zend_fcall_info_cache *notice_callback;
 	bool		default_fetching_laziness;
 	pdo_pgsql_stmt  *running_stmt;
+	pdo_pool_stmt_cache_t *stmt_cache; /* per-physical-conn prepared-stmt LRU cache; NULL if disabled */
 } pdo_pgsql_db_handle;
 
 typedef struct {
@@ -72,6 +74,7 @@ struct pdo_pgsql_stmt {
 	bool is_prepared;
 	bool is_unbuffered;
 	bool is_running_unbuffered;
+	bool from_cache; /* true: stmt_name refers to a cache-owned server-side prepared stmt; do not DEALLOCATE on dtor */
 };
 
 typedef struct {
