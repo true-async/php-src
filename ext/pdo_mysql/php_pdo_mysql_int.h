@@ -64,6 +64,8 @@ static inline void PDO_DBG_ENTER(char *func_name) {}
 #include "ext/mysqlnd/mysqlnd_debug.h"
 #endif
 
+#include "ext/pdo/pdo_pool.h"
+
 ZEND_BEGIN_MODULE_GLOBALS(pdo_mysql)
 #ifndef PHP_WIN32
 	char          *default_socket;
@@ -110,6 +112,13 @@ typedef struct {
 #endif
 
 	pdo_mysql_error_info einfo;
+
+	/* Per-physical-conn server-side prepared-statement LRU cache.
+	 * NULL when disabled (no pool, emulate_prepare=true, or cache size 0).
+	 * Cache entry payload (driver_data) is the MYSQL_STMT* / MYSQLND_STMT*
+	 * itself; on eviction the dtor calls mysql_stmt_close. Per-stmt usage
+	 * is checkout-style: prepare path takes from cache, dtor inserts back. */
+	pdo_pool_stmt_cache_t *stmt_cache;
 } pdo_mysql_db_handle;
 
 typedef struct {
@@ -143,6 +152,11 @@ typedef struct {
 	/* Whether all result sets have been fully consumed.
 	 * If this flag is not set, they need to be consumed during destruction. */
 	unsigned				done:1;
+	/* True when stmt is owned by H->stmt_cache: dtor returns it instead of closing. */
+	unsigned				from_cache:1;
+	/* Canonical SQL (post pdo_parse_params), used as the cache key. NULL when
+	 * the cache path is not engaged. */
+	zend_string				*query;
 } pdo_mysql_stmt;
 
 extern const pdo_driver_t pdo_mysql_driver;
@@ -154,6 +168,9 @@ extern int _pdo_mysql_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt, const char *file, 
 #define pdo_mysql_error_stmt(s) _pdo_mysql_error(stmt->dbh, stmt, __FILE__, __LINE__)
 
 extern const struct pdo_stmt_methods mysql_stmt_methods;
+
+/* Cache-entry dtor: closes a cached MYSQL_STMT/MYSQLND_STMT on eviction. */
+void pdo_mysql_cached_stmt_close(void *driver_data);
 
 enum {
 	PDO_MYSQL_ATTR_USE_BUFFERED_QUERY = PDO_ATTR_DRIVER_SPECIFIC,
