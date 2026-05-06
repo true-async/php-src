@@ -32,6 +32,18 @@
 #	define pdo_mysql_stmt_execute_prepared(stmt) pdo_mysql_stmt_execute_prepared_libmysql(stmt)
 #endif
 
+void pdo_mysql_cached_stmt_close(void *driver_data)
+{
+#ifdef PDO_USE_MYSQLND
+	MYSQLND_STMT *stmt = (MYSQLND_STMT *)driver_data;
+#else
+	MYSQL_STMT *stmt = (MYSQL_STMT *)driver_data;
+#endif
+	if (stmt) {
+		mysql_stmt_close(stmt);
+	}
+}
+
 static void pdo_mysql_free_result(pdo_mysql_stmt *S)
 {
 	if (S->result) {
@@ -77,8 +89,34 @@ static int pdo_mysql_stmt_dtor(pdo_stmt_t *stmt) /* {{{ */
 		S->einfo.errmsg = NULL;
 	}
 	if (S->stmt) {
-		mysql_stmt_close(S->stmt);
+		/* Return to per-conn cache when eligible. The cache lives on S->H,
+		 * which is the actual physical connection in pool mode (not the
+		 * template). Skip if conn is being destroyed (no liveness). */
+		bool stashed = false;
+		if (S->from_cache && S->query && S->H && S->H->stmt_cache != NULL
+			&& php_pdo_stmt_valid_db_obj_handle(stmt))
+		{
+			pdo_pool_stmt_cache_entry_t *evicted = NULL;
+			pdo_pool_stmt_cache_entry_t *entry = pdo_pool_stmt_cache_insert(
+				S->H->stmt_cache, S->query, &evicted);
+			if (UNEXPECTED(evicted != NULL)) {
+				/* close the LRU stmt being kicked out */
+				pdo_pool_stmt_cache_entry_free(evicted);
+			}
+			if (EXPECTED(entry != NULL)) {
+				entry->driver_data = S->stmt;
+				entry->driver_data_dtor = pdo_mysql_cached_stmt_close;
+				stashed = true;
+			}
+		}
+		if (!stashed) {
+			mysql_stmt_close(S->stmt);
+		}
 		S->stmt = NULL;
+	}
+	if (S->query) {
+		zend_string_release(S->query);
+		S->query = NULL;
 	}
 
 #ifndef PDO_USE_MYSQLND
@@ -269,10 +307,16 @@ static int pdo_mysql_stmt_execute_prepared_libmysql(pdo_stmt_t *stmt) /* {{{ */
 		if (S->params) {
 			memset(S->params, 0, S->num_params * sizeof(MYSQL_BIND));
 		}
+		unsigned int err = S->stmt ? mysql_stmt_errno(S->stmt) : 0;
 		pdo_mysql_error_stmt(stmt);
-		if (mysql_stmt_errno(S->stmt) == 2057) {
+		if (err == 2057) {
 			/* CR_NEW_STMT_METADATA makes the statement unusable */
 			S->stmt = NULL;
+			S->from_cache = 0;
+		} else if (err == 1243 || err == 1615) {
+			/* Plan invalidation: keep S->stmt for normal close, but don't
+			 * return it to the cache — the prepared form is stale. */
+			S->from_cache = 0;
 		}
 		PDO_DBG_RETURN(0);
 	}
@@ -290,7 +334,13 @@ static int pdo_mysql_stmt_execute_prepared_mysqlnd(pdo_stmt_t *stmt) /* {{{ */
 	PDO_DBG_ENTER("pdo_mysql_stmt_execute_prepared_mysqlnd");
 
 	if (mysql_stmt_execute(S->stmt)) {
+		unsigned int err = mysql_stmt_errno(S->stmt);
 		pdo_mysql_error_stmt(stmt);
+		/* Plan invalidation / metadata-changed errors: the cached prepared
+		 * form is stale. Don't return this stmt to the per-conn cache. */
+		if (err == 1243 || err == 1615 || err == 2057) {
+			S->from_cache = 0;
+		}
 		PDO_DBG_RETURN(0);
 	}
 
