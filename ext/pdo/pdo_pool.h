@@ -59,6 +59,63 @@ pdo_dbh_t *pdo_pool_peek_conn(pdo_dbh_t *dbh);
  */
 void pdo_pool_maybe_release(pdo_dbh_t *dbh);
 
+/*
+ * Per-physical-connection prepared-statement cache (opt-in).
+ *
+ * Insertion-order LRU using a HashTable keyed by canonical SQL (zend_string,
+ * the post-pdo_parse_params nsql). On hit the entry is moved to the MRU end
+ * via del+add_new. On capacity overflow the LRU (oldest) entry is removed
+ * from the table and returned to the caller — caller is responsible for any
+ * driver-side teardown (e.g. DEALLOCATE) and must call
+ * pdo_pool_stmt_cache_entry_free on the returned entry.
+ *
+ * The cache is purely a memory/order manager: it never speaks to the wire.
+ * Drivers own the entry payload (server_stmt_name, optional driver_data) and
+ * decide when wire teardown is needed (eviction yes, conn close no).
+ */
+typedef struct _pdo_pool_stmt_cache pdo_pool_stmt_cache_t;
+
+typedef struct _pdo_pool_stmt_cache_entry {
+	zend_string *nsql;            /* cache key, addref'd by cache, released on free */
+	char        *server_stmt_name;/* driver-allocated (estrdup); freed by entry_free */
+	void        *driver_data;     /* opaque, freed via driver_data_dtor at entry_free */
+	void       (*driver_data_dtor)(void *driver_data);
+} pdo_pool_stmt_cache_entry_t;
+
+pdo_pool_stmt_cache_t *pdo_pool_stmt_cache_create(uint32_t capacity);
+
+/* Free the whole cache. All remaining entries are freed via entry_free.
+ * Caller must have already done any required wire teardown if applicable
+ * (typically not — connection close implicitly drops server-side state). */
+void pdo_pool_stmt_cache_destroy(pdo_pool_stmt_cache_t *cache);
+
+/* Lookup; on hit moves entry to MRU. Returns NULL on miss. */
+pdo_pool_stmt_cache_entry_t *pdo_pool_stmt_cache_lookup(pdo_pool_stmt_cache_t *cache, zend_string *nsql);
+
+/* Insert a new entry at MRU. If the cache is at capacity, evicts the LRU
+ * entry from the table and writes its pointer into *evicted_out — caller
+ * is responsible for calling pdo_pool_stmt_cache_entry_free on it (after
+ * any driver-side teardown). On no eviction *evicted_out is set to NULL.
+ *
+ * The caller fills server_stmt_name / driver_data on the returned entry
+ * after insert.
+ */
+pdo_pool_stmt_cache_entry_t *pdo_pool_stmt_cache_insert(
+	pdo_pool_stmt_cache_t *cache, zend_string *nsql,
+	pdo_pool_stmt_cache_entry_t **evicted_out);
+
+/* Remove a single entry from the cache and return it. Caller must free
+ * via pdo_pool_stmt_cache_entry_free after any driver-side teardown.
+ * Returns NULL if not found. */
+pdo_pool_stmt_cache_entry_t *pdo_pool_stmt_cache_take(pdo_pool_stmt_cache_t *cache, zend_string *nsql);
+
+/* Free a detached entry. Releases nsql, frees server_stmt_name, calls
+ * driver_data_dtor on driver_data if set. */
+void pdo_pool_stmt_cache_entry_free(pdo_pool_stmt_cache_entry_t *entry);
+
+uint32_t pdo_pool_stmt_cache_size(const pdo_pool_stmt_cache_t *cache);
+uint32_t pdo_pool_stmt_cache_capacity(const pdo_pool_stmt_cache_t *cache);
+
 /* Sync error_code from pooled conn to template dbh */
 static inline void pdo_pool_sync_error(pdo_dbh_t *dbh, const pdo_dbh_t *conn) {
 	if (conn != dbh) {

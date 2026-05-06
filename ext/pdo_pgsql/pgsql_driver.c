@@ -499,6 +499,12 @@ static void pgsql_handle_closer(pdo_dbh_t *dbh) /* {{{ */
 			pefree(H->lob_streams, dbh->is_persistent);
 			H->lob_streams = NULL;
 		}
+		if (H->stmt_cache) {
+			/* Connection is being closed — server-side state evaporates with it,
+			 * no DEALLOCATE needed. Just free our bookkeeping. */
+			pdo_pool_stmt_cache_destroy(H->stmt_cache);
+			H->stmt_cache = NULL;
+		}
 		pdo_pgsql_cleanup_notice_callback(H);
 		if (H->server) {
 			PQfinish(H->server);
@@ -580,6 +586,50 @@ static bool pgsql_handle_preparer(pdo_dbh_t *dbh, zend_string *sql, pdo_stmt_t *
 	}
 
 	if (!emulate && !execute_only) {
+		/* Try the per-conn prepared-statement cache first (opt-in via
+		 * PDO::ATTR_POOL_STMT_CACHE_SIZE). On hit reuse the existing
+		 * server-side prepared name and skip the deferred PQprepare.
+		 * Cursor stmts force emulate above so we never reach here for them. */
+		pdo_pool_stmt_cache_t *const cache = H->stmt_cache;
+		if (cache != NULL) {
+			pdo_pool_stmt_cache_entry_t *const entry = pdo_pool_stmt_cache_lookup(cache, S->query);
+			if (EXPECTED(entry != NULL)) {
+				S->stmt_name = estrdup(entry->server_stmt_name);
+				S->is_prepared = true;
+				S->from_cache = true;
+				return true;
+			}
+
+			/* Miss: allocate a fresh name and insert into cache. The deferred
+			 * PQprepare on first execute will materialize the server-side stmt. */
+			spprintf(&S->stmt_name, 0, "pdo_stmt_%08x", ++H->stmt_counter);
+
+			pdo_pool_stmt_cache_entry_t *evicted = NULL;
+			pdo_pool_stmt_cache_entry_t *const new_entry = pdo_pool_stmt_cache_insert(
+				cache, S->query, &evicted);
+			if (UNEXPECTED(evicted != NULL)) {
+				/* Best-effort DEALLOCATE on the evicted server-side stmt.
+				 * Failure is acceptable: worst case is a leaked plan until
+				 * the connection closes. */
+				PGresult *res;
+#ifndef HAVE_PQCLOSEPREPARED
+				char *q = NULL;
+				spprintf(&q, 0, "DEALLOCATE %s", evicted->server_stmt_name);
+				res = pdo_pgsql_exec_concurrent(H, q);
+				efree(q);
+#else
+				res = pdo_pgsql_close_prepared_concurrent(H, evicted->server_stmt_name);
+#endif
+				if (res) PQclear(res);
+				pdo_pool_stmt_cache_entry_free(evicted);
+			}
+			if (EXPECTED(new_entry != NULL)) {
+				new_entry->server_stmt_name = estrdup(S->stmt_name);
+				S->from_cache = true;
+			}
+			return true;
+		}
+
 		/* prepared query: set the query name and defer the
 		   actual prepare until the first execute call */
 		spprintf(&S->stmt_name, 0, "pdo_stmt_%08x", ++H->stmt_counter);
@@ -1720,6 +1770,15 @@ static int pdo_pgsql_handle_factory(pdo_dbh_t *dbh, zval *driver_options) /* {{{
 	H->attached = 1;
 	H->is_sync = dbh->is_persistent ? 1 : 0;
 	H->pgoid = -1;
+
+	/* Pool slot connections: pick up cache capacity from the template dbh
+	 * (pool->user_data). Non-pool dbhs always have stmt_cache == NULL. */
+	if (dbh->pool != NULL) {
+		const pdo_dbh_t *template_dbh = (const pdo_dbh_t *)dbh->pool->user_data;
+		if (template_dbh && template_dbh->pool_stmt_cache_size > 0) {
+			H->stmt_cache = pdo_pool_stmt_cache_create(template_dbh->pool_stmt_cache_size);
+		}
+	}
 
 	dbh->methods = &pgsql_methods;
 	dbh->alloc_own_columns = 1;

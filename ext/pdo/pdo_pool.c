@@ -266,6 +266,131 @@ static void pdo_pool_binding_on_coroutine_finish(
 }
 
 /*
+ * Per-conn prepared-statement cache (opt-in LRU)
+ */
+
+struct _pdo_pool_stmt_cache {
+	HashTable entries;       /* zend_string nsql -> pdo_pool_stmt_cache_entry_t* (no dtor) */
+	uint32_t capacity;
+};
+
+void pdo_pool_stmt_cache_entry_free(pdo_pool_stmt_cache_entry_t *entry)
+{
+	if (entry == NULL) {
+		return;
+	}
+	if (entry->nsql) {
+		zend_string_release(entry->nsql);
+	}
+	if (entry->server_stmt_name) {
+		efree(entry->server_stmt_name);
+	}
+	if (entry->driver_data && entry->driver_data_dtor) {
+		entry->driver_data_dtor(entry->driver_data);
+	}
+	efree(entry);
+}
+
+pdo_pool_stmt_cache_t *pdo_pool_stmt_cache_create(uint32_t capacity)
+{
+	if (capacity == 0) {
+		return NULL;
+	}
+	pdo_pool_stmt_cache_t *cache = emalloc(sizeof(*cache));
+	cache->capacity = capacity;
+	/* No pDestructor: cache owns entry lifetime explicitly so move-to-MRU
+	 * (zend_hash_del + add_new) doesn't free the value. */
+	zend_hash_init(&cache->entries, capacity, NULL, NULL, 0);
+	return cache;
+}
+
+void pdo_pool_stmt_cache_destroy(pdo_pool_stmt_cache_t *cache)
+{
+	if (cache == NULL) {
+		return;
+	}
+	pdo_pool_stmt_cache_entry_t *entry;
+	ZEND_HASH_FOREACH_PTR(&cache->entries, entry) {
+		pdo_pool_stmt_cache_entry_free(entry);
+	} ZEND_HASH_FOREACH_END();
+	zend_hash_destroy(&cache->entries);
+	efree(cache);
+}
+
+pdo_pool_stmt_cache_entry_t *pdo_pool_stmt_cache_lookup(pdo_pool_stmt_cache_t *cache, zend_string *nsql)
+{
+	if (UNEXPECTED(cache == NULL)) {
+		return NULL;
+	}
+	pdo_pool_stmt_cache_entry_t *const entry = zend_hash_find_ptr(&cache->entries, nsql);
+	if (UNEXPECTED(entry == NULL)) {
+		return NULL;
+	}
+	/* Move-to-MRU: HashTable preserves insertion order, so reinsert at end.
+	 * No dtor on the table, so del does not free entry. Reuse the entry's
+	 * own nsql as the key (still alive after del). */
+	zend_hash_del(&cache->entries, nsql);
+	zend_hash_add_new_ptr(&cache->entries, entry->nsql, entry);
+	return entry;
+}
+
+pdo_pool_stmt_cache_entry_t *pdo_pool_stmt_cache_insert(
+	pdo_pool_stmt_cache_t *cache, zend_string *nsql,
+	pdo_pool_stmt_cache_entry_t **evicted_out)
+{
+	*evicted_out = NULL;
+	if (UNEXPECTED(cache == NULL)) {
+		return NULL;
+	}
+
+	if (UNEXPECTED(zend_hash_num_elements(&cache->entries) >= cache->capacity)) {
+		/* Evict LRU = first inserted (head of insertion order). */
+		Bucket *b = NULL;
+		uint32_t i;
+		for (i = 0; i < cache->entries.nNumUsed; i++) {
+			Bucket *cur = &cache->entries.arData[i];
+			if (Z_TYPE(cur->val) != IS_UNDEF) {
+				b = cur;
+				break;
+			}
+		}
+		if (b != NULL) {
+			pdo_pool_stmt_cache_entry_t *evicted = Z_PTR(b->val);
+			zend_hash_del(&cache->entries, evicted->nsql);
+			*evicted_out = evicted;
+		}
+	}
+
+	pdo_pool_stmt_cache_entry_t *entry = ecalloc(1, sizeof(*entry));
+	entry->nsql = zend_string_copy(nsql);
+	zend_hash_add_new_ptr(&cache->entries, entry->nsql, entry);
+	return entry;
+}
+
+pdo_pool_stmt_cache_entry_t *pdo_pool_stmt_cache_take(pdo_pool_stmt_cache_t *cache, zend_string *nsql)
+{
+	if (UNEXPECTED(cache == NULL)) {
+		return NULL;
+	}
+	pdo_pool_stmt_cache_entry_t *const entry = zend_hash_find_ptr(&cache->entries, nsql);
+	if (UNEXPECTED(entry == NULL)) {
+		return NULL;
+	}
+	zend_hash_del(&cache->entries, nsql);
+	return entry;
+}
+
+uint32_t pdo_pool_stmt_cache_size(const pdo_pool_stmt_cache_t *cache)
+{
+	return cache ? zend_hash_num_elements(&cache->entries) : 0;
+}
+
+uint32_t pdo_pool_stmt_cache_capacity(const pdo_pool_stmt_cache_t *cache)
+{
+	return cache ? cache->capacity : 0;
+}
+
+/*
  * Public API
  */
 
@@ -279,11 +404,15 @@ bool pdo_pool_create(pdo_dbh_t *dbh, zval *options)
 	zend_long min_size = pdo_attr_lval(options, PDO_ATTR_POOL_MIN, 0);
 	zend_long max_size = pdo_attr_lval(options, PDO_ATTR_POOL_MAX, 10);
 	zend_long healthcheck_interval = pdo_attr_lval(options, PDO_ATTR_POOL_HEALTHCHECK_INTERVAL, 0);
+	zend_long stmt_cache_size = pdo_attr_lval(options, PDO_ATTR_POOL_STMT_CACHE_SIZE, 0);
 
 	if (min_size < 0) min_size = 0;
 	if (max_size < 1) max_size = 1;
 	if (max_size < min_size) max_size = min_size;
 	if (healthcheck_interval < 0) healthcheck_interval = 0;
+	if (stmt_cache_size < 0) stmt_cache_size = 0;
+	if (stmt_cache_size > UINT32_MAX) stmt_cache_size = UINT32_MAX;
+	dbh->pool_stmt_cache_size = (uint32_t)stmt_cache_size;
 
 	dbh->pool = ZEND_ASYNC_NEW_POOL(
 		pdo_pool_factory,
