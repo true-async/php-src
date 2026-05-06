@@ -258,6 +258,9 @@ zend_async_thread_run_t zend_async_thread_run_fn = NULL;
 zend_async_thread_load_result_t zend_async_thread_load_result_fn = NULL;
 zend_async_thread_transfer_zval_t zend_async_thread_transfer_zval_fn = NULL;
 zend_async_thread_load_zval_t zend_async_thread_load_zval_fn = NULL;
+zend_async_thread_transfer_zval_toplevel_t zend_async_thread_transfer_zval_toplevel_fn = NULL;
+zend_async_thread_load_zval_toplevel_t zend_async_thread_load_zval_toplevel_fn = NULL;
+zend_async_thread_release_transferred_zval_t zend_async_thread_release_transferred_zval_fn = NULL;
 zend_async_thread_xlat_put_t zend_async_thread_xlat_put_fn = NULL;
 zend_async_thread_defer_release_t zend_async_thread_defer_release_fn = NULL;
 
@@ -536,6 +539,9 @@ ZEND_API void zend_async_thread_pool_register(
 		zend_async_start_thread_t start_thread_fn,
 		zend_async_thread_transfer_zval_t transfer_zval_fn,
 		zend_async_thread_load_zval_t load_zval_fn,
+		zend_async_thread_transfer_zval_toplevel_t transfer_zval_toplevel_fn,
+		zend_async_thread_load_zval_toplevel_t load_zval_toplevel_fn,
+		zend_async_thread_release_transferred_zval_t release_transferred_zval_fn,
 		zend_async_thread_xlat_put_t xlat_put_fn,
 		zend_async_thread_defer_release_t defer_release_fn)
 {
@@ -553,6 +559,9 @@ ZEND_API void zend_async_thread_pool_register(
 	zend_async_start_thread_fn = start_thread_fn;
 	zend_async_thread_transfer_zval_fn = transfer_zval_fn;
 	zend_async_thread_load_zval_fn = load_zval_fn;
+	zend_async_thread_transfer_zval_toplevel_fn = transfer_zval_toplevel_fn;
+	zend_async_thread_load_zval_toplevel_fn = load_zval_toplevel_fn;
+	zend_async_thread_release_transferred_zval_fn = release_transferred_zval_fn;
 	zend_async_thread_xlat_put_fn = xlat_put_fn;
 	zend_async_thread_defer_release_fn = defer_release_fn;
 }

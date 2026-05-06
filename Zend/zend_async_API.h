@@ -428,6 +428,19 @@ typedef void (*zend_async_thread_transfer_zval_t)(
 		zend_async_thread_transfer_ctx_t *ctx, zval *dst, const zval *src);
 typedef void (*zend_async_thread_load_zval_t)(
 		zend_async_thread_transfer_ctx_t *ctx, zval *dst, const zval *src);
+
+/* Top-level transfer/load — convenience wrappers that allocate and
+ * destroy their own transfer ctx internally. Use these when you have a
+ * single zval to ship across threads (no need to compose multiple
+ * transfers under the same xlat). For tree-walks, use the inner
+ * variants above with an explicit ctx. */
+typedef void (*zend_async_thread_transfer_zval_toplevel_t)(zval *dst, const zval *src);
+typedef void (*zend_async_thread_load_zval_toplevel_t)(zval *dst, const zval *src);
+
+/* Release a persistent zval produced by a top-level transfer. After the
+ * call the zval is undef. */
+typedef void (*zend_async_thread_release_transferred_zval_t)(zval *z);
+
 typedef void (*zend_async_thread_xlat_put_t)(
 		zend_async_thread_transfer_ctx_t *ctx, const void *src, void *dst);
 /* Defer release of an emalloc zval until the load ctx is torn down. The zval
@@ -1812,6 +1825,30 @@ struct _zend_async_channel_s {
 /* Thread pool method function types */
 typedef void (*zend_thread_pool_close_t)(zend_async_thread_pool_t *pool);
 typedef void (*zend_thread_pool_dispose_t)(zend_async_thread_pool_t *pool);
+
+/* C-handler invoked on a pool worker thread for submit_internal tasks.
+ *
+ * `event` is the awaitable event returned by submit_internal — handler
+ * may stash result/exception on it before returning; runtime fires its
+ * complete callbacks afterwards.
+ *
+ * `ctx` is an opaque pointer caller passed to submit. Pool treats it
+ * as opaque — never reads, never frees. Caller owns the lifecycle:
+ * typically a pemalloc'd struct with an atomic refcount, where both
+ * the handler and any post-submit cleanup decref and the last one frees.
+ * On submit failure (pool closed / channel send fails) the handler is
+ * never invoked; the caller still owns ctx and is expected to release
+ * its own reference. */
+typedef void (*zend_thread_pool_internal_handler_t)(
+	zend_async_event_t *event, void *ctx);
+
+/* Submit a C-level task to the pool. Returns an awaitable event whose
+ * complete callbacks fire after handler returns; NULL on failure
+ * (PHP exception set, ctx untouched — caller still owns it). */
+typedef zend_async_event_t *(*zend_thread_pool_submit_internal_t)(
+	zend_async_thread_pool_t *pool,
+	zend_thread_pool_internal_handler_t handler,
+	void *ctx);
 /**
  * zend_async_thread_pool_t — base structure for a thread pool.
  * Manages a fixed set of worker threads with atomic counters
@@ -1841,6 +1878,7 @@ struct _zend_async_thread_pool_s {
 	/* Methods */
 	zend_thread_pool_close_t close;
 	zend_thread_pool_dispose_t dispose;
+	zend_thread_pool_submit_internal_t submit_internal;
 };
 
 /* Thread pool refcount helpers */
@@ -2164,6 +2202,9 @@ ZEND_API extern zend_async_thread_run_t zend_async_thread_run_fn;
 ZEND_API extern zend_async_thread_load_result_t zend_async_thread_load_result_fn;
 ZEND_API extern zend_async_thread_transfer_zval_t zend_async_thread_transfer_zval_fn;
 ZEND_API extern zend_async_thread_load_zval_t zend_async_thread_load_zval_fn;
+ZEND_API extern zend_async_thread_transfer_zval_toplevel_t zend_async_thread_transfer_zval_toplevel_fn;
+ZEND_API extern zend_async_thread_load_zval_toplevel_t zend_async_thread_load_zval_toplevel_fn;
+ZEND_API extern zend_async_thread_release_transferred_zval_t zend_async_thread_release_transferred_zval_fn;
 ZEND_API extern zend_async_thread_xlat_put_t zend_async_thread_xlat_put_fn;
 ZEND_API extern zend_async_thread_defer_release_t zend_async_thread_defer_release_fn;
 
@@ -2171,6 +2212,13 @@ ZEND_API extern zend_async_thread_defer_release_t zend_async_thread_defer_releas
 	zend_async_thread_transfer_zval_fn((ctx), (dst), (src))
 #define ZEND_ASYNC_THREAD_LOAD_ZVAL(ctx, dst, src) \
 	zend_async_thread_load_zval_fn((ctx), (dst), (src))
+/* Top-level convenience — single-zval transfer; ctx managed internally. */
+#define ZEND_ASYNC_THREAD_TRANSFER_ZVAL_TOPLEVEL(dst, src) \
+	zend_async_thread_transfer_zval_toplevel_fn((dst), (src))
+#define ZEND_ASYNC_THREAD_LOAD_ZVAL_TOPLEVEL(dst, src) \
+	zend_async_thread_load_zval_toplevel_fn((dst), (src))
+#define ZEND_ASYNC_THREAD_RELEASE_TRANSFERRED_ZVAL(z) \
+	zend_async_thread_release_transferred_zval_fn(z)
 #define ZEND_ASYNC_THREAD_XLAT_PUT(ctx, src, dst) \
 	zend_async_thread_xlat_put_fn((ctx), (src), (dst))
 #define ZEND_ASYNC_THREAD_DEFER_RELEASE(ctx, z) \
@@ -2285,6 +2333,9 @@ ZEND_API void zend_async_thread_pool_register(
 		zend_async_start_thread_t start_thread_fn,
 		zend_async_thread_transfer_zval_t transfer_zval_fn,
 		zend_async_thread_load_zval_t load_zval_fn,
+		zend_async_thread_transfer_zval_toplevel_t transfer_zval_toplevel_fn,
+		zend_async_thread_load_zval_toplevel_t load_zval_toplevel_fn,
+		zend_async_thread_release_transferred_zval_t release_transferred_zval_fn,
 		zend_async_thread_xlat_put_t xlat_put_fn,
 		zend_async_thread_defer_release_t defer_release_fn);
 
