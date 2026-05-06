@@ -274,7 +274,7 @@ struct _pdo_pool_stmt_cache {
 	uint32_t capacity;
 };
 
-void pdo_pool_stmt_cache_entry_free(pdo_pool_stmt_cache_entry_t *entry)
+PDO_API void pdo_pool_stmt_cache_entry_free(pdo_pool_stmt_cache_entry_t *entry)
 {
 	if (entry == NULL) {
 		return;
@@ -291,7 +291,7 @@ void pdo_pool_stmt_cache_entry_free(pdo_pool_stmt_cache_entry_t *entry)
 	efree(entry);
 }
 
-pdo_pool_stmt_cache_t *pdo_pool_stmt_cache_create(uint32_t capacity)
+PDO_API pdo_pool_stmt_cache_t *pdo_pool_stmt_cache_create(uint32_t capacity)
 {
 	if (capacity == 0) {
 		return NULL;
@@ -304,7 +304,7 @@ pdo_pool_stmt_cache_t *pdo_pool_stmt_cache_create(uint32_t capacity)
 	return cache;
 }
 
-void pdo_pool_stmt_cache_destroy(pdo_pool_stmt_cache_t *cache)
+PDO_API void pdo_pool_stmt_cache_destroy(pdo_pool_stmt_cache_t *cache)
 {
 	if (cache == NULL) {
 		return;
@@ -317,7 +317,7 @@ void pdo_pool_stmt_cache_destroy(pdo_pool_stmt_cache_t *cache)
 	efree(cache);
 }
 
-pdo_pool_stmt_cache_entry_t *pdo_pool_stmt_cache_lookup(pdo_pool_stmt_cache_t *cache, zend_string *nsql)
+PDO_API pdo_pool_stmt_cache_entry_t *pdo_pool_stmt_cache_lookup(pdo_pool_stmt_cache_t *cache, zend_string *nsql)
 {
 	if (UNEXPECTED(cache == NULL)) {
 		return NULL;
@@ -334,7 +334,7 @@ pdo_pool_stmt_cache_entry_t *pdo_pool_stmt_cache_lookup(pdo_pool_stmt_cache_t *c
 	return entry;
 }
 
-pdo_pool_stmt_cache_entry_t *pdo_pool_stmt_cache_insert(
+PDO_API pdo_pool_stmt_cache_entry_t *pdo_pool_stmt_cache_insert(
 	pdo_pool_stmt_cache_t *cache, zend_string *nsql,
 	pdo_pool_stmt_cache_entry_t **evicted_out)
 {
@@ -367,7 +367,7 @@ pdo_pool_stmt_cache_entry_t *pdo_pool_stmt_cache_insert(
 	return entry;
 }
 
-pdo_pool_stmt_cache_entry_t *pdo_pool_stmt_cache_take(pdo_pool_stmt_cache_t *cache, zend_string *nsql)
+PDO_API pdo_pool_stmt_cache_entry_t *pdo_pool_stmt_cache_take(pdo_pool_stmt_cache_t *cache, zend_string *nsql)
 {
 	if (UNEXPECTED(cache == NULL)) {
 		return NULL;
@@ -380,12 +380,12 @@ pdo_pool_stmt_cache_entry_t *pdo_pool_stmt_cache_take(pdo_pool_stmt_cache_t *cac
 	return entry;
 }
 
-uint32_t pdo_pool_stmt_cache_size(const pdo_pool_stmt_cache_t *cache)
+PDO_API uint32_t pdo_pool_stmt_cache_size(const pdo_pool_stmt_cache_t *cache)
 {
 	return cache ? zend_hash_num_elements(&cache->entries) : 0;
 }
 
-uint32_t pdo_pool_stmt_cache_capacity(const pdo_pool_stmt_cache_t *cache)
+PDO_API uint32_t pdo_pool_stmt_cache_capacity(const pdo_pool_stmt_cache_t *cache)
 {
 	return cache ? cache->capacity : 0;
 }
