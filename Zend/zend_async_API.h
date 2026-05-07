@@ -883,6 +883,13 @@ struct _zend_async_io_req_s {
 	 * itself — no NOTIFY to a waiting coroutine. */
 	zend_async_io_write_free_cb_t free_cb;
 	void (*dispose)(zend_async_io_req_t *req);
+	/* Standalone-event completion source for reqs that have no owning
+	 * io_t at submit time (zend_async_fs_open). NULL for io-bound reqs
+	 * — those notify via the io's event the same way reads/writes do.
+	 * Callers add_callback on this event to receive the completion
+	 * notification with the same (event, callback, result, exception)
+	 * shape. */
+	zend_async_event_t *event;
 };
 
 /* Lifecycle flags for zend_async_udp_req_t.
