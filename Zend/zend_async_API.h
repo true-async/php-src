@@ -577,15 +577,22 @@ typedef zend_async_io_req_t *(*zend_async_io_sendfile_t)(
 		zend_async_io_t *out_io, zend_async_io_t *in_io,
 		zend_off_t offset, size_t length);
 
-/* Asynchronous open(2). The thread-pool backend issues uv_fs_open and
- * delivers the resulting file descriptor in req->result on completion
- * (negative errno on failure). Callers wrap the fd via the existing
- * zend_async_io_create with ZEND_ASYNC_IO_TYPE_FILE.
+/* Asynchronous open(2). Returns a pending file io_t whose fd is
+ * filled in by the thread-pool worker. The caller add_callback's on
+ * the io's event to receive the ready/error notification, exactly the
+ * same way reads and writes deliver completion.
+ *
+ *   On success — io->state gains ZEND_ASYNC_IO_READABLE, the
+ *                completion notify carries result=NULL exception=NULL,
+ *                and the io is ready for read/sendfile/stat/seek.
+ *   On error   — io->state gains ZEND_ASYNC_IO_CLOSED and the notify
+ *                carries an HttpServerException-shaped exception. The
+ *                caller must dispose the io via its event vtable.
  *
  * `path`, `flags`, `mode` carry the standard POSIX open() arguments.
- * `path` must remain valid until the request completes — typically the
- * caller pins it on a struct that owns the request lifetime. */
-typedef zend_async_io_req_t *(*zend_async_fs_open_t)(
+ * `path` must remain valid until the open completes — typically the
+ * caller pins it on the same struct that owns the io. */
+typedef zend_async_io_t *(*zend_async_fs_open_t)(
 		const char *path, int flags, int mode);
 
 /* Socket options enum */
@@ -873,13 +880,6 @@ struct _zend_async_io_req_s {
 	 * itself — no NOTIFY to a waiting coroutine. */
 	zend_async_io_write_free_cb_t free_cb;
 	void (*dispose)(zend_async_io_req_t *req);
-	/* Standalone-event completion source for reqs that have no owning
-	 * io_t at submit time (zend_async_fs_open). NULL for io-bound reqs
-	 * — those notify via the io's event the same way reads/writes do.
-	 * Callers add_callback on this event to receive the completion
-	 * notification with the same (event, callback, result, exception)
-	 * shape. */
-	zend_async_event_t *event;
 };
 
 /* Lifecycle flags for zend_async_udp_req_t.
@@ -2723,9 +2723,10 @@ END_EXTERN_C()
  * zend_async_io_sendfile_t for the full contract. */
 #define ZEND_ASYNC_IO_SENDFILE(out_io, in_io, offset, length) \
 	zend_async_io_sendfile_fn(out_io, in_io, offset, length)
-/* Async open(2) via the reactor's thread pool. req->result on
- * completion carries the fd (negative errno on error); wrap with
- * ZEND_ASYNC_IO_CREATE(fd, ZEND_ASYNC_IO_TYPE_FILE, READABLE). */
+/* Async open(2) via the reactor's thread pool. Returns a pending
+ * file io_t — the caller add_callback's on io->event to receive the
+ * ready (or error) completion. On success io->state has READABLE set.
+ * See zend_async_fs_open_t for the full contract. */
 #define ZEND_ASYNC_FS_OPEN(path, flags, mode) \
 	zend_async_fs_open_fn(path, flags, mode)
 #define ZEND_ASYNC_UDP_SENDTO(io, buf, count, addr, addr_len) \
