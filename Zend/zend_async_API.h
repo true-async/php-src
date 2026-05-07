@@ -21,9 +21,9 @@
 #include "zend_globals.h"
 #include "zend_stream.h"
 
-#define ZEND_ASYNC_API "TrueAsync ABI v0.10.0"
+#define ZEND_ASYNC_API "TrueAsync ABI v0.11.0"
 #define ZEND_ASYNC_API_VERSION_MAJOR 0
-#define ZEND_ASYNC_API_VERSION_MINOR 10
+#define ZEND_ASYNC_API_VERSION_MINOR 11
 #define ZEND_ASYNC_API_VERSION_PATCH 0
 
 #define ZEND_ASYNC_API_VERSION_NUMBER \
@@ -121,6 +121,15 @@ typedef enum {
 #define ZEND_ASYNC_IO_EOF         (1 << 3)
 #define ZEND_ASYNC_IO_APPEND      (1 << 4)
 #define ZEND_ASYNC_IO_PRESERVE_FD (1 << 5)
+/* The kernel can write bytes from this io_t to the wire without an
+ * intermediate user-space encryption pass — plain TCP, or TLS sockets
+ * where kTLS is engaged. zend_async_io_sendfile MUST refuse zero-copy
+ * when this bit is clear (e.g. user-space TLS) and silently fall back
+ * to a read+write loop instead — otherwise the file's plaintext would
+ * leak past the encryption layer. Owners of the io_t (TLS layer,
+ * socket factory) flip this bit when the underlying transport is
+ * either plaintext or kernel-encrypted. */
+#define ZEND_ASYNC_IO_ZERO_COPY_OK (1 << 6)
 
 typedef struct _zend_async_io_s zend_async_io_t;
 typedef struct _zend_async_io_req_s zend_async_io_req_t;
@@ -548,6 +557,46 @@ typedef int (*zend_async_io_await_t)(zend_async_io_t *io, uint32_t events, struc
 typedef zend_async_io_req_t *(*zend_async_io_flush_t)(zend_async_io_t *io);
 typedef zend_async_io_req_t *(*zend_async_io_stat_t)(zend_async_io_t *io, zend_stat_t *buf);
 typedef zend_off_t (*zend_async_io_seek_t)(zend_async_io_t *io, zend_off_t offset, int whence);
+
+/* Asynchronous file → socket transfer (issue: built-in static handler).
+ * On Linux the backend uses sendfile(2) for the zero-copy path; macOS
+ * and Windows use their respective sendfile / TransmitFile equivalents.
+ * The reactor picks the fastest available kernel primitive.
+ *
+ * The function REQUIRES `out_io` to carry ZEND_ASYNC_IO_ZERO_COPY_OK
+ * for the zero-copy path; on a clear flag (user-space TLS) the backend
+ * silently falls back to a read+write loop using the same in_io / out_io
+ * handles — same completion contract, slower wire path, no plaintext
+ * leak. Callers that want to know whether the zero-copy path was taken
+ * should consult the flag before issuing the call.
+ *
+ *   out_io      destination io_t (must be writable; typically a TCP
+ *               socket).
+ *   in_io       source io_t of TYPE_FILE (must be readable).
+ *   offset      byte offset into the file. -1 reads from current
+ *               position (and advances it), matching uv_fs_sendfile
+ *               semantics.
+ *   length      number of bytes to transfer. The reactor loops
+ *               internally over partial sends until the count is
+ *               reached or an error fires; req->result on completion
+ *               is the actual number of bytes transferred.
+ *
+ * Returns NULL on submit failure (caller does not own a req to dispose
+ * of). */
+typedef zend_async_io_req_t *(*zend_async_io_sendfile_t)(
+		zend_async_io_t *out_io, zend_async_io_t *in_io,
+		zend_off_t offset, size_t length);
+
+/* Asynchronous open(2). The thread-pool backend issues uv_fs_open and
+ * delivers the resulting file descriptor in req->result on completion
+ * (negative errno on failure). Callers wrap the fd via the existing
+ * zend_async_io_create with ZEND_ASYNC_IO_TYPE_FILE.
+ *
+ * `path`, `flags`, `mode` carry the standard POSIX open() arguments.
+ * `path` must remain valid until the request completes — typically the
+ * caller pins it on a struct that owns the request lifetime. */
+typedef zend_async_io_req_t *(*zend_async_fs_open_t)(
+		const char *path, int flags, int mode);
 
 /* Socket options enum */
 typedef enum {
@@ -2274,6 +2323,8 @@ ZEND_API extern zend_async_io_read_t zend_async_io_read_fn;
 ZEND_API extern zend_async_io_write_t zend_async_io_write_fn;
 ZEND_API extern zend_async_io_writev_t zend_async_io_writev_fn;
 ZEND_API extern zend_async_io_close_t zend_async_io_close_fn;
+ZEND_API extern zend_async_io_sendfile_t zend_async_io_sendfile_fn;
+ZEND_API extern zend_async_fs_open_t zend_async_fs_open_fn;
 ZEND_API extern zend_async_io_await_t zend_async_io_await_fn;
 ZEND_API extern zend_async_io_flush_t zend_async_io_flush_fn;
 ZEND_API extern zend_async_io_stat_t zend_async_io_stat_fn;
@@ -2358,6 +2409,7 @@ ZEND_API bool zend_async_io_register(char *module, bool allow_override,
 		zend_async_io_close_t close_fn,
 		zend_async_io_await_t await_fn, zend_async_io_flush_t flush_fn,
 		zend_async_io_stat_t stat_fn, zend_async_io_seek_t seek_fn,
+		zend_async_io_sendfile_t sendfile_fn, zend_async_fs_open_t fs_open_fn,
 		zend_async_udp_sendto_t udp_sendto_fn, zend_async_udp_try_send_t udp_try_send_fn,
 		zend_async_udp_recvfrom_t udp_recvfrom_fn,
 		zend_async_io_set_option_t set_option_fn, zend_async_udp_set_membership_t udp_set_membership_fn,
@@ -2668,6 +2720,18 @@ END_EXTERN_C()
 #define ZEND_ASYNC_IO_FLUSH(io)                zend_async_io_flush_fn(io)
 #define ZEND_ASYNC_IO_STAT(io, buf)            zend_async_io_stat_fn(io, buf)
 #define ZEND_ASYNC_IO_SEEK(io, offset, whence)  zend_async_io_seek_fn(io, offset, whence)
+/* Async file → socket transfer. The reactor uses the fastest kernel
+ * primitive (sendfile/TransmitFile) when out_io->state carries
+ * ZEND_ASYNC_IO_ZERO_COPY_OK; otherwise it transparently falls back
+ * to a read+write loop without leaking plaintext through user-space
+ * TLS layers. See zend_async_io_sendfile_t for the full contract. */
+#define ZEND_ASYNC_IO_SENDFILE(out_io, in_io, offset, length) \
+	zend_async_io_sendfile_fn(out_io, in_io, offset, length)
+/* Async open(2) via the reactor's thread pool. req->result on
+ * completion carries the fd (negative errno on error); wrap with
+ * ZEND_ASYNC_IO_CREATE(fd, ZEND_ASYNC_IO_TYPE_FILE, READABLE). */
+#define ZEND_ASYNC_FS_OPEN(path, flags, mode) \
+	zend_async_fs_open_fn(path, flags, mode)
 #define ZEND_ASYNC_UDP_SENDTO(io, buf, count, addr, addr_len) \
 	zend_async_udp_sendto_fn(io, buf, count, addr, addr_len)
 #define ZEND_ASYNC_UDP_TRY_SEND(io, buf, count, addr, addr_len) \
