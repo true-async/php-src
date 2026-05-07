@@ -121,15 +121,6 @@ typedef enum {
 #define ZEND_ASYNC_IO_EOF         (1 << 3)
 #define ZEND_ASYNC_IO_APPEND      (1 << 4)
 #define ZEND_ASYNC_IO_PRESERVE_FD (1 << 5)
-/* The kernel can write bytes from this io_t to the wire without an
- * intermediate user-space encryption pass — plain TCP, or TLS sockets
- * where kTLS is engaged. zend_async_io_sendfile MUST refuse zero-copy
- * when this bit is clear (e.g. user-space TLS) and silently fall back
- * to a read+write loop instead — otherwise the file's plaintext would
- * leak past the encryption layer. Owners of the io_t (TLS layer,
- * socket factory) flip this bit when the underlying transport is
- * either plaintext or kernel-encrypted. */
-#define ZEND_ASYNC_IO_ZERO_COPY_OK (1 << 6)
 
 typedef struct _zend_async_io_s zend_async_io_t;
 typedef struct _zend_async_io_req_s zend_async_io_req_t;
@@ -558,17 +549,16 @@ typedef zend_async_io_req_t *(*zend_async_io_flush_t)(zend_async_io_t *io);
 typedef zend_async_io_req_t *(*zend_async_io_stat_t)(zend_async_io_t *io, zend_stat_t *buf);
 typedef zend_off_t (*zend_async_io_seek_t)(zend_async_io_t *io, zend_off_t offset, int whence);
 
-/* Asynchronous file → socket transfer (issue: built-in static handler).
- * On Linux the backend uses sendfile(2) for the zero-copy path; macOS
- * and Windows use their respective sendfile / TransmitFile equivalents.
- * The reactor picks the fastest available kernel primitive.
- *
- * The function REQUIRES `out_io` to carry ZEND_ASYNC_IO_ZERO_COPY_OK
- * for the zero-copy path; on a clear flag (user-space TLS) the backend
- * silently falls back to a read+write loop using the same in_io / out_io
- * handles — same completion contract, slower wire path, no plaintext
- * leak. Callers that want to know whether the zero-copy path was taken
- * should consult the flag before issuing the call.
+/* Asynchronous file → socket zero-copy transfer. On Linux the backend
+ * issues sendfile(2); macOS uses sendfile(2) too; Windows uses
+ * TransmitFile. Bytes go from the source fd straight into the
+ * destination socket buffer in the kernel — they NEVER touch user
+ * space. This means there is no opportunity for a user-space TLS
+ * stack (e.g. OpenSSL) to encrypt them: callers MUST only invoke
+ * this on plaintext sockets or on TLS sockets where kTLS has taken
+ * encryption into the kernel. On any other transport (user-space
+ * TLS, custom framing, etc.) the caller is responsible for using a
+ * different write path that goes through their encryption layer.
  *
  *   out_io      destination io_t (must be writable; typically a TCP
  *               socket).
@@ -2727,11 +2717,10 @@ END_EXTERN_C()
 #define ZEND_ASYNC_IO_FLUSH(io)                zend_async_io_flush_fn(io)
 #define ZEND_ASYNC_IO_STAT(io, buf)            zend_async_io_stat_fn(io, buf)
 #define ZEND_ASYNC_IO_SEEK(io, offset, whence)  zend_async_io_seek_fn(io, offset, whence)
-/* Async file → socket transfer. The reactor uses the fastest kernel
- * primitive (sendfile/TransmitFile) when out_io->state carries
- * ZEND_ASYNC_IO_ZERO_COPY_OK; otherwise it transparently falls back
- * to a read+write loop without leaking plaintext through user-space
- * TLS layers. See zend_async_io_sendfile_t for the full contract. */
+/* Async file → socket zero-copy transfer via sendfile(2) /
+ * TransmitFile. Bytes bypass user space entirely — only safe on
+ * plaintext sockets or kTLS-engaged TLS sockets. See
+ * zend_async_io_sendfile_t for the full contract. */
 #define ZEND_ASYNC_IO_SENDFILE(out_io, in_io, offset, length) \
 	zend_async_io_sendfile_fn(out_io, in_io, offset, length)
 /* Async open(2) via the reactor's thread pool. req->result on
