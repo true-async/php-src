@@ -21,9 +21,9 @@
 #include "zend_globals.h"
 #include "zend_stream.h"
 
-#define ZEND_ASYNC_API "TrueAsync ABI v0.10.0"
+#define ZEND_ASYNC_API "TrueAsync ABI v0.11.0"
 #define ZEND_ASYNC_API_VERSION_MAJOR 0
-#define ZEND_ASYNC_API_VERSION_MINOR 10
+#define ZEND_ASYNC_API_VERSION_MINOR 11
 #define ZEND_ASYNC_API_VERSION_PATCH 0
 
 #define ZEND_ASYNC_API_VERSION_NUMBER \
@@ -548,6 +548,52 @@ typedef int (*zend_async_io_await_t)(zend_async_io_t *io, uint32_t events, struc
 typedef zend_async_io_req_t *(*zend_async_io_flush_t)(zend_async_io_t *io);
 typedef zend_async_io_req_t *(*zend_async_io_stat_t)(zend_async_io_t *io, zend_stat_t *buf);
 typedef zend_off_t (*zend_async_io_seek_t)(zend_async_io_t *io, zend_off_t offset, int whence);
+
+/* Asynchronous file → socket zero-copy transfer. On Linux the backend
+ * issues sendfile(2); macOS uses sendfile(2) too; Windows uses
+ * TransmitFile. Bytes go from the source fd straight into the
+ * destination socket buffer in the kernel — they NEVER touch user
+ * space. This means there is no opportunity for a user-space TLS
+ * stack (e.g. OpenSSL) to encrypt them: callers MUST only invoke
+ * this on plaintext sockets or on TLS sockets where kTLS has taken
+ * encryption into the kernel. On any other transport (user-space
+ * TLS, custom framing, etc.) the caller is responsible for using a
+ * different write path that goes through their encryption layer.
+ *
+ *   out_io      destination io_t (must be writable; typically a TCP
+ *               socket).
+ *   in_io       source io_t of TYPE_FILE (must be readable).
+ *   offset      byte offset into the file. -1 reads from current
+ *               position (and advances it), matching uv_fs_sendfile
+ *               semantics.
+ *   length      number of bytes to transfer. The reactor loops
+ *               internally over partial sends until the count is
+ *               reached or an error fires; req->result on completion
+ *               is the actual number of bytes transferred.
+ *
+ * Returns NULL on submit failure (caller does not own a req to dispose
+ * of). */
+typedef zend_async_io_req_t *(*zend_async_io_sendfile_t)(
+		zend_async_io_t *out_io, zend_async_io_t *in_io,
+		zend_off_t offset, size_t length);
+
+/* Asynchronous open(2). Returns a pending file io_t whose fd is
+ * filled in by the thread-pool worker. The caller add_callback's on
+ * the io's event to receive the ready/error notification, exactly the
+ * same way reads and writes deliver completion.
+ *
+ *   On success — io->state gains ZEND_ASYNC_IO_READABLE, the
+ *                completion notify carries result=NULL exception=NULL,
+ *                and the io is ready for read/sendfile/stat/seek.
+ *   On error   — io->state gains ZEND_ASYNC_IO_CLOSED and the notify
+ *                carries an HttpServerException-shaped exception. The
+ *                caller must dispose the io via its event vtable.
+ *
+ * `path`, `flags`, `mode` carry the standard POSIX open() arguments.
+ * `path` must remain valid until the open completes — typically the
+ * caller pins it on the same struct that owns the io. */
+typedef zend_async_io_t *(*zend_async_fs_open_t)(
+		const char *path, int flags, int mode);
 
 /* Socket options enum */
 typedef enum {
@@ -2274,6 +2320,8 @@ ZEND_API extern zend_async_io_read_t zend_async_io_read_fn;
 ZEND_API extern zend_async_io_write_t zend_async_io_write_fn;
 ZEND_API extern zend_async_io_writev_t zend_async_io_writev_fn;
 ZEND_API extern zend_async_io_close_t zend_async_io_close_fn;
+ZEND_API extern zend_async_io_sendfile_t zend_async_io_sendfile_fn;
+ZEND_API extern zend_async_fs_open_t zend_async_fs_open_fn;
 ZEND_API extern zend_async_io_await_t zend_async_io_await_fn;
 ZEND_API extern zend_async_io_flush_t zend_async_io_flush_fn;
 ZEND_API extern zend_async_io_stat_t zend_async_io_stat_fn;
@@ -2358,6 +2406,7 @@ ZEND_API bool zend_async_io_register(char *module, bool allow_override,
 		zend_async_io_close_t close_fn,
 		zend_async_io_await_t await_fn, zend_async_io_flush_t flush_fn,
 		zend_async_io_stat_t stat_fn, zend_async_io_seek_t seek_fn,
+		zend_async_io_sendfile_t sendfile_fn, zend_async_fs_open_t fs_open_fn,
 		zend_async_udp_sendto_t udp_sendto_fn, zend_async_udp_try_send_t udp_try_send_fn,
 		zend_async_udp_recvfrom_t udp_recvfrom_fn,
 		zend_async_io_set_option_t set_option_fn, zend_async_udp_set_membership_t udp_set_membership_fn,
@@ -2668,6 +2717,18 @@ END_EXTERN_C()
 #define ZEND_ASYNC_IO_FLUSH(io)                zend_async_io_flush_fn(io)
 #define ZEND_ASYNC_IO_STAT(io, buf)            zend_async_io_stat_fn(io, buf)
 #define ZEND_ASYNC_IO_SEEK(io, offset, whence)  zend_async_io_seek_fn(io, offset, whence)
+/* Async file → socket zero-copy transfer via sendfile(2) /
+ * TransmitFile. Bytes bypass user space entirely — only safe on
+ * plaintext sockets or kTLS-engaged TLS sockets. See
+ * zend_async_io_sendfile_t for the full contract. */
+#define ZEND_ASYNC_IO_SENDFILE(out_io, in_io, offset, length) \
+	zend_async_io_sendfile_fn(out_io, in_io, offset, length)
+/* Async open(2) via the reactor's thread pool. Returns a pending
+ * file io_t — the caller add_callback's on io->event to receive the
+ * ready (or error) completion. On success io->state has READABLE set.
+ * See zend_async_fs_open_t for the full contract. */
+#define ZEND_ASYNC_FS_OPEN(path, flags, mode) \
+	zend_async_fs_open_fn(path, flags, mode)
 #define ZEND_ASYNC_UDP_SENDTO(io, buf, count, addr, addr_len) \
 	zend_async_udp_sendto_fn(io, buf, count, addr, addr_len)
 #define ZEND_ASYNC_UDP_TRY_SEND(io, buf, count, addr, addr_len) \
