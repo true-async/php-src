@@ -1226,10 +1226,11 @@ struct _zend_async_thread_context_s {
 	/* C-level entry point (NULL when using PHP closure via snapshot) */
 	zend_async_thread_internal_entry_t *internal_entry;
 
-	/* OS thread handle, written by start_thread before the runner starts.
-	 * Used by the runner as its own key when self-removing from the
-	 * reactor's thread registry during quiesce. */
-	zend_async_thread_handle_t handle;
+	/* Opaque key identifying this context in the reactor's thread registry.
+	 * Set by start_thread BEFORE the runner is created (closes a race where
+	 * a fast-exiting runner would otherwise read 0 and skip self-removal,
+	 * leaving a phantom registry entry that hangs quiesce). */
+	zend_async_thread_handle_t key;
 };
 
 struct _zend_async_thread_event_s {
