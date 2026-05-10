@@ -1564,6 +1564,14 @@ ZEND_API int php_network_getaddrinfo_async(const char *node, const char *service
 	}
 
 error:
+	/* If dns_callback_resolve already wrote *res before cancellation hit
+	 * (cancel races between event delivery and SUSPEND return), nobody else
+	 * will free the addrinfo — caller checks the return code, sees -1, and
+	 * never calls freeaddrinfo. Free it here so it doesn't leak. */
+	if (res != NULL && *res != NULL) {
+		ZEND_ASYNC_FREEADDRINFO(*res);
+		*res = NULL;
+	}
 	dns_handle_exception_and_errno();
 	zend_async_waker_clean(coroutine);
 	return -1;
