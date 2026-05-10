@@ -21,9 +21,9 @@
 #include "zend_globals.h"
 #include "zend_stream.h"
 
-#define ZEND_ASYNC_API "TrueAsync ABI v0.11.0"
+#define ZEND_ASYNC_API "TrueAsync ABI v0.12.0"
 #define ZEND_ASYNC_API_VERSION_MAJOR 0
-#define ZEND_ASYNC_API_VERSION_MINOR 11
+#define ZEND_ASYNC_API_VERSION_MINOR 12
 #define ZEND_ASYNC_API_VERSION_PATCH 0
 
 #define ZEND_ASYNC_API_VERSION_NUMBER \
@@ -1365,6 +1365,8 @@ struct _zend_async_scope_s {
 
 	zend_async_scopes_vector_t scopes;
 	zend_async_scope_t *parent_scope;
+	/* Borrowed pointer to the request-level scope, inherited from parent_scope. */
+	zend_async_scope_t *request_scope;
 	/* Scope context object */
 	zend_async_context_t *context;
 
@@ -2093,6 +2095,8 @@ END_EXTERN_C()
 #define ZEND_ASYNC_EXIT_EXCEPTION ZEND_ASYNC_G(exit_exception)
 #define ZEND_ASYNC_CURRENT_COROUTINE ZEND_ASYNC_G(coroutine)
 #define ZEND_ASYNC_CURRENT_SCOPE (ZEND_ASYNC_G(coroutine) ? ZEND_ASYNC_G(coroutine)->scope : NULL)
+#define ZEND_ASYNC_REQUEST_SCOPE \
+	(ZEND_ASYNC_CURRENT_SCOPE ? ZEND_ASYNC_CURRENT_SCOPE->request_scope : NULL)
 #define ZEND_ASYNC_MAIN_SCOPE ZEND_ASYNC_G(main_scope)
 #define ZEND_ASYNC_SCHEDULER ZEND_ASYNC_G(scheduler)
 #define ZEND_ASYNC_ACTING_COROUTINE ZEND_ASYNC_G(acting_coroutine)
