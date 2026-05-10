@@ -330,6 +330,14 @@ int _pdo_pgsql_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt, int errcode, const char *
 				|| strcmp(sqlstate, "57P03") == 0;
 		}
 
+		/* sqlstate==NULL with PGRES_FATAL_ERROR means PQexec/PQexecParams
+		 * itself returned NULL — there is no PG result at all, so the
+		 * failure is at the libpq/connection layer (e.g. server gone) and
+		 * the connection cannot be reused. */
+		if (!broken && sqlstate == NULL && errcode == PGRES_FATAL_ERROR) {
+			broken = true;
+		}
+
 		if (broken) {
 			pdo_dbh_t *conn_dbh = (stmt && stmt->pooled_conn) ? stmt->pooled_conn : dbh;
 			conn_dbh->conn_broken = true;
