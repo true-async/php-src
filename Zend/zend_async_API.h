@@ -1365,6 +1365,8 @@ struct _zend_async_scope_s {
 
 	zend_async_scopes_vector_t scopes;
 	zend_async_scope_t *parent_scope;
+	/* Borrowed pointer to the request-level scope, inherited from parent_scope. */
+	zend_async_scope_t *request_scope;
 	/* Scope context object */
 	zend_async_context_t *context;
 
@@ -1627,11 +1629,6 @@ struct _zend_coroutine_s {
 	zend_async_waker_t *waker;
 	/* Coroutine scope */
 	zend_async_scope_t *scope;
-	/* Request-level scope, inherited from the parent coroutine at spawn time.
-	 * Provides O(1) access to the user-designated "request" scope (e.g. an
-	 * HTTP request scope) without walking the parent_scope chain. NULL until
-	 * some coroutine in the spawn ancestry calls ZEND_ASYNC_SET_REQUEST_SCOPE. */
-	zend_async_scope_t *request_scope;
 
 	/* Storage for return value. */
 	zval result;
@@ -2099,13 +2096,7 @@ END_EXTERN_C()
 #define ZEND_ASYNC_CURRENT_COROUTINE ZEND_ASYNC_G(coroutine)
 #define ZEND_ASYNC_CURRENT_SCOPE (ZEND_ASYNC_G(coroutine) ? ZEND_ASYNC_G(coroutine)->scope : NULL)
 #define ZEND_ASYNC_REQUEST_SCOPE \
-	(ZEND_ASYNC_G(coroutine) ? ZEND_ASYNC_G(coroutine)->request_scope : NULL)
-#define ZEND_ASYNC_SET_REQUEST_SCOPE(scope) \
-	do { \
-		if (ZEND_ASYNC_G(coroutine) != NULL) { \
-			ZEND_ASYNC_G(coroutine)->request_scope = (scope); \
-		} \
-	} while (0)
+	(ZEND_ASYNC_CURRENT_SCOPE ? ZEND_ASYNC_CURRENT_SCOPE->request_scope : NULL)
 #define ZEND_ASYNC_MAIN_SCOPE ZEND_ASYNC_G(main_scope)
 #define ZEND_ASYNC_SCHEDULER ZEND_ASYNC_G(scheduler)
 #define ZEND_ASYNC_ACTING_COROUTINE ZEND_ASYNC_G(acting_coroutine)
