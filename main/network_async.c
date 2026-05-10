@@ -1470,6 +1470,9 @@ static void dns_callback_resolve(
 
 		if (dns_callback->result != NULL) {
 			*(dns_callback->result) = (struct addrinfo *) dns_event->result;
+			/* ownership of addrinfo is transferred to the consumer; clear the event's
+			 * pointer so dispose won't double-free it */
+			dns_event->result = NULL;
 		}
 
 		ZVAL_TRUE(&coroutine->waker->result);
