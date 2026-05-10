@@ -882,6 +882,27 @@ static zend_result pdo_pgsql_check_liveness(pdo_dbh_t *dbh)
 	}
 	return (PQstatus(H->server) == CONNECTION_OK) ? SUCCESS : FAILURE;
 }
+
+/* Non-blocking liveness probe used right before handing the conn to a
+ * coroutine. While the conn was idle the server may have closed it
+ * (e.g. pg_terminate_backend, idle-in-transaction timeout). PQconsumeInput
+ * drains any pending bytes and updates PQstatus to CONNECTION_BAD on EOF.
+ * Unlike check_liveness, we do NOT call PQreset — a broken slot must be
+ * destroyed so the pool can recreate it cleanly. */
+static bool pdo_pgsql_pool_before_acquire(pdo_dbh_t *dbh)
+{
+	pdo_pgsql_db_handle *H = (pdo_pgsql_db_handle *)dbh->driver_data;
+	if (UNEXPECTED(H == NULL || H->server == NULL)) {
+		return false;
+	}
+	if (UNEXPECTED(dbh->conn_broken)) {
+		return false;
+	}
+	if (!PQconsumeInput(H->server)) {
+		return false;
+	}
+	return PQstatus(H->server) == CONNECTION_OK;
+}
 /* }}} */
 
 static bool pgsql_handle_in_transaction(pdo_dbh_t *dbh)
@@ -1709,7 +1730,7 @@ static const struct pdo_dbh_methods pgsql_methods = {
 	pgsql_handle_in_transaction,
 	NULL, /* get_gc */
 	pdo_pgsql_scanner,
-	NULL, /* pool_before_acquire */
+	pdo_pgsql_pool_before_acquire,
 	NULL, /* pool_before_release */
 };
 
