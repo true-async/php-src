@@ -312,17 +312,25 @@ int _pdo_pgsql_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt, int errcode, const char *
 	einfo->file = file;
 	einfo->line = line;
 
-	/* Mark connection as broken when it cannot be safely reused.
-	 * Pool will destroy instead of returning to idle buffer.
-	 * In pool mode with stmt, dbh is template — use stmt->pooled_conn for the real connection.
-	 *
-	 * CONNECTION_BAD:   server disconnected
-	 * PQTRANS_ACTIVE:  command in progress, result not read (e.g. cancelled during I/O)
-	 * PQTRANS_UNKNOWN: connection state cannot be determined */
+	/* Mark broken when the connection cannot be safely reused. */
 	{
 		PGTransactionStatusType txs = PQtransactionStatus(H->server);
-		if (PQstatus(H->server) == CONNECTION_BAD ||
-			txs == PQTRANS_ACTIVE || txs == PQTRANS_UNKNOWN) {
+		bool broken = PQstatus(H->server) == CONNECTION_BAD
+			|| txs == PQTRANS_ACTIVE || txs == PQTRANS_UNKNOWN;
+
+		/* Also trust SQLSTATE: class 08 (connection exception),
+		 * 57P01/57P02/57P03 (admin shutdown / crash / cannot connect now),
+		 * class XX (internal error). PQstatus may still be OK at the moment
+		 * the error is reported, e.g. right after pg_terminate_backend. */
+		if (!broken && sqlstate != NULL) {
+			broken = strncmp(sqlstate, "08", 2) == 0
+				|| strncmp(sqlstate, "XX", 2) == 0
+				|| strcmp(sqlstate, "57P01") == 0
+				|| strcmp(sqlstate, "57P02") == 0
+				|| strcmp(sqlstate, "57P03") == 0;
+		}
+
+		if (broken) {
 			pdo_dbh_t *conn_dbh = (stmt && stmt->pooled_conn) ? stmt->pooled_conn : dbh;
 			conn_dbh->conn_broken = true;
 		}
