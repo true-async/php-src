@@ -40,6 +40,7 @@
 #ifdef ZEND_SIGNALS
 
 #include "zend_signal.h"
+#include "zend_async_API.h"
 
 #ifdef ZTS
 ZEND_API int zend_signal_globals_id;
@@ -319,6 +320,12 @@ void zend_signal_activate(void)
 {
 	size_t x;
 
+	/* TrueAsync reactor owns OS signal handling in this thread; skip the
+	 * per-request install loop so we do not clobber libuv's sigaction. */
+	if (ZEND_ASYNC_REACTOR_IS_ENABLED()) {
+		return;
+	}
+
 	memcpy(&SIGG(handlers), &global_orig_handlers, sizeof(global_orig_handlers));
 
 	if (SIGG(reset)) {
@@ -334,6 +341,12 @@ void zend_signal_activate(void)
 /* {{{ zend_signal_deactivate */
 void zend_signal_deactivate(void)
 {
+	/* Reactor owns sigaction in this thread; the "did anyone steal our handler"
+	 * check would always fire (libuv replaced defer with its own handler). */
+	if (ZEND_ASYNC_REACTOR_IS_ENABLED()) {
+		return;
+	}
+
 	if (SIGG(check)) {
 		size_t x;
 		struct sigaction sa;
