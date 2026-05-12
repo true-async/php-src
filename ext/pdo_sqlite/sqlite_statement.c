@@ -30,13 +30,48 @@
 #include <Availability.h>
 #endif
 
+/* Cache-entry payload dtor: finalize the sqlite3_stmt held by an evicted
+ * or cache-destroyed entry. */
+static void pdo_sqlite_cache_entry_dtor(void *driver_data)
+{
+	if (driver_data) {
+		sqlite3_finalize((sqlite3_stmt *) driver_data);
+	}
+}
+
 static int pdo_sqlite_stmt_dtor(pdo_stmt_t *stmt)
 {
 	pdo_sqlite_stmt *S = (pdo_sqlite_stmt*)stmt->driver_data;
 
-	if (S->stmt) {
-		sqlite3_finalize(S->stmt);
-		S->stmt = NULL;
+	if (S->stmt != NULL) {
+		/* If the conn has a cache, the stmt is clean (not in error state),
+		 * and we have a SQL key for it, try to put it back instead of
+		 * finalizing. Cache may evict an LRU peer — that one gets finalized
+		 * via its driver_data_dtor. */
+		if (S->H->stmt_cache != NULL && S->query != NULL && !S->do_not_cache) {
+			sqlite3_reset(S->stmt);
+			sqlite3_clear_bindings(S->stmt);
+
+			pdo_pool_stmt_cache_entry_t *evicted = NULL;
+			pdo_pool_stmt_cache_entry_t *entry = pdo_pool_stmt_cache_insert(
+				S->H->stmt_cache, S->query, &evicted);
+			if (entry != NULL) {
+				entry->driver_data = S->stmt;
+				entry->driver_data_dtor = pdo_sqlite_cache_entry_dtor;
+				S->stmt = NULL; /* ownership handed to cache */
+			}
+			if (evicted != NULL) {
+				pdo_pool_stmt_cache_entry_free(evicted);
+			}
+		}
+		if (S->stmt != NULL) {
+			sqlite3_finalize(S->stmt);
+			S->stmt = NULL;
+		}
+	}
+	if (S->query != NULL) {
+		zend_string_release(S->query);
+		S->query = NULL;
 	}
 	efree(S);
 	return 1;
@@ -70,6 +105,8 @@ static int pdo_sqlite_stmt_execute(pdo_stmt_t *stmt)
 		case SQLITE_MISUSE:
 		case SQLITE_BUSY:
 		default:
+			/* Don't poison the per-conn cache with a stmt that just errored. */
+			S->do_not_cache = 1;
 			pdo_sqlite_error_stmt(stmt);
 			return 0;
 	}

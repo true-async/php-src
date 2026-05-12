@@ -182,6 +182,13 @@ static void sqlite_handle_closer(pdo_dbh_t *dbh) /* {{{ */
 	if (H) {
 		pdo_sqlite_error_info *einfo = &H->einfo;
 
+		/* Drop the prepared-statement cache before closing the sqlite3*
+		 * so each cached sqlite3_stmt* gets finalized cleanly via its
+		 * driver_data_dtor (sqlite3_finalize is safe before sqlite3_close_v2). */
+		if (H->stmt_cache) {
+			pdo_pool_stmt_cache_destroy(H->stmt_cache);
+			H->stmt_cache = NULL;
+		}
 		pdo_sqlite_cleanup_callbacks(H);
 		if (H->db) {
 			sqlite3_close_v2(H->db);
@@ -225,8 +232,25 @@ static bool sqlite_handle_preparer(pdo_dbh_t *dbh, zend_string *sql, pdo_stmt_t 
 		return false;
 	}
 
+	/* Cache hit fast-path: lift a ready sqlite3_stmt out of the per-conn LRU,
+	 * skipping sqlite3_prepare_v2. Cache always holds reset/cleared stmts. */
+	if (H->stmt_cache != NULL) {
+		pdo_pool_stmt_cache_entry_t *entry = pdo_pool_stmt_cache_take(H->stmt_cache, sql);
+		if (entry != NULL) {
+			S->stmt = (sqlite3_stmt *) entry->driver_data;
+			entry->driver_data = NULL; /* steal ownership; entry_free now no-op on payload */
+			S->query = zend_string_copy(entry->nsql);
+			pdo_pool_stmt_cache_entry_free(entry);
+			return true;
+		}
+	}
+
 	i = sqlite3_prepare_v2(H->db, ZSTR_VAL(sql), ZSTR_LEN(sql), &S->stmt, &tail);
 	if (i == SQLITE_OK) {
+		/* Stash the cache key for stmt_dtor's insertion attempt. */
+		if (H->stmt_cache != NULL) {
+			S->query = zend_string_copy(sql);
+		}
 		return true;
 	}
 
@@ -1232,6 +1256,12 @@ static int pdo_sqlite_handle_factory(pdo_dbh_t *dbh, zval *driver_options) /* {{
 			}
 			reg->frozen = true;
 			H->template_applied = true;
+		}
+
+		/* Per-conn prepared-statement cache, opt-in via
+		 * PDO::ATTR_POOL_STMT_CACHE_SIZE on the template. */
+		if (template != NULL && template->pool_stmt_cache_size > 0) {
+			H->stmt_cache = pdo_pool_stmt_cache_create(template->pool_stmt_cache_size);
 		}
 	}
 
