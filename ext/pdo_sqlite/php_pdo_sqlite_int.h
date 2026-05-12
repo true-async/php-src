@@ -16,6 +16,7 @@
 #define PHP_PDO_SQLITE_INT_H
 
 #include <sqlite3.h>
+#include "ext/pdo/pdo_pool.h"
 
 typedef struct {
 	const char *file;
@@ -50,6 +51,10 @@ typedef struct {
 	struct pdo_sqlite_collation *collations;
 	zend_fcall_info_cache authorizer_fcc;
 	enum pdo_sqlite_transaction_mode transaction_mode;
+	/* Per-connection prepared-statement LRU cache; NULL if disabled.
+	 * Entries store the compiled sqlite3_stmt* in driver_data; finalize
+	 * runs in driver_data_dtor on eviction or cache destroy. */
+	pdo_pool_stmt_cache_t *stmt_cache;
 	/* Pool slot: true after the template UDF/collation registry has been
 	 * applied to this sqlite3*. Set in pdo_sqlite_pool_before_acquire on
 	 * first hand-off, never reset. */
@@ -59,8 +64,14 @@ typedef struct {
 typedef struct {
 	pdo_sqlite_db_handle 	*H;
 	sqlite3_stmt *stmt;
+	/* Cache key (rewritten SQL): non-NULL means stmt is eligible for
+	 * insertion back into H->stmt_cache on dtor. Released on dtor. */
+	zend_string *query;
 	unsigned pre_fetched:1;
 	unsigned done:1;
+	/* Set when execute encountered an error — stmt state is suspect,
+	 * don't put it back into the cache. */
+	unsigned do_not_cache:1;
 } pdo_sqlite_stmt;
 
 extern const pdo_driver_t pdo_sqlite_driver;
