@@ -21,9 +21,9 @@
 #include "zend_globals.h"
 #include "zend_stream.h"
 
-#define ZEND_ASYNC_API "TrueAsync ABI v0.12.0"
+#define ZEND_ASYNC_API "TrueAsync ABI v0.13.0"
 #define ZEND_ASYNC_API_VERSION_MAJOR 0
-#define ZEND_ASYNC_API_VERSION_MINOR 12
+#define ZEND_ASYNC_API_VERSION_MINOR 13
 #define ZEND_ASYNC_API_VERSION_PATCH 0
 
 #define ZEND_ASYNC_API_VERSION_NUMBER \
@@ -535,14 +535,29 @@ typedef void (*zend_async_io_write_free_cb_t)(void *data, zend_async_io_t *io);
 typedef zend_async_io_req_t *(*zend_async_io_write_t)(zend_async_io_t *io, const char *buf, size_t count,
 		zend_async_io_write_free_cb_t free_cb);
 
-/* Vectored fire-and-forget write. Each entry of `bufs` is an OWNED zend_string
- * reference: the reactor consumes one refcount per entry on completion via
- * zend_string_release(). Caller bumps refcount before passing if it needs
- * to keep its own reference. Buffer ordering on the wire matches array order.
- * No await / no dispose: like ZEND_ASYNC_IO_WRITE_EX, returns NULL on submit
- * failure (in which case the reactor has already released every buf). */
+/* Vectored fire-and-forget write — two backing modes selected via flags.
+ *
+ * ZEND_ASYNC_IO_WRITEV_ZSTR (default, flags == 0):
+ *   `bufs` is `zend_string * const *`. Each entry is an OWNED ref; the
+ *   reactor calls zend_string_release() on each on completion. free_cb /
+ *   user_data are ignored. Caller bumps refcount before passing if it
+ *   needs to keep its own reference.
+ *
+ * ZEND_ASYNC_IO_WRITEV_IOV:
+ *   `bufs` is `const zend_async_buf_t *` — array of (base, len) descriptors
+ *   pointing into caller-owned memory. The reactor copies the iov array
+ *   internally at submit (caller may release iov on return). On completion
+ *   (or submit failure) the reactor invokes free_cb(user_data, io) exactly
+ *   once; the caller bundles its release state into user_data.
+ *
+ * Buffer ordering on the wire matches array order. Returns NULL on submit
+ * failure (in which case the reactor has already released / freed every
+ * entry per the mode's contract). */
+#define ZEND_ASYNC_IO_WRITEV_ZSTR  0u
+#define ZEND_ASYNC_IO_WRITEV_IOV   1u
 typedef zend_async_io_req_t *(*zend_async_io_writev_t)(zend_async_io_t *io,
-		zend_string * const *bufs, unsigned nbufs);
+		const void *bufs, unsigned nbufs, uint32_t flags,
+		zend_async_io_write_free_cb_t free_cb, void *user_data);
 
 typedef bool (*zend_async_io_close_t)(zend_async_io_t *io);
 typedef int (*zend_async_io_await_t)(zend_async_io_t *io, uint32_t events, struct timeval *timeout);
@@ -2712,12 +2727,20 @@ END_EXTERN_C()
 #define ZEND_ASYNC_IO_WRITE(io, buf, count)    zend_async_io_write_fn(io, buf, count, NULL)
 #define ZEND_ASYNC_IO_WRITE_EX(io, buf, count, free_cb) \
 	zend_async_io_write_fn(io, buf, count, free_cb)
-/* Fire-and-forget vectored write. `bufs` is an array of OWNED zend_string
- * references — reactor releases one ref per entry on completion. Wire
- * ordering matches array order. Returns NULL on submit failure (in which
- * case the reactor has already released every entry). */
+/* Fire-and-forget vectored write — zend_string mode (default).
+ * `bufs` is an array of OWNED zend_string references; reactor releases
+ * one ref per entry on completion. Wire order = array order. Returns
+ * NULL on submit failure (every entry already released). */
 #define ZEND_ASYNC_IO_WRITEV(io, bufs, nbufs) \
-	zend_async_io_writev_fn(io, bufs, nbufs)
+	zend_async_io_writev_fn((io), (const void *)(bufs), (nbufs), \
+			ZEND_ASYNC_IO_WRITEV_ZSTR, NULL, NULL)
+/* Fire-and-forget vectored write — plain-iovec mode. `iov` is an array
+ * of (base, len) zend_async_buf_t pointing into caller memory; reactor
+ * calls free_cb(user_data, io) once on completion or submit failure.
+ * Wire order = array order. */
+#define ZEND_ASYNC_IO_WRITEV_EX(io, iov, niov, free_cb, user_data) \
+	zend_async_io_writev_fn((io), (const void *)(iov), (niov), \
+			ZEND_ASYNC_IO_WRITEV_IOV, (free_cb), (user_data))
 #define ZEND_ASYNC_IO_CLOSE(io)                zend_async_io_close_fn(io)
 #define ZEND_ASYNC_IO_AWAIT(io, events, tv)    zend_async_io_await_fn(io, events, tv)
 #define ZEND_ASYNC_IO_FLUSH(io)                zend_async_io_flush_fn(io)
