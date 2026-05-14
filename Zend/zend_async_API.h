@@ -20,10 +20,11 @@
 #include "zend_atomic.h"
 #include "zend_globals.h"
 #include "zend_stream.h"
+#include "TSRM.h"
 
-#define ZEND_ASYNC_API "TrueAsync ABI v0.13.0"
+#define ZEND_ASYNC_API "TrueAsync ABI v0.14.0"
 #define ZEND_ASYNC_API_VERSION_MAJOR 0
-#define ZEND_ASYNC_API_VERSION_MINOR 13
+#define ZEND_ASYNC_API_VERSION_MINOR 14
 #define ZEND_ASYNC_API_VERSION_PATCH 0
 
 #define ZEND_ASYNC_API_VERSION_NUMBER \
@@ -1236,8 +1237,16 @@ struct _zend_async_thread_context_s {
 	 * Set in child thread after zend_catch, read in parent by load_result. */
 	char *bailout_error_message;
 
-	/* Back-pointer to event (NULL for lightweight/pool threads) */
-	zend_async_thread_event_t *event;
+	/* Back-pointer to event (NULL for lightweight/pool threads).
+	 * Atomic + event_mutex form the child↔parent handoff guard: the parent's
+	 * dispose path stores NULL here and drains event_mutex before freeing the
+	 * event, so the child never touches a freed event. */
+	zend_atomic_ptr event;
+
+	/* Guards the final result/exception handoff into `event`. Held by the
+	 * child while it writes into the event, and by the parent (empty
+	 * lock/unlock barrier) before it frees the event. */
+	MUTEX_T event_mutex;
 
 	/* C-level entry point (NULL when using PHP closure via snapshot) */
 	zend_async_thread_internal_entry_t *internal_entry;
@@ -2665,6 +2674,9 @@ END_EXTERN_C()
 		} \
 		if ((ctx)->bailout_error_message) { \
 			pefree((ctx)->bailout_error_message, 1); \
+		} \
+		if ((ctx)->event_mutex) { \
+			tsrm_mutex_free((ctx)->event_mutex); \
 		} \
 		pefree((ctx), 1); \
 	} \

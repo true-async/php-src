@@ -58,6 +58,9 @@ typedef struct zend_atomic_int64_s {
 	volatile int64_t value;
 # endif
 } zend_atomic_int64;
+typedef struct zend_atomic_ptr_s {
+	void * volatile value;
+} zend_atomic_ptr;
 #elif defined(HAVE_C11_ATOMICS)
 typedef struct zend_atomic_bool_s {
 	_Atomic(bool) value;
@@ -68,6 +71,9 @@ typedef struct zend_atomic_int_s {
 typedef struct zend_atomic_int64_s {
 	_Atomic(int64_t) value;
 } zend_atomic_int64;
+typedef struct zend_atomic_ptr_s {
+	_Atomic(void *) value;
+} zend_atomic_ptr;
 #else
 typedef struct zend_atomic_bool_s {
 	volatile bool value;
@@ -78,6 +84,9 @@ typedef struct zend_atomic_int_s {
 typedef struct zend_atomic_int64_s {
 	volatile int64_t value;
 } zend_atomic_int64;
+typedef struct zend_atomic_ptr_s {
+	void * volatile value;
+} zend_atomic_ptr;
 #endif
 
 BEGIN_EXTERN_C()
@@ -102,14 +111,22 @@ BEGIN_EXTERN_C()
 #ifndef InterlockedCompareExchange
 #define InterlockedCompareExchange _InterlockedCompareExchange
 #endif
+#ifndef InterlockedExchangePointer
+#define InterlockedExchangePointer _InterlockedExchangePointer
+#endif
+#ifndef InterlockedCompareExchangePointer
+#define InterlockedCompareExchangePointer _InterlockedCompareExchangePointer
+#endif
 
 #define ZEND_ATOMIC_BOOL_INIT(obj, desired) ((obj)->value = (desired))
 #define ZEND_ATOMIC_INT_INIT(obj, desired)  ((obj)->value = (desired))
 #define ZEND_ATOMIC_INT64_INIT(obj, desired) ((obj)->value = (desired))
+#define ZEND_ATOMIC_PTR_INIT(obj, desired) ((obj)->value = (desired))
 
 #define ZEND_ATOMIC_BOOL_INITIALIZER(desired) {.value = (desired)}
 #define ZEND_ATOMIC_INT_INITIALIZER(desired)  {.value = (desired)}
 #define ZEND_ATOMIC_INT64_INITIALIZER(desired) {.value = (desired)}
+#define ZEND_ATOMIC_PTR_INITIALIZER(desired) {.value = (desired)}
 
 static zend_always_inline bool zend_atomic_bool_exchange_ex(zend_atomic_bool *obj, bool desired) {
 	return InterlockedExchange8(&obj->value, desired);
@@ -180,15 +197,26 @@ static zend_always_inline void zend_atomic_int64_store_ex(zend_atomic_int64 *obj
 	(void)InterlockedExchange64(&obj->value, desired);
 }
 
+/* On this platform it is non-const due to Interlocked API */
+static zend_always_inline void *zend_atomic_ptr_load_ex(zend_atomic_ptr *obj) {
+	return InterlockedCompareExchangePointer(&obj->value, NULL, NULL);
+}
+
+static zend_always_inline void zend_atomic_ptr_store_ex(zend_atomic_ptr *obj, void *desired) {
+	(void)InterlockedExchangePointer(&obj->value, desired);
+}
+
 #elif defined(HAVE_C11_ATOMICS)
 
 #define ZEND_ATOMIC_BOOL_INIT(obj, desired) __c11_atomic_init(&(obj)->value, (desired))
 #define ZEND_ATOMIC_INT_INIT(obj, desired)  __c11_atomic_init(&(obj)->value, (desired))
 #define ZEND_ATOMIC_INT64_INIT(obj, desired) __c11_atomic_init(&(obj)->value, (desired))
+#define ZEND_ATOMIC_PTR_INIT(obj, desired) __c11_atomic_init(&(obj)->value, (desired))
 
 #define ZEND_ATOMIC_BOOL_INITIALIZER(desired) {.value = (desired)}
 #define ZEND_ATOMIC_INT_INITIALIZER(desired)  {.value = (desired)}
 #define ZEND_ATOMIC_INT64_INITIALIZER(desired) {.value = (desired)}
+#define ZEND_ATOMIC_PTR_INITIALIZER(desired) {.value = (desired)}
 
 static zend_always_inline bool zend_atomic_bool_exchange_ex(zend_atomic_bool *obj, bool desired) {
 	return __c11_atomic_exchange(&obj->value, desired, __ATOMIC_SEQ_CST);
@@ -235,6 +263,14 @@ static zend_always_inline void zend_atomic_int_store_ex(zend_atomic_int *obj, in
 }
 
 static zend_always_inline void zend_atomic_int64_store_ex(zend_atomic_int64 *obj, int64_t desired) {
+	__c11_atomic_store(&obj->value, desired, __ATOMIC_SEQ_CST);
+}
+
+static zend_always_inline void *zend_atomic_ptr_load_ex(const zend_atomic_ptr *obj) {
+	return __c11_atomic_load(&obj->value, __ATOMIC_SEQ_CST);
+}
+
+static zend_always_inline void zend_atomic_ptr_store_ex(zend_atomic_ptr *obj, void *desired) {
 	__c11_atomic_store(&obj->value, desired, __ATOMIC_SEQ_CST);
 }
 
@@ -245,10 +281,12 @@ static zend_always_inline void zend_atomic_int64_store_ex(zend_atomic_int64 *obj
 #define ZEND_ATOMIC_BOOL_INIT(obj, desired) ((obj)->value = (desired))
 #define ZEND_ATOMIC_INT_INIT(obj, desired)  ((obj)->value = (desired))
 #define ZEND_ATOMIC_INT64_INIT(obj, desired) ((obj)->value = (desired))
+#define ZEND_ATOMIC_PTR_INIT(obj, desired) ((obj)->value = (desired))
 
 #define ZEND_ATOMIC_BOOL_INITIALIZER(desired) {.value = (desired)}
 #define ZEND_ATOMIC_INT_INITIALIZER(desired)  {.value = (desired)}
 #define ZEND_ATOMIC_INT64_INITIALIZER(desired) {.value = (desired)}
+#define ZEND_ATOMIC_PTR_INITIALIZER(desired) {.value = (desired)}
 
 static zend_always_inline bool zend_atomic_bool_exchange_ex(zend_atomic_bool *obj, bool desired) {
 	bool prev = false;
@@ -310,15 +348,27 @@ static zend_always_inline void zend_atomic_int64_store_ex(zend_atomic_int64 *obj
 	__atomic_store(&obj->value, &desired, __ATOMIC_SEQ_CST);
 }
 
+static zend_always_inline void *zend_atomic_ptr_load_ex(const zend_atomic_ptr *obj) {
+	void *prev = NULL;
+	__atomic_load(&obj->value, &prev, __ATOMIC_SEQ_CST);
+	return prev;
+}
+
+static zend_always_inline void zend_atomic_ptr_store_ex(zend_atomic_ptr *obj, void *desired) {
+	__atomic_store(&obj->value, &desired, __ATOMIC_SEQ_CST);
+}
+
 #elif defined(HAVE_SYNC_ATOMICS)
 
 #define ZEND_ATOMIC_BOOL_INIT(obj, desired) ((obj)->value = (desired))
 #define ZEND_ATOMIC_INT_INIT(obj, desired)  ((obj)->value = (desired))
 #define ZEND_ATOMIC_INT64_INIT(obj, desired) ((obj)->value = (desired))
+#define ZEND_ATOMIC_PTR_INIT(obj, desired) ((obj)->value = (desired))
 
 #define ZEND_ATOMIC_BOOL_INITIALIZER(desired) {.value = (desired)}
 #define ZEND_ATOMIC_INT_INITIALIZER(desired)  {.value = (desired)}
 #define ZEND_ATOMIC_INT64_INITIALIZER(desired) {.value = (desired)}
+#define ZEND_ATOMIC_PTR_INITIALIZER(desired) {.value = (desired)}
 
 static zend_always_inline bool zend_atomic_bool_exchange_ex(zend_atomic_bool *obj, bool desired) {
 	bool prev = __sync_lock_test_and_set(&obj->value, desired);
@@ -406,6 +456,16 @@ static zend_always_inline void zend_atomic_int64_store_ex(zend_atomic_int64 *obj
 	__sync_synchronize();
 }
 
+static zend_always_inline void *zend_atomic_ptr_load_ex(zend_atomic_ptr *obj) {
+	return __sync_val_compare_and_swap(&obj->value, NULL, NULL);
+}
+
+static zend_always_inline void zend_atomic_ptr_store_ex(zend_atomic_ptr *obj, void *desired) {
+	__sync_synchronize();
+	obj->value = desired;
+	__sync_synchronize();
+}
+
 #elif defined(HAVE_NO_ATOMICS)
 
 #warning No atomics support detected. Please open an issue with platform details.
@@ -413,10 +473,12 @@ static zend_always_inline void zend_atomic_int64_store_ex(zend_atomic_int64 *obj
 #define ZEND_ATOMIC_BOOL_INIT(obj, desired) ((obj)->value = (desired))
 #define ZEND_ATOMIC_INT_INIT(obj, desired)  ((obj)->value = (desired))
 #define ZEND_ATOMIC_INT64_INIT(obj, desired) ((obj)->value = (desired))
+#define ZEND_ATOMIC_PTR_INIT(obj, desired) ((obj)->value = (desired))
 
 #define ZEND_ATOMIC_BOOL_INITIALIZER(desired) {.value = (desired)}
 #define ZEND_ATOMIC_INT_INITIALIZER(desired)  {.value = (desired)}
 #define ZEND_ATOMIC_INT64_INITIALIZER(desired) {.value = (desired)}
+#define ZEND_ATOMIC_PTR_INITIALIZER(desired) {.value = (desired)}
 
 static zend_always_inline void zend_atomic_bool_store_ex(zend_atomic_bool *obj, bool desired) {
 	obj->value = desired;
@@ -475,6 +537,10 @@ static zend_always_inline int64_t zend_atomic_int64_load_ex(const zend_atomic_in
 	return obj->value;
 }
 
+static zend_always_inline void *zend_atomic_ptr_load_ex(const zend_atomic_ptr *obj) {
+	return obj->value;
+}
+
 static zend_always_inline bool zend_atomic_bool_exchange_ex(zend_atomic_bool *obj, bool desired) {
 	bool prev = obj->value;
 	obj->value = desired;
@@ -498,6 +564,7 @@ static zend_always_inline int64_t zend_atomic_int64_exchange_ex(zend_atomic_int6
 ZEND_API void zend_atomic_bool_init(zend_atomic_bool *obj, bool desired);
 ZEND_API void zend_atomic_int_init(zend_atomic_int *obj, int desired);
 ZEND_API void zend_atomic_int64_init(zend_atomic_int64 *obj, int64_t desired);
+ZEND_API void zend_atomic_ptr_init(zend_atomic_ptr *obj, void *desired);
 
 ZEND_API bool zend_atomic_bool_exchange(zend_atomic_bool *obj, bool desired);
 ZEND_API int zend_atomic_int_exchange(zend_atomic_int *obj, int desired);
@@ -510,16 +577,19 @@ ZEND_API bool zend_atomic_int64_compare_exchange(zend_atomic_int64 *obj, int64_t
 ZEND_API void zend_atomic_bool_store(zend_atomic_bool *obj, bool desired);
 ZEND_API void zend_atomic_int_store(zend_atomic_int *obj, int desired);
 ZEND_API void zend_atomic_int64_store(zend_atomic_int64 *obj, int64_t desired);
+ZEND_API void zend_atomic_ptr_store(zend_atomic_ptr *obj, void *desired);
 
 #if (defined(ZEND_WIN32) && !defined(HAVE_C11_ATOMICS)) || defined(HAVE_SYNC_ATOMICS)
 /* On these platforms it is non-const due to underlying APIs. */
 ZEND_API bool zend_atomic_bool_load(zend_atomic_bool *obj);
 ZEND_API int zend_atomic_int_load(zend_atomic_int *obj);
 ZEND_API int64_t zend_atomic_int64_load(zend_atomic_int64 *obj);
+ZEND_API void *zend_atomic_ptr_load(zend_atomic_ptr *obj);
 #else
 ZEND_API bool zend_atomic_bool_load(const zend_atomic_bool *obj);
 ZEND_API int zend_atomic_int_load(const zend_atomic_int *obj);
 ZEND_API int64_t zend_atomic_int64_load(const zend_atomic_int64 *obj);
+ZEND_API void *zend_atomic_ptr_load(const zend_atomic_ptr *obj);
 #endif
 
 /**

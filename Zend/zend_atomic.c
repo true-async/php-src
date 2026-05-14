@@ -35,6 +35,10 @@ ZEND_API void zend_atomic_int64_init(zend_atomic_int64 *obj, int64_t desired) {
 	ZEND_ATOMIC_INT64_INIT(obj, desired);
 }
 
+ZEND_API void zend_atomic_ptr_init(zend_atomic_ptr *obj, void *desired) {
+	ZEND_ATOMIC_PTR_INIT(obj, desired);
+}
+
 ZEND_API bool zend_atomic_bool_exchange(zend_atomic_bool *obj, bool desired) {
 	return zend_atomic_bool_exchange_ex(obj, desired);
 }
@@ -74,6 +78,10 @@ ZEND_API void zend_atomic_int64_store(zend_atomic_int64 *obj, int64_t desired) {
 	zend_atomic_int64_store_ex(obj, desired);
 }
 
+ZEND_API void zend_atomic_ptr_store(zend_atomic_ptr *obj, void *desired) {
+	zend_atomic_ptr_store_ex(obj, desired);
+}
+
 #if (defined(ZEND_WIN32) || defined(HAVE_SYNC_ATOMICS)) && !defined(HAVE_C11_ATOMICS)
 /* On these platforms it is non-const due to underlying APIs. */
 ZEND_API bool zend_atomic_bool_load(zend_atomic_bool *obj) {
@@ -85,6 +93,9 @@ ZEND_API int zend_atomic_int_load(zend_atomic_int *obj) {
 ZEND_API int64_t zend_atomic_int64_load(zend_atomic_int64 *obj) {
 	return zend_atomic_int64_load_ex(obj);
 }
+ZEND_API void *zend_atomic_ptr_load(zend_atomic_ptr *obj) {
+	return zend_atomic_ptr_load_ex(obj);
+}
 #else
 ZEND_API bool zend_atomic_bool_load(const zend_atomic_bool *obj) {
 	return zend_atomic_bool_load_ex(obj);
@@ -94,5 +105,8 @@ ZEND_API int zend_atomic_int_load(const zend_atomic_int *obj) {
 }
 ZEND_API int64_t zend_atomic_int64_load(const zend_atomic_int64 *obj) {
 	return zend_atomic_int64_load_ex(obj);
+}
+ZEND_API void *zend_atomic_ptr_load(const zend_atomic_ptr *obj) {
+	return zend_atomic_ptr_load_ex(obj);
 }
 #endif
