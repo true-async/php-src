@@ -20,7 +20,6 @@
 #include "zend_atomic.h"
 #include "zend_globals.h"
 #include "zend_stream.h"
-#include "TSRM.h"
 
 #define ZEND_ASYNC_API "TrueAsync ABI v0.14.0"
 #define ZEND_ASYNC_API_VERSION_MAJOR 0
@@ -1245,8 +1244,11 @@ struct _zend_async_thread_context_s {
 
 	/* Guards the final result/exception handoff into `event`. Held by the
 	 * child while it writes into the event, and by the parent (empty
-	 * lock/unlock barrier) before it frees the event. */
-	MUTEX_T event_mutex;
+	 * lock/unlock barrier) before it frees the event. Typed as void* so the
+	 * context layout is identical in ZTS and NTS builds; it holds a TSRM
+	 * MUTEX_T and is only ever allocated/used under #ifdef ZTS (spawn_thread
+	 * cannot create real OS threads without ZTS, so NTS leaves it NULL). */
+	void *event_mutex;
 
 	/* C-level entry point (NULL when using PHP closure via snapshot) */
 	zend_async_thread_internal_entry_t *internal_entry;
@@ -2663,6 +2665,38 @@ END_EXTERN_C()
 #define ZEND_ASYNC_THREAD_SNAPSHOT_DESTROY(snapshot) \
 	zend_async_thread_snapshot_destroy_fn(snapshot)
 
+/* Thread-context event_mutex helpers.
+ *
+ * The mutex guards the child/parent result handoff and is only meaningful
+ * with real OS threads, i.e. under ZTS. Under NTS spawn_thread cannot create
+ * threads, so the helpers are declared but compile to no-ops — callers stay
+ * #ifdef-free and the context layout is identical in both builds. */
+#ifdef ZTS
+# define ZEND_ASYNC_THREAD_CONTEXT_EVENT_MUTEX_ALLOC(ctx) \
+	((ctx)->event_mutex = (void *) tsrm_mutex_alloc())
+# define ZEND_ASYNC_THREAD_CONTEXT_EVENT_MUTEX_FREE(ctx) do { \
+	if ((ctx)->event_mutex != NULL) { \
+		tsrm_mutex_free((MUTEX_T) (ctx)->event_mutex); \
+		(ctx)->event_mutex = NULL; \
+	} \
+} while (0)
+# define ZEND_ASYNC_THREAD_CONTEXT_EVENT_MUTEX_LOCK(ctx) do { \
+	if ((ctx)->event_mutex != NULL) { \
+		tsrm_mutex_lock((MUTEX_T) (ctx)->event_mutex); \
+	} \
+} while (0)
+# define ZEND_ASYNC_THREAD_CONTEXT_EVENT_MUTEX_UNLOCK(ctx) do { \
+	if ((ctx)->event_mutex != NULL) { \
+		tsrm_mutex_unlock((MUTEX_T) (ctx)->event_mutex); \
+	} \
+} while (0)
+#else
+# define ZEND_ASYNC_THREAD_CONTEXT_EVENT_MUTEX_ALLOC(ctx)  ((ctx)->event_mutex = NULL)
+# define ZEND_ASYNC_THREAD_CONTEXT_EVENT_MUTEX_FREE(ctx)   ((void) 0)
+# define ZEND_ASYNC_THREAD_CONTEXT_EVENT_MUTEX_LOCK(ctx)   ((void) 0)
+# define ZEND_ASYNC_THREAD_CONTEXT_EVENT_MUTEX_UNLOCK(ctx) ((void) 0)
+#endif
+
 #define ZEND_ASYNC_THREAD_CONTEXT_ADDREF(ctx) \
 	zend_atomic_int_inc(&(ctx)->ref_count)
 
@@ -2675,9 +2709,7 @@ END_EXTERN_C()
 		if ((ctx)->bailout_error_message) { \
 			pefree((ctx)->bailout_error_message, 1); \
 		} \
-		if ((ctx)->event_mutex) { \
-			tsrm_mutex_free((ctx)->event_mutex); \
-		} \
+		ZEND_ASYNC_THREAD_CONTEXT_EVENT_MUTEX_FREE(ctx); \
 		pefree((ctx), 1); \
 	} \
 } while (0)
