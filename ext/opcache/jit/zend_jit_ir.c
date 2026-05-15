@@ -11165,6 +11165,29 @@ static int zend_jit_leave_func(zend_jit_ctx         *jit,
 	// JIT: EG(vm_stack_top) = (zval*)execute_data
 	ir_STORE(jit_EG(vm_stack_top), jit_FP(jit));
 
+	/* #118 fix: clear STACK_REF for all callee's variables BEFORE the FP swap.
+	 *
+	 * Without this clear, jit_SNAPSHOT() (auto-invoked from any subsequent
+	 * ir_GUARD/ir_GUARD_NOT in this function or after it) walks STACK_REF[],
+	 * sees that some SSA value (e.g. the trace's $by) still has a tracked
+	 * register binding to a callee-frame home slot (`T2 @ FP+0x70`), and the
+	 * IR register-allocator emits a materializing STORE to that home slot.
+	 * Because the materialization is scheduled AFTER `jit_STORE_FP(prev)`
+	 * (below), the `RLOAD(ZREG_FP)` in the materialization sees the *caller's*
+	 * FP — and the store lands in the caller's CV slot at the same offset.
+	 *
+	 * After this point we are leaving the callee frame; any callee SSA value
+	 * still in a register is irrelevant — the interpreter will not read T-slots
+	 * of a returned function. Clearing STACK_REF tells the snapshot machinery
+	 * "do not materialize". Safe and minimal. */
+	if (JIT_G(trigger) == ZEND_JIT_ON_HOT_TRACE && JIT_G(current_frame)) {
+		zend_jit_trace_stack *_stack = JIT_G(current_frame)->stack;
+		uint32_t _stack_size = op_array->last_var + op_array->T;
+		for (uint32_t _i = 0; _i < _stack_size; _i++) {
+			CLEAR_STACK_REF(_stack, _i);
+		}
+	}
+
 	// JITL execute_data = EX(prev_execute_data)
 	jit_STORE_FP(jit, ir_LOAD_A(jit_EX(prev_execute_data)));
 
@@ -16736,7 +16759,6 @@ static zend_vm_opcode_handler_t zend_jit_finish(zend_jit_ctx *jit)
 	void *entry;
 	size_t size;
 	zend_string *str = NULL;
-
 	if (JIT_G(debug) & (ZEND_JIT_DEBUG_ASM|ZEND_JIT_DEBUG_GDB|ZEND_JIT_DEBUG_PERF|ZEND_JIT_DEBUG_PERF_DUMP|
 			ZEND_JIT_DEBUG_IR_SRC|ZEND_JIT_DEBUG_IR_AFTER_SCCP|ZEND_JIT_DEBUG_IR_AFTER_SCCP|
 			ZEND_JIT_DEBUG_IR_AFTER_SCHEDULE|ZEND_JIT_DEBUG_IR_AFTER_REGS|ZEND_JIT_DEBUG_IR_FINAL|ZEND_JIT_DEBUG_IR_CODEGEN)) {
