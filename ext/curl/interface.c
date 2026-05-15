@@ -655,6 +655,18 @@ static int curl_progress(void *clientp, double dltotal, double dlnow, double ult
 		}
 	}
 
+	/* Capture an exception from the user callback onto the async event so it is
+	 * delivered through the coroutine to the awaiter, and abort the transfer.
+	 * Without this, EG(exception) stays set across further libcurl iterations
+	 * and may escape outside the coroutine on some platforms (notably macOS). */
+	if (EG(exception) && ch->async_event != NULL) {
+		curl_async_event_t *curl_event = (curl_async_event_t *) ch->async_event;
+		GC_ADDREF(EG(exception));
+		curl_async_event_set_callback_exception(curl_event, EG(exception));
+		zend_clear_exception();
+		rval = 1;
+	}
+
 	zval_ptr_dtor(&args[0]);
 	return rval;
 }
@@ -694,6 +706,15 @@ static int curl_xferinfo(void *clientp, curl_off_t dltotal, curl_off_t dlnow, cu
 		if (0 != php_curl_get_long(&retval)) {
 			rval = 1;
 		}
+	}
+
+	/* Same exception-handoff as curl_progress — see comment there. */
+	if (EG(exception) && ch->async_event != NULL) {
+		curl_async_event_t *curl_event = (curl_async_event_t *) ch->async_event;
+		GC_ADDREF(EG(exception));
+		curl_async_event_set_callback_exception(curl_event, EG(exception));
+		zend_clear_exception();
+		rval = 1;
 	}
 
 	zval_ptr_dtor(&argv[0]);
