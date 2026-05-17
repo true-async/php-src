@@ -21,9 +21,9 @@
 #include "zend_globals.h"
 #include "zend_stream.h"
 
-#define ZEND_ASYNC_API "TrueAsync ABI v0.14.0"
+#define ZEND_ASYNC_API "TrueAsync ABI v0.15.0"
 #define ZEND_ASYNC_API_VERSION_MAJOR 0
-#define ZEND_ASYNC_API_VERSION_MINOR 14
+#define ZEND_ASYNC_API_VERSION_MINOR 15
 #define ZEND_ASYNC_API_VERSION_PATCH 0
 
 #define ZEND_ASYNC_API_VERSION_NUMBER \
@@ -1966,9 +1966,16 @@ struct _zend_async_thread_pool_s {
 	if (_old == 1) { (pool)->dispose(pool); } \
 } while (0)
 
-/* Factory type for creating thread pools */
+/* Factory type for creating thread pools.
+ *
+ * `bootloader` is an optional closure deep-copied once per pool and executed
+ * by each worker before its task loop. `coroutine_mode`, when true, makes
+ * each submitted PHP-closure task run as its own coroutine in the worker's
+ * scheduler. Pass `NULL` / `false` for the basic behaviour — see the
+ * `ZEND_ASYNC_NEW_THREAD_POOL(...)` convenience macro. */
 typedef zend_async_thread_pool_t *(*zend_async_new_thread_pool_t)(
-	int32_t worker_count, int32_t queue_size);
+	int32_t worker_count, int32_t queue_size,
+	const zend_fcall_t *bootloader, bool coroutine_mode);
 
 ///////////////////////////////////////////////////////////////
 /// Group (TaskGroup)
@@ -2334,8 +2341,12 @@ ZEND_API extern zend_async_queue_task_t zend_async_queue_task_fn;
 ZEND_API extern zend_async_new_thread_pool_t zend_async_new_thread_pool_fn;
 ZEND_API extern zend_async_start_thread_t zend_async_start_thread_fn;
 
+/* Basic form — no bootloader, synchronous tasks. */
 #define ZEND_ASYNC_NEW_THREAD_POOL(worker_count, queue_size) \
-	zend_async_new_thread_pool_fn((worker_count), (queue_size))
+	zend_async_new_thread_pool_fn((worker_count), (queue_size), NULL, false)
+/* Extended form — pass bootloader closure and/or enable coroutine_mode. */
+#define ZEND_ASYNC_NEW_THREAD_POOL_EX(worker_count, queue_size, bootloader, coroutine_mode) \
+	zend_async_new_thread_pool_fn((worker_count), (queue_size), (bootloader), (coroutine_mode))
 #define ZEND_ASYNC_START_THREAD(entry, context) \
 	zend_async_start_thread_fn((entry), (context))
 
