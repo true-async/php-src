@@ -21,9 +21,9 @@
 #include "zend_globals.h"
 #include "zend_stream.h"
 
-#define ZEND_ASYNC_API "TrueAsync ABI v0.15.0"
+#define ZEND_ASYNC_API "TrueAsync ABI v0.16.0"
 #define ZEND_ASYNC_API_VERSION_MAJOR 0
-#define ZEND_ASYNC_API_VERSION_MINOR 15
+#define ZEND_ASYNC_API_VERSION_MINOR 16
 #define ZEND_ASYNC_API_VERSION_PATCH 0
 
 #define ZEND_ASYNC_API_VERSION_NUMBER \
@@ -202,9 +202,25 @@ typedef struct _zend_async_group_s zend_async_group_t;
 typedef struct _zend_fcall_s zend_fcall_t;
 typedef void (*zend_coroutine_entry_t)(void);
 
+/* Forward declarations for typedefs referenced in channel method types
+ * (full definitions live further down in this header). */
+typedef struct _zend_async_event_s zend_async_event_t;
+
 /* Channel method function types */
 typedef bool (*zend_channel_send_t)(zend_async_channel_t *channel, zval *value);
-typedef bool (*zend_channel_receive_t)(zend_async_channel_t *channel, zval *result);
+/**
+ * @param result        Output for the popped value, or NULL for **wait-only**
+ *                      mode (suspend until any wake event without consuming).
+ * @param cancellation  Optional extra event the call also suspends on. When
+ *                      it fires, the call returns false WITHOUT raising
+ *                      ThreadChannelException — caller distinguishes
+ *                      "channel closed" (exception set) from "cancellation
+ *                      fired" (no exception) and decides what to do.
+ *                      Pass NULL for the basic behaviour.
+ */
+typedef bool (*zend_channel_receive_t)(
+	zend_async_channel_t *channel, zval *result,
+	zend_async_event_t *cancellation);
 typedef void (*zend_channel_close_t)(zend_async_channel_t *channel);
 
 /* Pool CircuitBreaker state */
@@ -244,7 +260,6 @@ typedef bool (*zend_coroutine_switch_handler_fn)(
 		/* returns: true = keep handler, false = remove handler after execution */
 );
 
-typedef struct _zend_async_event_s zend_async_event_t;
 typedef struct _zend_async_event_callback_s zend_async_event_callback_t;
 typedef struct _zend_async_waker_trigger_s zend_async_waker_trigger_t;
 typedef struct _zend_coroutine_event_callback_s zend_coroutine_event_callback_t;
