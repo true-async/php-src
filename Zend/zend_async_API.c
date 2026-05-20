@@ -1814,15 +1814,24 @@ static zend_async_listen_event_t *socket_listen_stub(
 	return NULL;
 }
 
+static zend_async_listen_event_t *socket_listen_fd_stub(
+		zend_socket_t fd, int backlog, uint32_t flags, size_t extra_size)
+{
+	ASYNC_THROW_ERROR("Socket listening API is not enabled");
+	return NULL;
+}
+
 /* Socket listening function pointers */
 ZEND_API zend_async_socket_listen_t zend_async_socket_listen_fn = socket_listen_stub;
+ZEND_API zend_async_socket_listen_fd_t zend_async_socket_listen_fd_fn = socket_listen_fd_stub;
 
 /* Registration lock for socket listening */
 static zend_atomic_bool socket_listening_lock = { 0 };
 static char *socket_listening_module_name = NULL;
 
 ZEND_API bool zend_async_socket_listening_register(
-		char *module, bool allow_override, zend_async_socket_listen_t socket_listen_fn)
+		char *module, bool allow_override, zend_async_socket_listen_t socket_listen_fn,
+		zend_async_socket_listen_fd_t socket_listen_fd_fn)
 {
 	if (zend_atomic_bool_exchange(&socket_listening_lock, 1)) {
 		return false;
@@ -1842,6 +1851,7 @@ ZEND_API bool zend_async_socket_listening_register(
 
 	socket_listening_module_name = module;
 	zend_async_socket_listen_fn = socket_listen_fn;
+	zend_async_socket_listen_fd_fn = socket_listen_fd_fn;
 
 	return true;
 }
