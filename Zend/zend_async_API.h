@@ -21,9 +21,9 @@
 #include "zend_globals.h"
 #include "zend_stream.h"
 
-#define ZEND_ASYNC_API "TrueAsync ABI v0.16.0"
+#define ZEND_ASYNC_API "TrueAsync ABI v0.17.0"
 #define ZEND_ASYNC_API_VERSION_MAJOR 0
-#define ZEND_ASYNC_API_VERSION_MINOR 16
+#define ZEND_ASYNC_API_VERSION_MINOR 17
 #define ZEND_ASYNC_API_VERSION_PATCH 0
 
 #define ZEND_ASYNC_API_VERSION_NUMBER \
@@ -312,6 +312,7 @@ typedef struct _zend_async_listen_event_s zend_async_listen_event_t;
  * ignored by reactors for forward compatibility. */
 #define ZEND_ASYNC_LISTEN_F_REUSEPORT  (1u << 0) /* SO_REUSEPORT / UV_TCP_REUSEPORT */
 #define ZEND_ASYNC_LISTEN_F_IPV6ONLY   (1u << 1) /* IPV6_V6ONLY on AF_INET6 */
+#define ZEND_ASYNC_LISTEN_F_UNIX       (1u << 2) /* AF_UNIX socket — host is a filesystem path, port ignored */
 
 /* Flags for zend_async_udp_bind_fn. Bitfield; unknown bits must be ignored
  * by reactors for forward compatibility. Added for HTTP/3 UDP listeners —
@@ -481,6 +482,15 @@ typedef zend_async_exec_event_t *(*zend_async_new_exec_event_t)(zend_async_exec_
 
 typedef zend_async_listen_event_t *(*zend_async_socket_listen_t)(
 		const char *host, int port, int backlog, uint32_t flags, size_t extra_size);
+
+/* Build a listen event over an already-bound, already-listening socket fd.
+ * The reactor takes ownership of `fd` — it is closed when the listen event
+ * is disposed, and closed by the call itself if it returns NULL. Enables the
+ * shared-listen-fd worker model: one fd is bound once, then each worker
+ * thread builds its own listen event (its own loop handle) over a dup of it.
+ * The ZEND_ASYNC_LISTEN_F_UNIX flag selects uv_pipe_t vs uv_tcp_t. */
+typedef zend_async_listen_event_t *(*zend_async_socket_listen_fd_t)(
+		zend_socket_t fd, int backlog, uint32_t flags, size_t extra_size);
 
 typedef int (*zend_async_listen_get_local_address_t)(
 		zend_async_listen_event_t *listen_event, char *host, size_t host_len, int *port);
@@ -2331,6 +2341,7 @@ ZEND_API extern zend_async_new_filesystem_event_t zend_async_new_filesystem_even
 /* Socket Listening API */
 
 ZEND_API extern zend_async_socket_listen_t zend_async_socket_listen_fn;
+ZEND_API extern zend_async_socket_listen_fd_t zend_async_socket_listen_fd_fn;
 
 /* DNS API */
 
@@ -2459,7 +2470,8 @@ ZEND_API void zend_async_pool_api_register(
 		zend_async_pool_close_t close_fn);
 
 ZEND_API bool zend_async_socket_listening_register(
-		char *module, bool allow_override, zend_async_socket_listen_t socket_listen_fn);
+		char *module, bool allow_override, zend_async_socket_listen_t socket_listen_fn,
+		zend_async_socket_listen_fd_t socket_listen_fd_fn);
 
 ZEND_API bool zend_async_io_register(char *module, bool allow_override,
 		zend_async_io_create_t create_fn, zend_async_io_read_t read_fn,
@@ -2793,6 +2805,9 @@ END_EXTERN_C()
 	zend_async_socket_listen_fn(host, port, backlog, 0, 0)
 #define ZEND_ASYNC_SOCKET_LISTEN_EX(host, port, backlog, flags, extra_size) \
 	zend_async_socket_listen_fn(host, port, backlog, flags, extra_size)
+/* Listen over an already-bound fd; the reactor takes ownership of fd. */
+#define ZEND_ASYNC_SOCKET_LISTEN_FD(fd, backlog, flags, extra_size) \
+	zend_async_socket_listen_fd_fn(fd, backlog, flags, extra_size)
 
 /* Async IO API Macros */
 #define ZEND_ASYNC_IO_CREATE(fd, type, state)  zend_async_io_create_fn(fd, type, state)
