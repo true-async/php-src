@@ -515,11 +515,19 @@ static ssize_t php_stdiop_write(php_stream *stream, const char *buf, size_t coun
 
 		if (!req->completed) {
 			zend_coroutine_t *const coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
-			ZEND_ASYNC_WAKER_NEW(coroutine);
-			zend_async_resume_when(coroutine, &data->async_io->event, false,
-					zend_async_waker_callback_resolve, NULL);
-			ZEND_ASYNC_SUSPEND();
-			zend_async_waker_clean(coroutine);
+			/* The async IO event is shared by every coroutine writing this
+			 * descriptor, so any write's completion notifies them all. Keep
+			 * suspending until THIS request is the one that finished —
+			 * otherwise a spuriously woken coroutine would dispose a request
+			 * whose uv_write is still in flight, and libuv would later touch
+			 * freed memory. */
+			do {
+				ZEND_ASYNC_WAKER_NEW(coroutine);
+				zend_async_resume_when(coroutine, &data->async_io->event, false,
+						zend_async_waker_callback_resolve, NULL);
+				ZEND_ASYNC_SUSPEND();
+				zend_async_waker_clean(coroutine);
+			} while (!req->completed && EG(exception) == NULL);
 		}
 
 		if (UNEXPECTED(EG(exception)) || UNEXPECTED(req->exception != NULL)) {
@@ -629,32 +637,39 @@ static ssize_t php_stdiop_read(php_stream *stream, char *buf, size_t count)
 				? (zend_ulong)data->timeout.tv_sec * 1000 + (zend_ulong)data->timeout.tv_usec / 1000
 				: 0;
 
-			ZEND_ASYNC_WAKER_NEW(coroutine);
+			/* The async IO event is shared by every coroutine using this
+			 * descriptor, so an unrelated completion can wake us. Keep
+			 * suspending until THIS request finished — otherwise we would use
+			 * and dispose a request whose libuv operation is still in flight. */
+			do {
+				ZEND_ASYNC_WAKER_NEW(coroutine);
 
-			if (timeout_ms) {
-				zend_async_resume_when(coroutine, &ZEND_ASYNC_NEW_TIMER_EVENT(timeout_ms, false)->base, true,
-						zend_async_waker_callback_timeout, NULL);
-			}
-
-			zend_async_resume_when(coroutine, &data->async_io->event, false,
-					zend_async_waker_callback_resolve, NULL);
-
-			if (!ZEND_ASYNC_SUSPEND()) {
-				zend_async_waker_clean(coroutine);
-				if (EG(exception) != NULL
-					&& instanceof_function(EG(exception)->ce, ZEND_ASYNC_GET_EXCEPTION_CE(ZEND_ASYNC_EXCEPTION_TIMEOUT))) {
-					/* Clear the timeout exception, as we will handle it via return value. */
-					zend_clear_exception();
-
-					if (!req->completed) {
-						data->timeout_event = true;
-						req->dispose(req);
-						return -1;
-					}
+				if (timeout_ms) {
+					zend_async_resume_when(coroutine, &ZEND_ASYNC_NEW_TIMER_EVENT(timeout_ms, false)->base, true,
+							zend_async_waker_callback_timeout, NULL);
 				}
-			}
 
-			zend_async_waker_clean(coroutine);
+				zend_async_resume_when(coroutine, &data->async_io->event, false,
+						zend_async_waker_callback_resolve, NULL);
+
+				if (!ZEND_ASYNC_SUSPEND()) {
+					zend_async_waker_clean(coroutine);
+					if (EG(exception) != NULL
+						&& instanceof_function(EG(exception)->ce, ZEND_ASYNC_GET_EXCEPTION_CE(ZEND_ASYNC_EXCEPTION_TIMEOUT))) {
+						/* Clear the timeout exception, as we will handle it via return value. */
+						zend_clear_exception();
+
+						if (!req->completed) {
+							data->timeout_event = true;
+							req->dispose(req);
+							return -1;
+						}
+					}
+					break;
+				}
+
+				zend_async_waker_clean(coroutine);
+			} while (!req->completed && EG(exception) == NULL);
 		}
 
 		if (UNEXPECTED(EG(exception)) || UNEXPECTED(req->exception != NULL)) {
