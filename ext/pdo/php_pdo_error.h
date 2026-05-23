@@ -22,14 +22,14 @@ PDO_API void pdo_handle_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt);
 
 #define PDO_DBH_CLEAR_ERR()             do { \
 	ZEND_ASSERT(sizeof(dbh->error_code) == sizeof(PDO_ERR_NONE)); \
-	memcpy(dbh->error_code, PDO_ERR_NONE, sizeof(PDO_ERR_NONE)); \
+	memcpy(*pdo_dbh_error_code(dbh), PDO_ERR_NONE, sizeof(PDO_ERR_NONE)); \
 	pdo_dbh_release_last_failed_query_stmt(dbh); \
 } while (0)
 #define PDO_STMT_CLEAR_ERR() do { \
 	ZEND_ASSERT(sizeof(stmt->error_code) == sizeof(PDO_ERR_NONE)); \
 	memcpy(stmt->error_code, PDO_ERR_NONE, sizeof(PDO_ERR_NONE)); \
 } while (0)
-#define PDO_HANDLE_DBH_ERR()    if (strcmp(dbh->error_code, PDO_ERR_NONE) != 0) { pdo_handle_error(dbh, NULL); }
+#define PDO_HANDLE_DBH_ERR()    if (strcmp(*pdo_dbh_error_code(dbh), PDO_ERR_NONE) != 0) { pdo_handle_error(dbh, NULL); }
 #define PDO_HANDLE_STMT_ERR_EX(cleanup_instruction)   if (strcmp(stmt->error_code, PDO_ERR_NONE) != 0) {  cleanup_instruction pdo_handle_error(stmt->dbh, stmt); }
 #define PDO_HANDLE_STMT_ERR() PDO_HANDLE_STMT_ERR_EX(;)
 

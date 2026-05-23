@@ -55,6 +55,8 @@ typedef struct {
 
 	pdo_stmt_t  *last_failed_query_stmt;
 	zend_object *last_failed_query_stmt_obj;
+
+	pdo_error_type error_code;
 } pdo_pool_binding_t;
 
 static void pdo_pool_binding_release_query_stmt(pdo_pool_binding_t *binding)
@@ -135,6 +137,16 @@ void pdo_dbh_release_last_failed_query_stmt(pdo_dbh_t *dbh)
 	if (binding != NULL) {
 		pdo_pool_binding_release_query_stmt(binding);
 	}
+}
+
+pdo_error_type *pdo_dbh_error_code(pdo_dbh_t *dbh)
+{
+	pdo_pool_binding_t *binding = pdo_pool_current_binding(dbh);
+	if (binding != NULL) {
+		return &binding->error_code;
+	}
+
+	return &dbh->error_code;
 }
 
 /*
@@ -611,7 +623,7 @@ pdo_dbh_t *pdo_pool_acquire_conn(pdo_dbh_t *dbh)
 		}
 
 		pdo_pool_binding_release_query_stmt(binding);
-		memcpy(dbh->error_code, PDO_ERR_NONE, sizeof(pdo_error_type));
+		memcpy(binding->error_code, PDO_ERR_NONE, sizeof(pdo_error_type));
 
 		zval resource;
 		if (UNEXPECTED(!ZEND_ASYNC_POOL_ACQUIRE(dbh->pool, &resource, 0))) {
@@ -635,6 +647,7 @@ pdo_dbh_t *pdo_pool_acquire_conn(pdo_dbh_t *dbh)
 	binding->dbh = dbh;
 	binding->conn = Z_PTR(resource);
 	binding->coro_key = coro_key;
+	memcpy(binding->error_code, PDO_ERR_NONE, sizeof(pdo_error_type));
 
 	zend_hash_index_add_new_ptr(dbh->pool_bindings, coro_key, binding);
 
@@ -644,7 +657,6 @@ pdo_dbh_t *pdo_pool_acquire_conn(pdo_dbh_t *dbh)
 		binding->has_coro_callback = true;
 	}
 
-	memcpy(dbh->error_code, PDO_ERR_NONE, sizeof(pdo_error_type));
 	return binding->conn;
 }
 

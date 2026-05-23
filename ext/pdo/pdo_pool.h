@@ -64,6 +64,11 @@ pdo_stmt_t *pdo_dbh_get_last_failed_query_stmt(pdo_dbh_t *dbh);
 void pdo_dbh_set_last_failed_query_stmt(pdo_dbh_t *dbh, pdo_stmt_t *stmt, zend_object *obj);
 void pdo_dbh_release_last_failed_query_stmt(pdo_dbh_t *dbh);
 
+/* Pool-aware accessor for dbh->error_code (SQLSTATE). In pool mode returns
+ * the current coroutine's binding-local storage; falls back to template
+ * when there is no binding (top-level / non-pool). */
+pdo_error_type *pdo_dbh_error_code(pdo_dbh_t *dbh);
+
 /*
  * Per-physical-connection prepared-statement cache (opt-in).
  *
@@ -121,10 +126,11 @@ PDO_API void pdo_pool_stmt_cache_entry_free(pdo_pool_stmt_cache_entry_t *entry);
 PDO_API uint32_t pdo_pool_stmt_cache_size(const pdo_pool_stmt_cache_t *cache);
 PDO_API uint32_t pdo_pool_stmt_cache_capacity(const pdo_pool_stmt_cache_t *cache);
 
-/* Sync error_code from pooled conn to template dbh */
+/* Sync error_code from pooled conn into the current coroutine's binding
+ * storage (per-binding in pool mode, template otherwise). */
 static inline void pdo_pool_sync_error(pdo_dbh_t *dbh, const pdo_dbh_t *conn) {
 	if (conn != dbh) {
-		memcpy(dbh->error_code, conn->error_code, sizeof(pdo_error_type));
+		memcpy(*pdo_dbh_error_code(dbh), conn->error_code, sizeof(pdo_error_type));
 	}
 }
 

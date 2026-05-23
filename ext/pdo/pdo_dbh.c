@@ -71,7 +71,7 @@ PDO_API bool php_pdo_stmt_valid_db_obj_handle(const pdo_stmt_t *stmt)
 
 void pdo_raise_impl_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt, pdo_error_type sqlstate, const char *supp) /* {{{ */
 {
-	pdo_error_type *pdo_err = &dbh->error_code;
+	pdo_error_type *pdo_err = pdo_dbh_error_code(dbh);
 	const char *msg;
 
 	if (dbh->error_mode == PDO_ERRMODE_SILENT) {
@@ -129,7 +129,7 @@ void pdo_raise_impl_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt, pdo_error_type sqlst
 
 PDO_API void pdo_handle_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt) /* {{{ */
 {
-	pdo_error_type *pdo_err = &dbh->error_code;
+	pdo_error_type *pdo_err = pdo_dbh_error_code(dbh);
 	const char *msg = "<<Unknown>>";
 	char *supp = NULL;
 	zend_long native_code = 0;
@@ -1317,15 +1317,12 @@ PHP_METHOD(PDO, errorCode)
 		RETURN_STRING(failed_stmt->error_code);
 	}
 
-	if (dbh->error_code[0] == '\0') {
+	pdo_error_type *err = pdo_dbh_error_code(dbh);
+	if ((*err)[0] == '\0') {
 		RETURN_NULL();
 	}
 
-	/**
-	 * Making sure that we fallback to the default implementation
-	 * if the dbh->error_code is not null.
-	 */
-	RETURN_STRING(dbh->error_code);
+	RETURN_STRING(*err);
 }
 /* }}} */
 
@@ -1349,8 +1346,9 @@ PHP_METHOD(PDO, errorInfo)
 		add_next_index_string(return_value, failed_stmt->error_code);
 		if(!strncmp(failed_stmt->error_code, PDO_ERR_NONE, sizeof(PDO_ERR_NONE))) goto fill_array;
 	} else {
-		add_next_index_string(return_value, dbh->error_code);
-		if(!strncmp(dbh->error_code, PDO_ERR_NONE, sizeof(PDO_ERR_NONE))) goto fill_array;
+		pdo_error_type *err = pdo_dbh_error_code(dbh);
+		add_next_index_string(return_value, *err);
+		if(!strncmp(*err, PDO_ERR_NONE, sizeof(PDO_ERR_NONE))) goto fill_array;
 	}
 
 	if (dbh->methods->fetch_err) {
