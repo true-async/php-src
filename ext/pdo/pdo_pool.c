@@ -71,10 +71,12 @@ static pdo_pool_binding_t *pdo_pool_current_binding(pdo_dbh_t *dbh)
 	if (dbh->pool == NULL || dbh->pool_bindings == NULL) {
 		return NULL;
 	}
+
 	zend_coroutine_t *coro = ZEND_ASYNC_CURRENT_COROUTINE;
 	if (coro == NULL) {
 		return NULL;
 	}
+
 	return zend_hash_index_find_ptr(dbh->pool_bindings, pdo_pool_coro_key(coro));
 }
 
@@ -83,7 +85,9 @@ pdo_stmt_t *pdo_dbh_get_last_failed_query_stmt(pdo_dbh_t *dbh)
 	if (dbh->pool == NULL) {
 		return dbh->last_failed_query_stmt;
 	}
+
 	pdo_pool_binding_t *binding = pdo_pool_current_binding(dbh);
+
 	return binding ? binding->last_failed_query_stmt : NULL;
 }
 
@@ -93,19 +97,24 @@ void pdo_dbh_set_last_failed_query_stmt(pdo_dbh_t *dbh, pdo_stmt_t *stmt, zend_o
 		if (dbh->last_failed_query_stmt_obj != NULL) {
 			OBJ_RELEASE(dbh->last_failed_query_stmt_obj);
 		}
+
 		dbh->last_failed_query_stmt = stmt;
 		dbh->last_failed_query_stmt_obj = obj;
+
 		return;
 	}
+
 	/* No binding (shouldn't happen — caller just acquired conn): silently
 	 * skip the stash. We do NOT OBJ_RELEASE(obj) — caller still uses stmt. */
 	pdo_pool_binding_t *binding = pdo_pool_current_binding(dbh);
 	if (UNEXPECTED(binding == NULL)) {
 		return;
 	}
+
 	if (binding->last_failed_query_stmt_obj != NULL) {
 		OBJ_RELEASE(binding->last_failed_query_stmt_obj);
 	}
+
 	binding->last_failed_query_stmt = stmt;
 	binding->last_failed_query_stmt_obj = obj;
 }
@@ -118,8 +127,10 @@ void pdo_dbh_release_last_failed_query_stmt(pdo_dbh_t *dbh)
 			dbh->last_failed_query_stmt_obj = NULL;
 			dbh->last_failed_query_stmt = NULL;
 		}
+
 		return;
 	}
+
 	pdo_pool_binding_t *binding = pdo_pool_current_binding(dbh);
 	if (binding != NULL) {
 		pdo_pool_binding_release_query_stmt(binding);
@@ -588,8 +599,10 @@ pdo_dbh_t *pdo_pool_acquire_conn(pdo_dbh_t *dbh)
 			/* Broken: detach. If stmts still hold conn via pooled_conn,
 			 * last stmt's free will release it; otherwise release now. */
 			pdo_pool_binding_release_query_stmt(binding);
+
 			pdo_dbh_t *old_conn = binding->conn;
 			binding->conn = NULL;
+
 			if (old_conn->pool_slot_refcount == 0) {
 				zval cz;
 				ZVAL_PTR(&cz, old_conn);
@@ -599,10 +612,12 @@ pdo_dbh_t *pdo_pool_acquire_conn(pdo_dbh_t *dbh)
 
 		pdo_pool_binding_release_query_stmt(binding);
 		memcpy(dbh->error_code, PDO_ERR_NONE, sizeof(pdo_error_type));
+
 		zval resource;
 		if (UNEXPECTED(!ZEND_ASYNC_POOL_ACQUIRE(dbh->pool, &resource, 0))) {
 			return NULL;
 		}
+
 		binding->conn = Z_PTR(resource);
 		return binding->conn;
 	}

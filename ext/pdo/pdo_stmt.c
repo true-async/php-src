@@ -2038,6 +2038,7 @@ PDO_API void php_pdo_free_statement(pdo_stmt_t *stmt)
 	if (stmt->pooled_conn != NULL) {
 		pdo_dbh_t *pconn = stmt->pooled_conn;
 		pconn->pool_slot_refcount--;
+
 		if (pconn->pool_slot_refcount == 0) {
 			if (pdo_pool_peek_conn(stmt->dbh) == pconn) {
 				pdo_pool_maybe_release(stmt->dbh);
@@ -2049,6 +2050,7 @@ PDO_API void php_pdo_free_statement(pdo_stmt_t *stmt)
 				ZEND_ASYNC_POOL_RELEASE(stmt->dbh->pool, &conn_zval);
 			}
 		}
+
 		stmt->pooled_conn = NULL;
 	}
 
