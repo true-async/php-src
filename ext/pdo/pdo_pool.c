@@ -52,18 +52,77 @@ typedef struct {
 	pdo_dbh_t *conn;                    /* active connection, NULL if released back to pool */
 	zend_ulong coro_key;                /* key in pool_bindings */
 	bool has_coro_callback;              /* true if registered with coroutine event */
+
+	pdo_stmt_t  *last_failed_query_stmt;
+	zend_object *last_failed_query_stmt_obj;
 } pdo_pool_binding_t;
 
-/* Reset error state on the template dbh.
- * Called on acquire so a new coroutine never sees stale errors. */
-static void pdo_pool_reset_error(pdo_dbh_t *dbh)
+static void pdo_pool_binding_release_query_stmt(pdo_pool_binding_t *binding)
 {
-	memcpy(dbh->error_code, PDO_ERR_NONE, sizeof(pdo_error_type));
+	if (binding->last_failed_query_stmt_obj != NULL) {
+		OBJ_RELEASE(binding->last_failed_query_stmt_obj);
+		binding->last_failed_query_stmt_obj = NULL;
+		binding->last_failed_query_stmt = NULL;
+	}
+}
 
-	if (dbh->query_stmt) {
-		OBJ_RELEASE(dbh->query_stmt_obj);
-		dbh->query_stmt_obj = NULL;
-		dbh->query_stmt = NULL;
+static pdo_pool_binding_t *pdo_pool_current_binding(pdo_dbh_t *dbh)
+{
+	if (dbh->pool == NULL || dbh->pool_bindings == NULL) {
+		return NULL;
+	}
+	zend_coroutine_t *coro = ZEND_ASYNC_CURRENT_COROUTINE;
+	if (coro == NULL) {
+		return NULL;
+	}
+	return zend_hash_index_find_ptr(dbh->pool_bindings, pdo_pool_coro_key(coro));
+}
+
+pdo_stmt_t *pdo_dbh_get_last_failed_query_stmt(pdo_dbh_t *dbh)
+{
+	if (dbh->pool == NULL) {
+		return dbh->last_failed_query_stmt;
+	}
+	pdo_pool_binding_t *binding = pdo_pool_current_binding(dbh);
+	return binding ? binding->last_failed_query_stmt : NULL;
+}
+
+void pdo_dbh_set_last_failed_query_stmt(pdo_dbh_t *dbh, pdo_stmt_t *stmt, zend_object *obj)
+{
+	if (dbh->pool == NULL) {
+		if (dbh->last_failed_query_stmt_obj != NULL) {
+			OBJ_RELEASE(dbh->last_failed_query_stmt_obj);
+		}
+		dbh->last_failed_query_stmt = stmt;
+		dbh->last_failed_query_stmt_obj = obj;
+		return;
+	}
+	/* No binding (shouldn't happen — caller just acquired conn): silently
+	 * skip the stash. We do NOT OBJ_RELEASE(obj) — caller still uses stmt. */
+	pdo_pool_binding_t *binding = pdo_pool_current_binding(dbh);
+	if (UNEXPECTED(binding == NULL)) {
+		return;
+	}
+	if (binding->last_failed_query_stmt_obj != NULL) {
+		OBJ_RELEASE(binding->last_failed_query_stmt_obj);
+	}
+	binding->last_failed_query_stmt = stmt;
+	binding->last_failed_query_stmt_obj = obj;
+}
+
+void pdo_dbh_release_last_failed_query_stmt(pdo_dbh_t *dbh)
+{
+	if (dbh->pool == NULL) {
+		if (dbh->last_failed_query_stmt_obj != NULL) {
+			OBJ_RELEASE(dbh->last_failed_query_stmt_obj);
+			dbh->last_failed_query_stmt_obj = NULL;
+			dbh->last_failed_query_stmt = NULL;
+		}
+		return;
+	}
+	pdo_pool_binding_t *binding = pdo_pool_current_binding(dbh);
+	if (binding != NULL) {
+		pdo_pool_binding_release_query_stmt(binding);
 	}
 }
 
@@ -244,15 +303,11 @@ static void pdo_pool_binding_on_coroutine_finish(
 		return;
 	}
 
-	/* Clear stale error state on template BEFORE release — query_stmt may
-	 * reference the pooled conn via pooled_conn pointer, and release with
-	 * conn_broken will destroy the conn. Must release query_stmt first. */
-	pdo_pool_reset_error(binding->dbh);
+	pdo_pool_binding_release_query_stmt(binding);
 
-	/* Connection still held — return it to pool (rolls back uncommitted transactions) */
-	if (binding->conn != NULL) {
-		binding->conn->pool_slot_refcount = 0;
-
+	/* Release conn only when no stmt still references it; stmts' destructors
+	 * release it themselves otherwise (last stmt to free does it). */
+	if (binding->conn != NULL && binding->conn->pool_slot_refcount == 0) {
 		zval conn_zval;
 		ZVAL_PTR(&conn_zval, binding->conn);
 		ZEND_ASYNC_POOL_RELEASE(binding->dbh->pool, &conn_zval);
@@ -446,6 +501,8 @@ void pdo_pool_destroy(pdo_dbh_t *dbh)
 	if (dbh->pool_bindings) {
 		pdo_pool_binding_t *binding;
 		ZEND_HASH_FOREACH_PTR(dbh->pool_bindings, binding) {
+			pdo_pool_binding_release_query_stmt(binding);
+
 			/* Release active connection back to pool */
 			if (binding->conn != NULL && dbh->pool != NULL) {
 				binding->conn->pool_slot_refcount = 0;
@@ -528,25 +585,25 @@ pdo_dbh_t *pdo_pool_acquire_conn(pdo_dbh_t *dbh)
 				return binding->conn;
 			}
 
-			/* Connection is broken (cancelled I/O, server gone, etc.)
-			 * Release query_stmt FIRST — it may reference this conn via pooled_conn.
-			 * Then release conn — pool's before_release will destroy it. */
-			pdo_pool_reset_error(dbh);
-			binding->conn->pool_slot_refcount = 0;
-			zval conn_zval;
-			ZVAL_PTR(&conn_zval, binding->conn);
-			ZEND_ASYNC_POOL_RELEASE(dbh->pool, &conn_zval);
+			/* Broken: detach. If stmts still hold conn via pooled_conn,
+			 * last stmt's free will release it; otherwise release now. */
+			pdo_pool_binding_release_query_stmt(binding);
+			pdo_dbh_t *old_conn = binding->conn;
 			binding->conn = NULL;
+			if (old_conn->pool_slot_refcount == 0) {
+				zval cz;
+				ZVAL_PTR(&cz, old_conn);
+				ZEND_ASYNC_POOL_RELEASE(dbh->pool, &cz);
+			}
 		}
 
-		/* Connection was released earlier, acquire a new one into the same binding.
-		 * Reset error state on the template so the new coroutine starts clean. */
+		pdo_pool_binding_release_query_stmt(binding);
+		memcpy(dbh->error_code, PDO_ERR_NONE, sizeof(pdo_error_type));
 		zval resource;
 		if (UNEXPECTED(!ZEND_ASYNC_POOL_ACQUIRE(dbh->pool, &resource, 0))) {
 			return NULL;
 		}
 		binding->conn = Z_PTR(resource);
-		pdo_pool_reset_error(dbh);
 		return binding->conn;
 	}
 
@@ -572,7 +629,7 @@ pdo_dbh_t *pdo_pool_acquire_conn(pdo_dbh_t *dbh)
 		binding->has_coro_callback = true;
 	}
 
-	pdo_pool_reset_error(dbh);
+	memcpy(dbh->error_code, PDO_ERR_NONE, sizeof(pdo_error_type));
 	return binding->conn;
 }
 

@@ -16,17 +16,14 @@
 #define PHP_PDO_ERROR_H
 
 #include "php_pdo_driver.h"
+#include "pdo_pool.h"
 
 PDO_API void pdo_handle_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt);
 
 #define PDO_DBH_CLEAR_ERR()             do { \
 	ZEND_ASSERT(sizeof(dbh->error_code) == sizeof(PDO_ERR_NONE)); \
 	memcpy(dbh->error_code, PDO_ERR_NONE, sizeof(PDO_ERR_NONE)); \
-	if (dbh->query_stmt) { \
-		dbh->query_stmt = NULL; \
-		OBJ_RELEASE(dbh->query_stmt_obj); \
-		dbh->query_stmt_obj = NULL; \
-	} \
+	pdo_dbh_release_last_failed_query_stmt(dbh); \
 } while (0)
 #define PDO_STMT_CLEAR_ERR() do { \
 	ZEND_ASSERT(sizeof(stmt->error_code) == sizeof(PDO_ERR_NONE)); \

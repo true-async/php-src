@@ -526,12 +526,8 @@ struct _pdo_dbh_t {
 
 	zval def_stmt_ctor_args;
 
-	/* when calling PDO::query(), we need to keep the error
-	 * context from the statement around until we next clear it.
-	 * This will allow us to report the correct error message
-	 * when PDO::query() fails */
-	pdo_stmt_t *query_stmt;
-	zend_object *query_stmt_obj;
+	pdo_stmt_t *last_failed_query_stmt;
+	zend_object *last_failed_query_stmt_obj;
 
 	/* Connection pool (requires async extension) */
 	zend_async_pool_t *pool;		/* internal pool, NULL if pooling disabled */
