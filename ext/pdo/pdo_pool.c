@@ -82,7 +82,7 @@ static pdo_pool_binding_t *pdo_pool_current_binding(pdo_dbh_t *dbh)
 	return zend_hash_index_find_ptr(dbh->pool_bindings, pdo_pool_coro_key(coro));
 }
 
-pdo_stmt_t *pdo_dbh_get_last_failed_query_stmt(pdo_dbh_t *dbh)
+PDO_API pdo_stmt_t *pdo_dbh_get_last_failed_query_stmt(pdo_dbh_t *dbh)
 {
 	if (dbh->pool == NULL) {
 		return dbh->last_failed_query_stmt;
@@ -93,7 +93,7 @@ pdo_stmt_t *pdo_dbh_get_last_failed_query_stmt(pdo_dbh_t *dbh)
 	return binding ? binding->last_failed_query_stmt : NULL;
 }
 
-void pdo_dbh_set_last_failed_query_stmt(pdo_dbh_t *dbh, pdo_stmt_t *stmt, zend_object *obj)
+PDO_API void pdo_dbh_set_last_failed_query_stmt(pdo_dbh_t *dbh, pdo_stmt_t *stmt, zend_object *obj)
 {
 	if (dbh->pool == NULL) {
 		if (dbh->last_failed_query_stmt_obj != NULL) {
@@ -121,7 +121,7 @@ void pdo_dbh_set_last_failed_query_stmt(pdo_dbh_t *dbh, pdo_stmt_t *stmt, zend_o
 	binding->last_failed_query_stmt_obj = obj;
 }
 
-void pdo_dbh_release_last_failed_query_stmt(pdo_dbh_t *dbh)
+PDO_API void pdo_dbh_release_last_failed_query_stmt(pdo_dbh_t *dbh)
 {
 	if (dbh->pool == NULL) {
 		if (dbh->last_failed_query_stmt_obj != NULL) {
@@ -139,7 +139,7 @@ void pdo_dbh_release_last_failed_query_stmt(pdo_dbh_t *dbh)
 	}
 }
 
-pdo_error_type *pdo_dbh_error_code(pdo_dbh_t *dbh)
+PDO_API pdo_error_type *pdo_dbh_error_code(pdo_dbh_t *dbh)
 {
 	pdo_pool_binding_t *binding = pdo_pool_current_binding(dbh);
 	if (binding != NULL) {

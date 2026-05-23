@@ -60,14 +60,14 @@ pdo_dbh_t *pdo_pool_peek_conn(pdo_dbh_t *dbh);
  */
 void pdo_pool_maybe_release(pdo_dbh_t *dbh);
 
-pdo_stmt_t *pdo_dbh_get_last_failed_query_stmt(pdo_dbh_t *dbh);
-void pdo_dbh_set_last_failed_query_stmt(pdo_dbh_t *dbh, pdo_stmt_t *stmt, zend_object *obj);
-void pdo_dbh_release_last_failed_query_stmt(pdo_dbh_t *dbh);
+PDO_API pdo_stmt_t *pdo_dbh_get_last_failed_query_stmt(pdo_dbh_t *dbh);
+PDO_API void pdo_dbh_set_last_failed_query_stmt(pdo_dbh_t *dbh, pdo_stmt_t *stmt, zend_object *obj);
+PDO_API void pdo_dbh_release_last_failed_query_stmt(pdo_dbh_t *dbh);
 
 /* Pool-aware accessor for dbh->error_code (SQLSTATE). In pool mode returns
  * the current coroutine's binding-local storage; falls back to template
  * when there is no binding (top-level / non-pool). */
-pdo_error_type *pdo_dbh_error_code(pdo_dbh_t *dbh);
+PDO_API pdo_error_type *pdo_dbh_error_code(pdo_dbh_t *dbh);
 
 /*
  * Per-physical-connection prepared-statement cache (opt-in).
