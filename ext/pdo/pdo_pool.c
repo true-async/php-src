@@ -526,10 +526,12 @@ void pdo_pool_destroy(pdo_dbh_t *dbh)
 		ZEND_HASH_FOREACH_PTR(dbh->pool_bindings, binding) {
 			pdo_pool_binding_release_query_stmt(binding);
 
-			/* Release active connection back to pool */
-			if (binding->conn != NULL && dbh->pool != NULL) {
-				binding->conn->pool_slot_refcount = 0;
-
+			/* By invariant, at dbh destruction all stmts are gone (they
+			 * held a ref to dbh), so pool_slot_refcount == 0 on every conn.
+			 * Release only when that holds — otherwise leak (visible) is
+			 * safer than force-release (UAF). */
+			if (binding->conn != NULL && dbh->pool != NULL
+				&& binding->conn->pool_slot_refcount == 0) {
 				zval conn_zval;
 				ZVAL_PTR(&conn_zval, binding->conn);
 				ZEND_ASYNC_POOL_RELEASE(dbh->pool, &conn_zval);
