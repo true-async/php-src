@@ -1979,6 +1979,7 @@ static void curl_async_write_user_complete(
 		&& state->has_pending_result && state->pending_result != ZSTR_LEN(state->write_data)) {
 		curl_event->done_result = CURLE_WRITE_ERROR;
 		user_abort = true;
+		state->aborted = true;
 	}
 
 	/* Release the zend_string */
@@ -2042,7 +2043,7 @@ static void curl_async_write_user_complete(
  */
 size_t curl_async_write_user(char *data, const size_t size, const size_t nmemb, php_curl *ch, const bool is_header)
 {
-	const size_t length = size * nmemb;
+	size_t length = size * nmemb;
 
 	curl_async_event_t *curl_event = (curl_async_event_t *) ch->async_event;
 	if (curl_event == NULL) {
@@ -2103,11 +2104,34 @@ size_t curl_async_write_user(char *data, const size_t size, const size_t nmemb, 
 
 	curl_async_write_state_t *state = is_header ? curl_event->header_write_state : curl_event->write_state;
 
-	/* Re-call after async completion — return stored result */
+	/* Re-call after async completion of a paused slice. */
 	if (state != NULL && state->has_pending_result) {
-		const size_t result = state->pending_result;
 		state->has_pending_result = false;
-		return result;
+
+		/* The PHP callback aborted (short return / exception) — surface the
+		 * stored result verbatim so libcurl raises CURLE_WRITE_ERROR. */
+		if (state->aborted) {
+			const size_t result = state->pending_result;
+			state->aborted = false;
+			state->consumed_offset = 0;
+			return result;
+		}
+
+		/* The finished slice was accepted in full. libcurl re-delivers the
+		 * whole paused window on unpause and may coalesce freshly decoded
+		 * data into it (notably with chunked transfer-encoding), so this
+		 * re-call can carry more bytes than the slice paused on. Advance
+		 * through the window; report the full length back to libcurl only
+		 * once the PHP callback has accepted every byte of it — otherwise
+		 * feed the remainder through another callback slice below. */
+		state->consumed_offset += state->pending_result;
+		if (state->consumed_offset >= length) {
+			state->consumed_offset = 0;
+			return length;
+		}
+		data   += state->consumed_offset;
+		length -= state->consumed_offset;
+		/* fall through to spawn a callback for the rest of the window */
 	}
 
 	/* Lazy init state */

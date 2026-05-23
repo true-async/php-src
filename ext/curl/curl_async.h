@@ -109,6 +109,17 @@ struct curl_async_write_state_s {
 	bool has_pending_result;
 	size_t pending_result;
 
+	/* Bytes of the current re-call window already accepted by the PHP
+	 * callback. On unpause libcurl re-delivers the whole paused window and
+	 * may coalesce freshly decoded data into it (notably with chunked
+	 * transfer-encoding), so a re-call can carry more bytes than the slice
+	 * that was paused on; this tracks progress through such a window. */
+	size_t consumed_offset;
+
+	/* True when the PHP callback signalled an abort (short return or
+	 * exception): the pending re-call must surface pending_result verbatim. */
+	bool aborted;
+
 	/* True between returning CURL_WRITEFUNC_PAUSE and completion callback */
 	bool pending;
 
