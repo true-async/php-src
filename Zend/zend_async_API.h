@@ -815,7 +815,6 @@ struct _zend_async_waker_trigger_s {
 	uint32_t length; /* current number of callbacks */
 	uint32_t capacity; /* allocated slots in the array */
 	zend_async_event_t *event;
-	zend_async_waker_t *waker;
 	/* C++ compatibility fix for ICU/intl extension: flexible arrays not standard in C++ */
 #ifdef __cplusplus
 	zend_async_event_callback_t *data[1]; /* C++ compatible array */
@@ -1623,7 +1622,6 @@ typedef struct {
 	uint32_t length;
 	uint32_t capacity; /* always 0 for inline triggers */
 	zend_async_event_t *event;
-	zend_async_waker_t *waker;
 	zend_async_event_callback_t *data[1];
 } zend_async_waker_inline_trigger_t;
 
@@ -1657,7 +1655,13 @@ struct _zend_async_waker_s {
 };
 
 #define ZEND_ASYNC_WAKER_WAITING(waker) ((waker)->status < ZEND_ASYNC_WAKER_RESULT)
-#define ZEND_ASYNC_WAKER_CLEAN_EVENTS(waker) (zend_hash_clean(&waker->events))
+
+ZEND_API void zend_async_waker_stop_events(zend_async_waker_t *waker);
+
+#define ZEND_ASYNC_WAKER_CLEAN_EVENTS(waker) do { \
+		zend_async_waker_stop_events(waker); \
+		zend_hash_clean(&(waker)->events); \
+	} while (0)
 
 /**
  * Coroutine destructor. Called when the coroutine needs to clean up all its data.

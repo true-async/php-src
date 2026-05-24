@@ -680,7 +680,6 @@ static zend_always_inline zend_async_waker_trigger_t *waker_trigger_create(
 		for (uint32_t i = 0; i < ZEND_ASYNC_WAKER_INLINE_SLOTS; i++) {
 			if (waker->inline_triggers[i].length == 0 && waker->inline_triggers[i].event == NULL) {
 				waker->inline_triggers[i].event = event;
-				waker->inline_triggers[i].waker = waker;
 				/* capacity stays 0 — marks as inline */
 				return (zend_async_waker_trigger_t *) &waker->inline_triggers[i];
 			}
@@ -706,7 +705,6 @@ static zend_always_inline zend_async_waker_trigger_t *waker_trigger_create(
 	trigger->length = 0;
 	trigger->capacity = initial_capacity;
 	trigger->event = event;
-	trigger->waker = waker;
 
 	return trigger;
 }
@@ -735,7 +733,6 @@ static zend_always_inline zend_async_waker_trigger_t *waker_trigger_add_callback
 		heap_trigger->length = 1;
 		heap_trigger->capacity = new_capacity;
 		heap_trigger->event = trigger->event;
-		heap_trigger->waker = trigger->waker;
 		heap_trigger->data[0] = trigger->data[0];
 
 		/* Free the inline slot */
@@ -781,10 +778,7 @@ static void waker_events_dtor(zval *item)
 		}
 	}
 
-	// Stop unless an early bulk stop already ran for this cycle.
-	if (trigger->waker == NULL || !trigger->waker->events_stopped) {
-		event->stop(event);
-	}
+	// stop is performed by the explicit flow (stop_waker_events / dispose_common)
 	ZEND_ASYNC_EVENT_RELEASE(event);
 
 	// capacity == 0 means inline trigger embedded in waker — do not free
@@ -800,6 +794,21 @@ static void waker_triggered_events_dtor(zval *item)
 	zend_async_event_t *event = Z_PTR_P(item);
 
 	ZEND_ASYNC_EVENT_RELEASE(event);
+}
+
+ZEND_API void zend_async_waker_stop_events(zend_async_waker_t *waker)
+{
+	if (waker->events_stopped) {
+		return;
+	}
+	waker->events_stopped = 1;
+
+	zend_async_waker_trigger_t *trigger;
+	ZEND_HASH_FOREACH_PTR(&waker->events, trigger) {
+		if (trigger->event != NULL) {
+			trigger->event->stop(trigger->event);
+		}
+	} ZEND_HASH_FOREACH_END();
 }
 
 ZEND_API zend_async_waker_t *zend_async_waker_define(zend_coroutine_t *coroutine)
@@ -909,7 +918,7 @@ ZEND_API void zend_async_waker_clean(zend_coroutine_t *coroutine)
 
 	zval_ptr_dtor(&waker->result);
 	ZVAL_UNDEF(&waker->result);
-	zend_hash_clean(&waker->events);
+	ZEND_ASYNC_WAKER_CLEAN_EVENTS(waker);
 
 	/* Reset inline callback slots for reuse */
 	for (uint32_t i = 0; i < ZEND_ASYNC_WAKER_INLINE_SLOTS; i++) {
@@ -956,6 +965,7 @@ static void zend_async_waker_destroy_default(zend_coroutine_t *coroutine)
 	}
 
 	zval_ptr_dtor(&waker->result);
+	zend_async_waker_stop_events(waker);
 	zend_hash_destroy(&waker->events);
 }
 
@@ -991,6 +1001,10 @@ static void coroutine_event_callback_dispose_common(
 
 				// If no more callbacks in trigger, remove the entire event
 				if (trigger->length == 0) {
+					// Stop this event unless bulk stop already ran for the waker.
+					if (!waker->events_stopped) {
+						event->stop(event);
+					}
 					zend_hash_index_del(&waker->events, ptr_to_index(event));
 
 					if (waker->triggered_events != NULL) {
