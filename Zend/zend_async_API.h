@@ -21,9 +21,9 @@
 #include "zend_globals.h"
 #include "zend_stream.h"
 
-#define ZEND_ASYNC_API "TrueAsync ABI v0.17.0"
+#define ZEND_ASYNC_API "TrueAsync ABI v0.18.0"
 #define ZEND_ASYNC_API_VERSION_MAJOR 0
-#define ZEND_ASYNC_API_VERSION_MINOR 17
+#define ZEND_ASYNC_API_VERSION_MINOR 18
 #define ZEND_ASYNC_API_VERSION_PATCH 0
 
 #define ZEND_ASYNC_API_VERSION_NUMBER \
@@ -815,6 +815,7 @@ struct _zend_async_waker_trigger_s {
 	uint32_t length; /* current number of callbacks */
 	uint32_t capacity; /* allocated slots in the array */
 	zend_async_event_t *event;
+	zend_async_waker_t *waker;
 	/* C++ compatibility fix for ICU/intl extension: flexible arrays not standard in C++ */
 #ifdef __cplusplus
 	zend_async_event_callback_t *data[1]; /* C++ compatible array */
@@ -1622,6 +1623,7 @@ typedef struct {
 	uint32_t length;
 	uint32_t capacity; /* always 0 for inline triggers */
 	zend_async_event_t *event;
+	zend_async_waker_t *waker;
 	zend_async_event_callback_t *data[1];
 } zend_async_waker_inline_trigger_t;
 
@@ -1630,6 +1632,9 @@ typedef struct {
 struct _zend_async_waker_s {
 	/* The waker status. */
 	ZEND_ASYNC_WAKER_STATUS status;
+	/* Set by stop_waker_events after an early bulk stop; dtor checks it to
+	 * avoid a second stop on a shared event. Reset by start_waker_events. */
+	uint8_t events_stopped : 1;
 	/* The array of zend_async_trigger_callback_t. */
 	HashTable events;
 	/* A list of events objects (zend_async_event_t) that occurred during the last iteration of the

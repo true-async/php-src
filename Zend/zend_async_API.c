@@ -680,6 +680,7 @@ static zend_always_inline zend_async_waker_trigger_t *waker_trigger_create(
 		for (uint32_t i = 0; i < ZEND_ASYNC_WAKER_INLINE_SLOTS; i++) {
 			if (waker->inline_triggers[i].length == 0 && waker->inline_triggers[i].event == NULL) {
 				waker->inline_triggers[i].event = event;
+				waker->inline_triggers[i].waker = waker;
 				/* capacity stays 0 — marks as inline */
 				return (zend_async_waker_trigger_t *) &waker->inline_triggers[i];
 			}
@@ -705,6 +706,7 @@ static zend_always_inline zend_async_waker_trigger_t *waker_trigger_create(
 	trigger->length = 0;
 	trigger->capacity = initial_capacity;
 	trigger->event = event;
+	trigger->waker = waker;
 
 	return trigger;
 }
@@ -733,6 +735,7 @@ static zend_always_inline zend_async_waker_trigger_t *waker_trigger_add_callback
 		heap_trigger->length = 1;
 		heap_trigger->capacity = new_capacity;
 		heap_trigger->event = trigger->event;
+		heap_trigger->waker = trigger->waker;
 		heap_trigger->data[0] = trigger->data[0];
 
 		/* Free the inline slot */
@@ -778,12 +781,10 @@ static void waker_events_dtor(zval *item)
 		}
 	}
 
-	//
-	// At this point, we explicitly stop the event because it is no longer being listened to by
-	// our handlers. However, this does not mean the object is destroyed—it may remain in memory
-	// if something still holds a reference to it.
-	//
-	event->stop(event);
+	// Stop unless an early bulk stop already ran for this cycle.
+	if (trigger->waker == NULL || !trigger->waker->events_stopped) {
+		event->stop(event);
+	}
 	ZEND_ASYNC_EVENT_RELEASE(event);
 
 	// capacity == 0 means inline trigger embedded in waker — do not free
@@ -856,6 +857,7 @@ static zend_async_waker_t *zend_async_waker_new_default(zend_coroutine_t *corout
 ZEND_API void zend_async_waker_init(zend_async_waker_t *waker)
 {
 	waker->status = ZEND_ASYNC_WAKER_NO_STATUS;
+	waker->events_stopped = 0;
 	waker->triggered_events = NULL;
 	waker->error = NULL;
 	waker->dtor = NULL;
