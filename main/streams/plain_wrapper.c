@@ -1244,17 +1244,26 @@ static int php_stdiop_set_option(php_stream *stream, int option, int value, void
 					return -1;
 				}
 
+				/* Pin task across SUSPEND: waker cleanup disposes it before SUSPEND returns,
+				 * freeing the inline-tail flock_data we still need to read. */
+				ZEND_ASYNC_EVENT_ADD_REF(&task->base);
+
 				if (UNEXPECTED(!ZEND_ASYNC_SUSPEND())) {
 					ZEND_ASYNC_WAKER_DESTROY(coroutine);
+					ZEND_ASYNC_EVENT_RELEASE(&task->base);
 					return -1;
 				}
 
-				if (flock_data->result == 0) {
+				const int flock_result = flock_data->result;
+				const int flock_errno = flock_data->error_code;
+				ZEND_ASYNC_EVENT_RELEASE(&task->base);
+
+				if (flock_result == 0) {
 					data->lock_flag = value;
 					return 0;
 				}
 
-				errno = flock_data->error_code;
+				errno = flock_errno;
 				return -1;
 			}
 
