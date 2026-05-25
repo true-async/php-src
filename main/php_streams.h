@@ -220,6 +220,10 @@ struct _php_stream  {
 	/* whether fatal error happened and all operations should terminates as soon as possible */
 	uint16_t fatal_error:1;
 
+	/* set when _php_stream_free was called but ref_count > 0; the last
+	 * async-op holder finishes the efree when ref_count drops to 0. */
+	uint16_t pending_free:1;
+
 	char mode[16];			/* "rwb" etc. ala stdio */
 
 	uint32_t flags;	/* PHP_STREAM_FLAG_XXX */

@@ -491,7 +491,11 @@ fprintf(stderr, "stream_free: %s:%p[%s] preserve_handle=%d release_cast=%d remov
 		}
 
 		ret = stream->ops->close(stream, preserve_handle ? 0 : 1);
-		stream->abstract = NULL;
+		/* When ops->close set stream->pending_free, it kept the abstract
+		 * alive for a parked coroutine to finalize; do not clear abstract. */
+		if (!stream->pending_free) {
+			stream->abstract = NULL;
+		}
 
 		/* tidy up any FILE* that might have been fdopened */
 		if (release_cast && stream->fclose_stdiocast == PHP_STREAM_FCLOSE_FDOPEN && stream->stdiocast) {
@@ -540,7 +544,12 @@ fprintf(stderr, "stream_free: %s:%p[%s] preserve_handle=%d release_cast=%d remov
 			stream->orig_path = NULL;
 		}
 
-		pefree(stream, stream->is_persistent);
+		if (UNEXPECTED(stream->pending_free)) {
+			/* Async coroutines still hold this pointer; the last unpin
+			 * will efree the stream. */
+		} else {
+			pefree(stream, stream->is_persistent);
+		}
 	}
 
 	if (context) {
@@ -707,8 +716,10 @@ PHPAPI zend_result _php_stream_fill_read_buffer(php_stream *stream, size_t size)
 					stream->readbuflen - stream->writepos
 					);
 			if (justread < 0) {
-				retval = FAILURE;
-				goto out_check_eof;
+				/* Async: stream may have been freed by another coroutine
+				 * while ops->read was parked. Skip the EOF check on the
+				 * (possibly freed) stream. */
+				return FAILURE;
 			}
 			stream->writepos += justread;
 			retval = SUCCESS;
