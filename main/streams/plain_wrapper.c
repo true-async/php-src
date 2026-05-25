@@ -148,6 +148,11 @@ typedef struct {
 	unsigned sync_io_fallback:1;	/* fd temporarily set to blocking for scheduler context */
 	unsigned _reserved:24;
 
+	/* Live references from coroutines parked inside read/write/flock.
+	 * _php_stream_free defers efree(stream/data) while non-zero; the last
+	 * holder finalizes the free when it wakes up. */
+	unsigned int ref_count;
+
 	zend_async_io_t *async_io;
 	zend_async_poll_event_t *poll_event;
 
@@ -197,6 +202,28 @@ static void php_stdiop_on_async_detach(zend_async_io_t *io, void *arg)
 {
 	php_stdio_stream_data *data = (php_stdio_stream_data *) arg;
 	data->async_io = NULL;
+}
+
+/* Drop one async pin acquired before SUSPEND. Returns true if the stream was
+ * force-closed while we slept (caller must not touch stream/data again).
+ * If we are the last holder of a force-closed stream, finalize the deferred
+ * pefree here. */
+static zend_always_inline bool php_stdiop_unpin_after_suspend(php_stream *stream, php_stdio_stream_data *data)
+{
+	bool was_closed = stream->pending_free;
+	ZEND_ASSERT(data->ref_count > 0);
+	if (--data->ref_count == 0 && was_closed) {
+		/* We are the last holder of a force-closed stream — finalize the
+		 * deferred dispose chain that php_stdiop_close skipped. */
+		if (data->async_io != NULL) {
+			data->async_io->event.dispose(&data->async_io->event);
+			data->async_io = NULL;
+		}
+		bool is_persistent = stream->is_persistent;
+		pefree(data, is_persistent);
+		pefree(stream, is_persistent);
+	}
+	return was_closed;
 }
 
 static void php_stdiop_init_async_io(php_stdio_stream_data *self, const char *mode)
@@ -515,6 +542,9 @@ static ssize_t php_stdiop_write(php_stream *stream, const char *buf, size_t coun
 
 		if (!req->completed) {
 			zend_coroutine_t *const coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+			/* Pin stream/data; another coroutine may force-close the resource
+			 * while we are parked here, which would otherwise free them. */
+			data->ref_count++;
 			/* The async IO event is shared by every coroutine writing this
 			 * descriptor, so any write's completion notifies them all. Keep
 			 * suspending until THIS request is the one that finished —
@@ -528,6 +558,25 @@ static ssize_t php_stdiop_write(php_stream *stream, const char *buf, size_t coun
 				ZEND_ASYNC_SUSPEND();
 				zend_async_waker_clean(coroutine);
 			} while (!req->completed && EG(exception) == NULL);
+
+			if (UNEXPECTED(stream->pending_free)) {
+				/* Stream force-closed while parked. Suppress any close-induced
+				 * exception (same contract as the io_closed branch below),
+				 * dispose req (caller-owns-req contract — req->io stayed
+				 * valid because php_stdiop_close deferred event.dispose),
+				 * then release the pin which may finalize stream/data/io free. */
+				if (EG(exception)) {
+					zend_clear_exception();
+				}
+				if (req->exception != NULL) {
+					OBJ_RELEASE(req->exception);
+					req->exception = NULL;
+				}
+				req->dispose(req);
+				php_stdiop_unpin_after_suspend(stream, data);
+				return -1;
+			}
+			php_stdiop_unpin_after_suspend(stream, data);
 		}
 
 		/* IO closed externally while parked — stream/data may be freed. */
@@ -650,6 +699,10 @@ static ssize_t php_stdiop_read(php_stream *stream, char *buf, size_t count)
 				? (zend_ulong)data->timeout.tv_sec * 1000 + (zend_ulong)data->timeout.tv_usec / 1000
 				: 0;
 
+			/* Pin stream/data; another coroutine may force-close the resource
+			 * while we are parked here, which would otherwise free them. */
+			data->ref_count++;
+
 			/* The async IO event is shared by every coroutine using this
 			 * descriptor, so an unrelated completion can wake us. Keep
 			 * suspending until THIS request finished — otherwise we would use
@@ -675,6 +728,7 @@ static ssize_t php_stdiop_read(php_stream *stream, char *buf, size_t count)
 						if (!req->completed) {
 							data->timeout_event = true;
 							req->dispose(req);
+							php_stdiop_unpin_after_suspend(stream, data);
 							return -1;
 						}
 					}
@@ -683,6 +737,23 @@ static ssize_t php_stdiop_read(php_stream *stream, char *buf, size_t count)
 
 				zend_async_waker_clean(coroutine);
 			} while (!req->completed && EG(exception) == NULL);
+
+			if (UNEXPECTED(stream->pending_free)) {
+				/* Stream force-closed while parked. Same teardown as the
+				 * io_closed branch below: suppress close-induced exception,
+				 * dispose req (caller-owns contract), then unpin. */
+				if (EG(exception)) {
+					zend_clear_exception();
+				}
+				if (req->exception != NULL) {
+					OBJ_RELEASE(req->exception);
+					req->exception = NULL;
+				}
+				req->dispose(req);
+				php_stdiop_unpin_after_suspend(stream, data);
+				return -1;
+			}
+			php_stdiop_unpin_after_suspend(stream, data);
 		}
 
 		/* IO closed externally while parked — stream/data may be freed. */
@@ -833,9 +904,16 @@ static int php_stdiop_close(php_stream *stream, int close_handle)
 		/* Clear on_detach before dispose — data is about to be freed. */
 		data->async_io->on_detach = NULL;
 		const bool is_stream = ZEND_ASYNC_IO_IS_STREAM(data->async_io->type);
+		/* Logical close always synchronous — NOTIFY's parked reqs with
+		 * req->io_closed and unblocks libuv-side I/O. */
 		ZEND_ASYNC_IO_CLOSE(data->async_io);
-		data->async_io->event.dispose(&data->async_io->event);
-		data->async_io = NULL;
+		if (data->ref_count == 0) {
+			data->async_io->event.dispose(&data->async_io->event);
+			data->async_io = NULL;
+		}
+		/* else: leave async_io live for the parked coroutine — its
+		 * caller-side req->dispose() needs req->io still valid. The last
+		 * unpin will dispose it. */
 		if (is_stream && !data->is_process_pipe) {
 			data->fd = -1;
 		}
@@ -903,7 +981,14 @@ static int php_stdiop_close(php_stream *stream, int close_handle)
 		data->fd = -1;
 	}
 
-	pefree(data, stream->is_persistent);
+	if (UNEXPECTED(data->ref_count > 0)) {
+		/* Coroutines parked on this stream still hold pointers to data
+		 * (and to stream). Mark for deferred free; the last unpin in
+		 * php_stdiop_unpin_after_suspend will efree both. */
+		stream->pending_free = 1;
+	} else {
+		pefree(data, stream->is_persistent);
+	}
 
 	return ret;
 }
@@ -1245,18 +1330,26 @@ static int php_stdiop_set_option(php_stream *stream, int option, int value, void
 				}
 
 				/* Pin task across SUSPEND: waker cleanup disposes it before SUSPEND returns,
-				 * freeing the inline-tail flock_data we still need to read. */
+				 * freeing the inline-tail flock_data we still need to read.
+				 * Pin stream/data too — another coroutine may force-close the resource. */
 				ZEND_ASYNC_EVENT_ADD_REF(&task->base);
+				data->ref_count++;
 
 				if (UNEXPECTED(!ZEND_ASYNC_SUSPEND())) {
 					ZEND_ASYNC_WAKER_DESTROY(coroutine);
 					ZEND_ASYNC_EVENT_RELEASE(&task->base);
+					php_stdiop_unpin_after_suspend(stream, data);
 					return -1;
 				}
 
 				const int flock_result = flock_data->result;
 				const int flock_errno = flock_data->error_code;
 				ZEND_ASYNC_EVENT_RELEASE(&task->base);
+
+				if (UNEXPECTED(php_stdiop_unpin_after_suspend(stream, data))) {
+					/* Stream force-closed while parked. */
+					return -1;
+				}
 
 				if (flock_result == 0) {
 					data->lock_flag = value;
