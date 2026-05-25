@@ -1,5 +1,9 @@
 --TEST--
 GC can cleanup cycle when callback references fiber
+--SKIPIF--
+<?php
+if (!function_exists("Async\\spawn")) die("skip TrueAsync runtime required");
+?>
 --FILE--
 <?php
 

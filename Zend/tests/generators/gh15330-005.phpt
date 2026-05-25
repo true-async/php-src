@@ -1,5 +1,9 @@
 --TEST--
 GH-15330 005: Do not scan generator frames more than once
+--SKIPIF--
+<?php
+if (!function_exists("Async\\spawn")) die("skip TrueAsync runtime required");
+?>
 --FILE--
 <?php
 

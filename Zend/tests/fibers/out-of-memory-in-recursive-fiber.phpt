@@ -7,6 +7,9 @@ memory_limit=2M
 if (getenv("USE_ZEND_ALLOC") === "0") {
     die("skip Zend MM disabled");
 }
+if (!function_exists("Async\\spawn")) {
+    die("skip TrueAsync runtime required");
+}
 ?>
 --FILE--
 <?php

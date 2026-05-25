@@ -1,5 +1,9 @@
 --TEST--
 Bug GH-9735 008 (Fiber stack variables do not participate in cycle collector)
+--SKIPIF--
+<?php
+if (!function_exists("Async\\spawn")) die("skip TrueAsync runtime required");
+?>
 --FILE--
 <?php
 

@@ -2209,7 +2209,7 @@ static zend_always_inline void start_gc_in_coroutine(void)
 	}
 
 	if (UNEXPECTED(new_gc_coroutine() == NULL)) {
-		zend_error_noreturn(E_ERROR, "Unable to spawn GC coroutine");
+		return;
 	}
 }
 

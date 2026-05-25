@@ -530,6 +530,19 @@ static ssize_t php_stdiop_write(php_stream *stream, const char *buf, size_t coun
 			} while (!req->completed && EG(exception) == NULL);
 		}
 
+		/* IO closed externally while parked — stream/data may be freed. */
+		if (UNEXPECTED(req->io_closed)) {
+			if (EG(exception)) {
+				zend_clear_exception();
+			}
+			if (req->exception != NULL) {
+				OBJ_RELEASE(req->exception);
+				req->exception = NULL;
+			}
+			req->dispose(req);
+			return -1;
+		}
+
 		if (UNEXPECTED(EG(exception)) || UNEXPECTED(req->exception != NULL)) {
 			if (!(stream->flags & PHP_STREAM_FLAG_SUPPRESS_ERRORS)) {
 				zend_object *exception = EG(exception) ? EG(exception) : req->exception;
@@ -670,6 +683,19 @@ static ssize_t php_stdiop_read(php_stream *stream, char *buf, size_t count)
 
 				zend_async_waker_clean(coroutine);
 			} while (!req->completed && EG(exception) == NULL);
+		}
+
+		/* IO closed externally while parked — stream/data may be freed. */
+		if (UNEXPECTED(req->io_closed)) {
+			if (EG(exception)) {
+				zend_clear_exception();
+			}
+			if (req->exception != NULL) {
+				OBJ_RELEASE(req->exception);
+				req->exception = NULL;
+			}
+			req->dispose(req);
+			return -1;
 		}
 
 		if (UNEXPECTED(EG(exception)) || UNEXPECTED(req->exception != NULL)) {
@@ -1189,8 +1215,20 @@ static int php_stdiop_set_option(php_stream *stream, int option, int value, void
 					return -1;
 				}
 
-				php_stdiop_flock_task_data_t flock_data = { .fd = fd, .operation = value };
-				zend_async_task_t *task = ZEND_ASYNC_NEW_TASK(php_stdiop_flock_task_run, &flock_data);
+				/* Inline-tail so flock_data outlives caller on cancel —
+				 * worker keeps writing after AsyncCancellation unwinds the frame. */
+				zend_async_task_t *task = ZEND_ASYNC_NEW_TASK_EX(
+					php_stdiop_flock_task_run, NULL,
+					sizeof(php_stdiop_flock_task_data_t));
+				if (UNEXPECTED(task == NULL)) {
+					return -1;
+				}
+				php_stdiop_flock_task_data_t *flock_data =
+					(php_stdiop_flock_task_data_t *)
+						((char *)task + task->base.extra_offset);
+				flock_data->fd = fd;
+				flock_data->operation = value;
+				task->data = flock_data;
 
 				zend_coroutine_t *const coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 				ZEND_ASYNC_WAKER_NEW(coroutine);
@@ -1211,12 +1249,12 @@ static int php_stdiop_set_option(php_stream *stream, int option, int value, void
 					return -1;
 				}
 
-				if (flock_data.result == 0) {
+				if (flock_data->result == 0) {
 					data->lock_flag = value;
 					return 0;
 				}
 
-				errno = flock_data.error_code;
+				errno = flock_data->error_code;
 				return -1;
 			}
 

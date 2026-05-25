@@ -1,5 +1,9 @@
 --TEST--
 GH-15866: Core dumped in Zend/zend_generators.c
+--SKIPIF--
+<?php
+if (!function_exists("Async\\spawn")) die("skip TrueAsync runtime required");
+?>
 --FILE--
 <?php
 

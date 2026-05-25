@@ -21,9 +21,9 @@
 #include "zend_globals.h"
 #include "zend_stream.h"
 
-#define ZEND_ASYNC_API "TrueAsync ABI v0.18.0"
+#define ZEND_ASYNC_API "TrueAsync ABI v0.19.0"
 #define ZEND_ASYNC_API_VERSION_MAJOR 0
-#define ZEND_ASYNC_API_VERSION_MINOR 18
+#define ZEND_ASYNC_API_VERSION_MINOR 19
 #define ZEND_ASYNC_API_VERSION_PATCH 0
 
 #define ZEND_ASYNC_API_VERSION_NUMBER \
@@ -915,6 +915,9 @@ struct _zend_async_io_req_s {
 	zend_object *exception;
 	char *buf;
 	bool completed;
+	/* Reactor-set marker: IO handle was closed while parked. Consumer must
+	 * skip stream/data access — both may already be freed. See #144. */
+	bool io_closed;
 	/* Fire-and-forget buffer release callback. Set by ZEND_ASYNC_IO_WRITE_EX,
 	 * NULL for legacy await-style writes. When non-NULL, the reactor's write
 	 * completion path invokes free_cb(buf, io) and disposes the request
@@ -947,6 +950,8 @@ struct _zend_async_udp_req_s {
 	zend_object *exception;
 	char *buf;
 	bool completed;
+	/* See io_closed on zend_async_io_req_t. */
+	bool io_closed;
 	uint32_t flags;                /* ZEND_ASYNC_UDP_REQ_F_* — reactor-private */
 	void (*dispose)(zend_async_udp_req_t *req);
 	struct sockaddr_storage addr;  /* destination (sendto) or source (recvfrom) */
