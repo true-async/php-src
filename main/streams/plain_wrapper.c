@@ -530,6 +530,19 @@ static ssize_t php_stdiop_write(php_stream *stream, const char *buf, size_t coun
 			} while (!req->completed && EG(exception) == NULL);
 		}
 
+		/* IO closed externally while parked — stream/data may be freed. */
+		if (UNEXPECTED(req->io_closed)) {
+			if (EG(exception)) {
+				zend_clear_exception();
+			}
+			if (req->exception != NULL) {
+				OBJ_RELEASE(req->exception);
+				req->exception = NULL;
+			}
+			req->dispose(req);
+			return -1;
+		}
+
 		if (UNEXPECTED(EG(exception)) || UNEXPECTED(req->exception != NULL)) {
 			if (!(stream->flags & PHP_STREAM_FLAG_SUPPRESS_ERRORS)) {
 				zend_object *exception = EG(exception) ? EG(exception) : req->exception;
@@ -670,6 +683,19 @@ static ssize_t php_stdiop_read(php_stream *stream, char *buf, size_t count)
 
 				zend_async_waker_clean(coroutine);
 			} while (!req->completed && EG(exception) == NULL);
+		}
+
+		/* IO closed externally while parked — stream/data may be freed. */
+		if (UNEXPECTED(req->io_closed)) {
+			if (EG(exception)) {
+				zend_clear_exception();
+			}
+			if (req->exception != NULL) {
+				OBJ_RELEASE(req->exception);
+				req->exception = NULL;
+			}
+			req->dispose(req);
+			return -1;
 		}
 
 		if (UNEXPECTED(EG(exception)) || UNEXPECTED(req->exception != NULL)) {
