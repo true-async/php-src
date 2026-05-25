@@ -1,5 +1,9 @@
 --TEST--
 Bug GH-10340 003 (Assertion in zend_fiber_object_gc())
+--SKIPIF--
+<?php
+if (!function_exists("Async\\spawn")) die("skip TrueAsync runtime required");
+?>
 --FILE--
 <?php
 

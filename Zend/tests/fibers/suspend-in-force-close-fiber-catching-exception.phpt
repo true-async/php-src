@@ -1,5 +1,9 @@
 --TEST--
 Suspend in force-closed fiber, catching exception thrown from destructor
+--SKIPIF--
+<?php
+if (!function_exists("Async\\spawn")) die("skip TrueAsync runtime required");
+?>
 --FILE--
 <?php
 

@@ -1,5 +1,9 @@
 --TEST--
 Bug GH-10496 001 (Segfault when garbage collector is invoked inside of fiber)
+--SKIPIF--
+<?php
+if (!function_exists("Async\\spawn")) die("skip TrueAsync runtime required");
+?>
 --FILE--
 <?php
 
