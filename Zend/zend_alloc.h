@@ -217,6 +217,10 @@ ZEND_API ZEND_ATTRIBUTE_MALLOC char * __zend_strdup(const char *s);
 ZEND_API zend_result zend_set_memory_limit(size_t memory_limit);
 ZEND_API bool zend_alloc_in_memory_limit_error_reporting(void);
 
+/* Returns true (and clears the flag) if the most recent zend_bailout()
+ * propagating out was triggered by an Out-Of-Memory error from Zend MM. */
+ZEND_API bool zend_alloc_pop_is_oom(void);
+
 ZEND_API void start_memory_manager(void);
 ZEND_API void shutdown_memory_manager(bool silent, bool full_shutdown);
 ZEND_API void refresh_memory_manager(void);
