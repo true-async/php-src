@@ -378,6 +378,9 @@ static const uint32_t bin_pages[] = {
 	ZEND_MM_BINS_INFO(_BIN_DATA_PAGES, x, y)
 };
 
+/* Forward decl — implemented after alloc_globals is in scope. */
+static void zend_mm_mark_oom_bailout(void);
+
 static ZEND_COLD ZEND_NORETURN void zend_mm_panic(const char *message)
 {
 	fprintf(stderr, "%s\n", message);
@@ -414,6 +417,7 @@ static ZEND_COLD ZEND_NORETURN void zend_mm_safe_error(zend_mm_heap *heap,
 	} zend_catch {
 	}  zend_end_try();
 	heap->overflow = 0;
+	zend_mm_mark_oom_bailout();
 	zend_bailout();
 	exit(1);
 }
@@ -2609,6 +2613,7 @@ ZEND_API size_t ZEND_FASTCALL _zend_mm_block_size(zend_mm_heap *heap, void *ptr 
 
 typedef struct _zend_alloc_globals {
 	zend_mm_heap *mm_heap;
+	bool is_oom;
 } zend_alloc_globals;
 
 #ifdef ZTS
@@ -2925,6 +2930,18 @@ ZEND_API bool zend_alloc_in_memory_limit_error_reporting(void)
 #else
 	return false;
 #endif
+}
+
+static void zend_mm_mark_oom_bailout(void)
+{
+	AG(is_oom) = true;
+}
+
+ZEND_API bool zend_alloc_pop_is_oom(void)
+{
+	bool is_oom = AG(is_oom);
+	AG(is_oom) = false;
+	return is_oom;
 }
 
 ZEND_API size_t zend_memory_usage(bool real_usage)
