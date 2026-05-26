@@ -85,7 +85,8 @@ struct curl_async_read_state_s {
 
 	union {
 		struct {
-			zend_async_io_t *io;        /* async IO handle */
+			zend_async_io_t *io;        /* async IO handle (borrowed from stream) */
+			zend_async_event_callback_t *io_cb; /* our subscription on io->event */
 			zend_async_io_req_t *req;   /* completed request with data */
 			int fd;                     /* >= 0: owned (CURLFile), -1: stream owns */
 		} file;

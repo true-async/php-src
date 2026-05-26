@@ -1341,7 +1341,15 @@ void curl_async_read_state_free(curl_async_read_state_t *state)
 {
 	if (state->source == CURL_READ_FILE) {
 		/* IO is borrowed from the stream, not owned by curl.
-		 * The stream (plain_wrapper) is responsible for close + dispose. */
+		 * The stream (plain_wrapper) is responsible for close + dispose.
+		 * But our subscription on io->event MUST be removed here — otherwise
+		 * a later io.event notification (e.g. stream close) fires the callback
+		 * on freed state → UAF / zend_mm heap corruption. */
+		if (state->file.io != NULL && state->file.io_cb != NULL) {
+			state->file.io->event.del_callback(&state->file.io->event,
+			                                   state->file.io_cb);
+			state->file.io_cb = NULL;
+		}
 		state->file.io = NULL;
 		if (state->file.req != NULL) {
 			state->file.req->dispose(state->file.req);
@@ -1724,6 +1732,7 @@ size_t curl_async_read_cb(char *buffer, const size_t size, const size_t nitems, 
 					ZEND_ASYNC_EVENT_CALLBACK_EX(curl_async_read_complete,
 						sizeof(curl_async_read_io_callback_t));
 				io_cb->state = cb_arg->async_state;
+				cb_arg->async_state->file.io_cb = &io_cb->base;
 				io->event.add_callback(&io->event, &io_cb->base);
 #endif
 			}
@@ -1817,6 +1826,7 @@ size_t curl_async_read_dispatch(php_curl *ch, char *buffer, const size_t request
 							ZEND_ASYNC_EVENT_CALLBACK_EX(curl_async_read_complete,
 								sizeof(curl_async_read_io_callback_t));
 						io_cb->state = ch->async_read_state;
+						ch->async_read_state->file.io_cb = &io_cb->base;
 						io->event.add_callback(&io->event, &io_cb->base);
 					}
 				}
