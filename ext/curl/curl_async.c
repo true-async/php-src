@@ -1174,7 +1174,13 @@ CURLMcode curl_async_select(php_curlm * curl_m, int timeout_ms, int* numfds)
 
 	// Suspend coroutine until events are ready
 	if (!ZEND_ASYNC_SUSPEND()) {
-		return CURLM_INTERNAL_ERROR;
+		/* MUST go through finally to call waker_clean: otherwise C's
+		 * callback stays subscribed to async_event, and a later
+		 * multi_socket_cb(CURL_POLL_REMOVE) → CALLBACKS_NOTIFY fires
+		 * resume() on the still-running coroutine → stale queue entry
+		 * → UAF on the next dequeue. See true-async/php-async#145. */
+		result = CURLM_INTERNAL_ERROR;
+		goto finally;
 	}
 
 	// Clear timeout exception if it occurred
