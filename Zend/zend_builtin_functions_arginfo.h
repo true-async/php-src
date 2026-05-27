@@ -1,5 +1,5 @@
 /* This is a generated file, edit zend_builtin_functions.stub.php instead.
- * Stub hash: 9b49f527064695c812cd204d9efc63c13681d942 */
+ * Stub hash: 9a41b410de4186a667e501d0df9b949085491acf */
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_clone, 0, 1, IS_OBJECT, 0)
 	ZEND_ARG_TYPE_INFO(0, object, IS_OBJECT, 0)
@@ -221,6 +221,11 @@ ZEND_END_ARG_INFO()
 
 #define arginfo_gc_mem_caches arginfo_func_num_args
 
+#if ZEND_DEBUG
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_zend_mm_dump_live_allocations, 0, 0, IS_ARRAY, 0)
+ZEND_END_ARG_INFO()
+#endif
+
 #define arginfo_gc_collect_cycles arginfo_func_num_args
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_gc_enabled, 0, 0, _IS_BOOL, 0)
@@ -305,6 +310,9 @@ ZEND_FUNCTION(get_extension_funcs);
 ZEND_FUNCTION(zend_thread_id);
 #endif
 ZEND_FUNCTION(gc_mem_caches);
+#if ZEND_DEBUG
+ZEND_FUNCTION(zend_mm_dump_live_allocations);
+#endif
 ZEND_FUNCTION(gc_collect_cycles);
 ZEND_FUNCTION(gc_enabled);
 ZEND_FUNCTION(gc_enable);
@@ -372,6 +380,9 @@ static const zend_function_entry ext_functions[] = {
 	ZEND_FE(zend_thread_id, arginfo_zend_thread_id)
 #endif
 	ZEND_FE(gc_mem_caches, arginfo_gc_mem_caches)
+#if ZEND_DEBUG
+	ZEND_FE(zend_mm_dump_live_allocations, arginfo_zend_mm_dump_live_allocations)
+#endif
 	ZEND_FE(gc_collect_cycles, arginfo_gc_collect_cycles)
 	ZEND_FE(gc_enabled, arginfo_gc_enabled)
 	ZEND_FE(gc_enable, arginfo_gc_enable)

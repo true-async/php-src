@@ -204,6 +204,26 @@ function zend_thread_id(): int {}
 
 function gc_mem_caches(): int {}
 
+#if ZEND_DEBUG
+/**
+ * Walk every live emalloc on the current thread's Zend MM heap and
+ * return one entry per `(file, line, orig_file, orig_line)` group.
+ * Each entry holds:
+ *   `count`     — how many live allocations match the location
+ *   `bytes`     — sum of `size` across them
+ *   `file`      — C file that called emalloc (`zend_mm_debug_info.filename`)
+ *   `line`      — C line that called emalloc
+ *   `orig_file` — PHP file at the time of allocation, NULL outside PHP
+ *   `orig_line` — PHP line at the time of allocation, 0 outside PHP
+ *
+ * Debug build only — returns `[]` on release builds (no per-allocation
+ * debug info is recorded).
+ *
+ * @return list<array{count: int, bytes: int, file: string, line: int, orig_file: ?string, orig_line: int}>
+ */
+function zend_mm_dump_live_allocations(): array {}
+#endif
+
 function gc_collect_cycles(): int {}
 
 function gc_enabled(): bool {}

@@ -162,6 +162,101 @@ ZEND_FUNCTION(gc_mem_caches)
 }
 /* }}} */
 
+#if ZEND_DEBUG
+/* Aggregation entry — one per unique (c_file, c_line, orig_file,
+ * orig_line) tuple. Stored as PTR in a HashTable keyed by the same
+ * tuple; converted to a return-array entry at the end. */
+typedef struct {
+	const char *file;
+	const char *orig_file;
+	uint32_t    line;
+	uint32_t    orig_line;
+	uint32_t    count;
+	uint64_t    bytes;
+} zend_mm_dump_entry_t;
+
+static void zend_mm_dump_callback(
+		void       *user_data,
+		const void *addr,
+		size_t      size,
+		const char *filename,
+		uint32_t    lineno,
+		const char *orig_filename,
+		uint32_t    orig_lineno)
+{
+	(void)addr;
+	HashTable *table = (HashTable *)user_data;
+
+	/* Key: hash of the four-field tuple — packed into a 32-byte buffer
+	 * (4× sizeof(void*) on x86_64). zend_inline_hash_func over the raw
+	 * bytes is enough — we keep the lookup-payload around too so a hash
+	 * collision still surfaces as a separate row only if the tuple
+	 * actually differs. */
+	struct {
+		const char *file;
+		const char *orig_file;
+		uint32_t    line;
+		uint32_t    orig_line;
+	} k = {filename, orig_filename, lineno, orig_lineno};
+
+	const zend_ulong h = zend_inline_hash_func((const char *)&k, sizeof k);
+
+	zend_mm_dump_entry_t *e = zend_hash_index_find_ptr(table, h);
+	if (e == NULL) {
+		e = emalloc(sizeof(*e));
+		e->file       = filename;
+		e->orig_file  = orig_filename;
+		e->line       = lineno;
+		e->orig_line  = orig_lineno;
+		e->count      = 0;
+		e->bytes      = 0;
+		zend_hash_index_add_new_ptr(table, h, e);
+	}
+
+	e->count += 1;
+	e->bytes += size;
+}
+
+/* {{{ Walk live emallocs on the current thread's Zend MM heap,
+   return one entry per unique (c_file, c_line, orig_file, orig_line). */
+ZEND_FUNCTION(zend_mm_dump_live_allocations)
+{
+	ZEND_PARSE_PARAMETERS_NONE();
+
+	HashTable table;
+	zend_hash_init(&table, 256, NULL, NULL, 0);
+
+	zend_mm_for_each_live(zend_mm_get_heap(), zend_mm_dump_callback, &table);
+
+	array_init(return_value);
+
+	zend_mm_dump_entry_t *e;
+	ZEND_HASH_MAP_FOREACH_PTR(&table, e) {
+		zval row;
+		array_init(&row);
+		add_assoc_long(&row, "count", (zend_long)e->count);
+		add_assoc_long(&row, "bytes", (zend_long)e->bytes);
+		if (e->file != NULL) {
+			add_assoc_string(&row, "file", (char *)e->file);
+		} else {
+			add_assoc_null(&row, "file");
+		}
+		add_assoc_long(&row, "line", (zend_long)e->line);
+		if (e->orig_file != NULL) {
+			add_assoc_string(&row, "orig_file", (char *)e->orig_file);
+		} else {
+			add_assoc_null(&row, "orig_file");
+		}
+		add_assoc_long(&row, "orig_line", (zend_long)e->orig_line);
+		add_next_index_zval(return_value, &row);
+		efree(e);
+	} ZEND_HASH_FOREACH_END();
+
+	zend_hash_destroy(&table);
+}
+/* }}} */
+#endif
+
 /* {{{ Forces collection of any existing garbage cycles.
    Returns number of freed zvals */
 ZEND_FUNCTION(gc_collect_cycles)

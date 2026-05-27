@@ -2415,6 +2415,80 @@ static void zend_mm_check_leaks(zend_mm_heap *heap)
 		zend_message_dispatcher(ZMSG_MEMORY_LEAKS_GRAND_TOTAL, &total);
 	}
 }
+
+/* Read-only walk over every live emalloc on @heap. Mirrors the page
+ * layout decoding in zend_mm_check_leaks but does not mutate any
+ * bookkeeping: no zeroing dbg fields, no free_map clears, no chunk
+ * frees. Safe to call from a running process — observational only. */
+ZEND_API void zend_mm_for_each_live(zend_mm_heap *heap,
+                                    zend_mm_live_callback_t cb, void *user_data)
+{
+	if (heap == NULL || cb == NULL) {
+		return;
+	}
+
+	/* huge_list — single big allocations not owned by a chunk. */
+	for (const zend_mm_huge_list *list = heap->huge_list;
+	     list != NULL; list = list->next) {
+		cb(user_data, list->ptr, list->dbg.size,
+		   list->dbg.filename, list->dbg.lineno,
+		   list->dbg.orig_filename, list->dbg.orig_lineno);
+	}
+
+	/* per-chunk page map walk. */
+	zend_mm_chunk *p = heap->main_chunk;
+	if (p == NULL) {
+		return;
+	}
+
+	do {
+		uint32_t i = ZEND_MM_FIRST_PAGE;
+
+		while (i < p->free_tail) {
+			if (zend_mm_bitset_is_set(p->free_map, i)) {
+				if (p->map[i] & ZEND_MM_IS_SRUN) {
+					const int bin_num = ZEND_MM_SRUN_BIN_NUM(p->map[i]);
+					const zend_mm_debug_info *dbg =
+						(zend_mm_debug_info*)((char*)p + ZEND_MM_PAGE_SIZE * i
+						                     + bin_data_size[bin_num]
+						                     - ZEND_MM_ALIGNED_SIZE(sizeof(zend_mm_debug_info)));
+
+					uint32_t j = 0;
+					while (j < bin_elements[bin_num]) {
+						if (dbg->size != 0) {
+							const void *addr = (void*)((char*)p + ZEND_MM_PAGE_SIZE * i
+							                          + bin_data_size[bin_num] * j);
+							cb(user_data, addr, dbg->size,
+							   dbg->filename, dbg->lineno,
+							   dbg->orig_filename, dbg->orig_lineno);
+						}
+						dbg = (zend_mm_debug_info*)((char*)dbg + bin_data_size[bin_num]);
+						j++;
+					}
+
+					i += bin_pages[bin_num];
+				} else /* ZEND_MM_IS_LRUN */ {
+					const int pages_count = ZEND_MM_LRUN_PAGES(p->map[i]);
+					const zend_mm_debug_info *dbg =
+						(zend_mm_debug_info*)((char*)p
+						                     + ZEND_MM_PAGE_SIZE * (i + pages_count)
+						                     - ZEND_MM_ALIGNED_SIZE(sizeof(zend_mm_debug_info)));
+					const void *addr = (void*)((char*)p + ZEND_MM_PAGE_SIZE * i);
+
+					cb(user_data, addr, dbg->size,
+					   dbg->filename, dbg->lineno,
+					   dbg->orig_filename, dbg->orig_lineno);
+
+					i += pages_count;
+				}
+			} else {
+				i++;
+			}
+		}
+
+		p = p->next;
+	} while (p != heap->main_chunk);
+}
 #endif
 
 #if ZEND_MM_CUSTOM
