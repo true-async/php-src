@@ -163,10 +163,8 @@ ZEND_FUNCTION(gc_mem_caches)
 /* }}} */
 
 #if ZEND_DEBUG
-/* Aggregation entry — one per unique
- * (c_file, c_line, orig_file, orig_line, php_file, php_line) tuple.
- * `php_file`/`php_line` are NULL/0 unless the build was configured
- * with `--enable-mm-php-source-track`. */
+/* One row per unique (c_file, c_line, orig, php_file, php_line) tuple.
+ * php_* are NULL/0 without --enable-mm-php-source-track. */
 typedef struct {
 	const char *file;
 	const char *orig_file;

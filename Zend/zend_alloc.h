@@ -283,22 +283,10 @@ ZEND_API zend_mm_heap *zend_mm_get_heap(void);
 ZEND_API size_t zend_mm_gc(zend_mm_heap *heap);
 
 #if ZEND_DEBUG
-/* Read-only walk over every live emalloc on @heap. The callback fires
- * once per allocation with (addr, size, c_filename, c_lineno,
- * orig_filename, orig_lineno) — the same info Zend MM stores in
- * zend_mm_debug_info when --enable-debug is on. orig_filename /
- * orig_lineno are the PHP-source attribution (filled by
- * `zend_set_alloc_locations(...)` from execute_data); filename /
- * lineno are the C-source where emalloc was called.
- *
- * Debug build only. Does not mutate the heap. Cheap relative to a
- * full leak scan because it does not free anything.
- *
- * Useful for live attribution from a running server — "this RSS
- * came from which PHP file:line" — without needing a clean shutdown
- * + report_memleaks. */
-/* `php_filename` / `php_lineno` are recorded only when the build was
- * configured with `--enable-mm-php-source-track`; otherwise NULL/0. */
+/* Read-only walk over every live emalloc on @heap. Mirrors the page
+ * decoding in zend_mm_check_leaks but never mutates the heap.
+ * `php_filename` / `php_lineno` are populated only when the build was
+ * configured with --enable-mm-php-source-track; otherwise NULL/0. */
 typedef void (*zend_mm_live_callback_t)(
 		void       *user_data,
 		const void *addr,

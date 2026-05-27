@@ -1445,11 +1445,8 @@ static zend_always_inline void zend_mm_free_small(zend_mm_heap *heap, void *ptr,
 #ifdef ZEND_MM_TRACK_PHP_SOURCE
 # include "zend_compile.h"  /* ZEND_USER_CODE */
 
-/* Capture the executing user-PHP frame at the time of the allocation.
- * Walks up the execute_data chain past any non-user frames (internal
- * functions called from user code) so we attribute the alloc to the
- * actual user-script line that triggered it. NULL/0 outside any user
- * frame (RINIT, opcache compile pass, etc.). */
+/* Walk past internal frames so an emalloc from inside e.g. array_fill
+ * attributes to the calling user-script line, not the C extension. */
 static zend_always_inline void zend_mm_dbg_set_php_loc(zend_mm_debug_info *dbg)
 {
 	zend_execute_data *ed = EG(current_execute_data);
@@ -2453,10 +2450,8 @@ static void zend_mm_check_leaks(zend_mm_heap *heap)
 	}
 }
 
-/* Read-only walk over every live emalloc on @heap. Mirrors the page
- * layout decoding in zend_mm_check_leaks but does not mutate any
- * bookkeeping: no zeroing dbg fields, no free_map clears, no chunk
- * frees. Safe to call from a running process — observational only. */
+/* Mirror of zend_mm_check_leaks's page walk, but observational only —
+ * no dbg zeroing, no free_map clears, no chunk frees. */
 ZEND_API void zend_mm_for_each_live(zend_mm_heap *heap,
                                     zend_mm_live_callback_t cb, void *user_data)
 {
