@@ -163,14 +163,17 @@ ZEND_FUNCTION(gc_mem_caches)
 /* }}} */
 
 #if ZEND_DEBUG
-/* Aggregation entry — one per unique (c_file, c_line, orig_file,
- * orig_line) tuple. Stored as PTR in a HashTable keyed by the same
- * tuple; converted to a return-array entry at the end. */
+/* Aggregation entry — one per unique
+ * (c_file, c_line, orig_file, orig_line, php_file, php_line) tuple.
+ * `php_file`/`php_line` are NULL/0 unless the build was configured
+ * with `--enable-mm-php-source-track`. */
 typedef struct {
 	const char *file;
 	const char *orig_file;
+	const char *php_file;
 	uint32_t    line;
 	uint32_t    orig_line;
+	uint32_t    php_line;
 	uint32_t    count;
 	uint64_t    bytes;
 } zend_mm_dump_entry_t;
@@ -182,22 +185,22 @@ static void zend_mm_dump_callback(
 		const char *filename,
 		uint32_t    lineno,
 		const char *orig_filename,
-		uint32_t    orig_lineno)
+		uint32_t    orig_lineno,
+		const char *php_filename,
+		uint32_t    php_lineno)
 {
 	(void)addr;
 	HashTable *table = (HashTable *)user_data;
 
-	/* Key: hash of the four-field tuple — packed into a 32-byte buffer
-	 * (4× sizeof(void*) on x86_64). zend_inline_hash_func over the raw
-	 * bytes is enough — we keep the lookup-payload around too so a hash
-	 * collision still surfaces as a separate row only if the tuple
-	 * actually differs. */
 	struct {
 		const char *file;
 		const char *orig_file;
+		const char *php_file;
 		uint32_t    line;
 		uint32_t    orig_line;
-	} k = {filename, orig_filename, lineno, orig_lineno};
+		uint32_t    php_line;
+	} k = {filename, orig_filename, php_filename,
+	       lineno, orig_lineno, php_lineno};
 
 	const zend_ulong h = zend_inline_hash_func((const char *)&k, sizeof k);
 
@@ -206,8 +209,10 @@ static void zend_mm_dump_callback(
 		e = emalloc(sizeof(*e));
 		e->file       = filename;
 		e->orig_file  = orig_filename;
+		e->php_file   = php_filename;
 		e->line       = lineno;
 		e->orig_line  = orig_lineno;
+		e->php_line   = php_lineno;
 		e->count      = 0;
 		e->bytes      = 0;
 		zend_hash_index_add_new_ptr(table, h, e);
@@ -248,6 +253,12 @@ ZEND_FUNCTION(zend_mm_dump_live_allocations)
 			add_assoc_null(&row, "orig_file");
 		}
 		add_assoc_long(&row, "orig_line", (zend_long)e->orig_line);
+		if (e->php_file != NULL) {
+			add_assoc_string(&row, "php_file", (char *)e->php_file);
+		} else {
+			add_assoc_null(&row, "php_file");
+		}
+		add_assoc_long(&row, "php_line", (zend_long)e->php_line);
 		add_next_index_zval(return_value, &row);
 		efree(e);
 	} ZEND_HASH_FOREACH_END();

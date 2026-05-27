@@ -52,6 +52,16 @@ typedef struct _zend_mm_debug_info {
 	const char        *orig_filename;
 	uint32_t               lineno;
 	uint32_t               orig_lineno;
+#ifdef ZEND_MM_TRACK_PHP_SOURCE
+	/* PHP script:line of the executing user code at the time of
+	 * allocation. NULL/0 when allocation happened outside user PHP
+	 * (internal function, RINIT, opcache compile, etc.). Recorded
+	 * from EG(current_execute_data) in _zend_mm_alloc; surfaced by
+	 * zend_mm_dump_live_allocations(). Off by default — enabled via
+	 * --enable-mm-php-source-track on top of --enable-debug. */
+	const char        *php_filename;
+	uint32_t           php_lineno;
+#endif
 } zend_mm_debug_info;
 
 # define ZEND_MM_OVERHEAD ZEND_MM_ALIGNED_SIZE(sizeof(zend_mm_debug_info))
@@ -287,6 +297,8 @@ ZEND_API size_t zend_mm_gc(zend_mm_heap *heap);
  * Useful for live attribution from a running server — "this RSS
  * came from which PHP file:line" — without needing a clean shutdown
  * + report_memleaks. */
+/* `php_filename` / `php_lineno` are recorded only when the build was
+ * configured with `--enable-mm-php-source-track`; otherwise NULL/0. */
 typedef void (*zend_mm_live_callback_t)(
 		void       *user_data,
 		const void *addr,
@@ -294,7 +306,9 @@ typedef void (*zend_mm_live_callback_t)(
 		const char *filename,
 		uint32_t    lineno,
 		const char *orig_filename,
-		uint32_t    orig_lineno);
+		uint32_t    orig_lineno,
+		const char *php_filename,
+		uint32_t    php_lineno);
 
 ZEND_API void zend_mm_for_each_live(zend_mm_heap *heap,
 		zend_mm_live_callback_t cb, void *user_data);

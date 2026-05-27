@@ -1442,6 +1442,37 @@ static zend_always_inline void zend_mm_free_small(zend_mm_heap *heap, void *ptr,
 /* Heap */
 /********/
 
+#ifdef ZEND_MM_TRACK_PHP_SOURCE
+# include "zend_compile.h"  /* ZEND_USER_CODE */
+
+/* Capture the executing user-PHP frame at the time of the allocation.
+ * Walks up the execute_data chain past any non-user frames (internal
+ * functions called from user code) so we attribute the alloc to the
+ * actual user-script line that triggered it. NULL/0 outside any user
+ * frame (RINIT, opcache compile pass, etc.). */
+static zend_always_inline void zend_mm_dbg_set_php_loc(zend_mm_debug_info *dbg)
+{
+	zend_execute_data *ed = EG(current_execute_data);
+
+	while (ed != NULL
+	       && (ed->func == NULL || !ZEND_USER_CODE(ed->func->common.type))) {
+		ed = ed->prev_execute_data;
+	}
+
+	if (ed != NULL && ed->func != NULL && ed->opline != NULL
+	    && ed->func->op_array.filename != NULL) {
+		dbg->php_filename = ZSTR_VAL(ed->func->op_array.filename);
+		dbg->php_lineno   = ed->opline->lineno;
+	} else {
+		dbg->php_filename = NULL;
+		dbg->php_lineno   = 0;
+	}
+}
+# define ZEND_MM_DBG_SET_PHP_LOC(dbg) zend_mm_dbg_set_php_loc(dbg)
+#else
+# define ZEND_MM_DBG_SET_PHP_LOC(dbg) ((void)0)
+#endif
+
 #if ZEND_DEBUG
 static zend_always_inline zend_mm_debug_info *zend_mm_get_debug_info(zend_mm_heap *heap, void *ptr)
 {
@@ -1494,6 +1525,7 @@ static zend_always_inline void *zend_mm_alloc_heap(zend_mm_heap *heap, size_t si
 		dbg->orig_filename = __zend_orig_filename;
 		dbg->lineno = __zend_lineno;
 		dbg->orig_lineno = __zend_orig_lineno;
+		ZEND_MM_DBG_SET_PHP_LOC(dbg);
 #endif
 		return ptr;
 	} else if (EXPECTED(size <= ZEND_MM_MAX_LARGE_SIZE)) {
@@ -1505,6 +1537,7 @@ static zend_always_inline void *zend_mm_alloc_heap(zend_mm_heap *heap, size_t si
 		dbg->orig_filename = __zend_orig_filename;
 		dbg->lineno = __zend_lineno;
 		dbg->orig_lineno = __zend_orig_lineno;
+		ZEND_MM_DBG_SET_PHP_LOC(dbg);
 #endif
 		return ptr;
 	} else {
@@ -1752,6 +1785,7 @@ static zend_always_inline void *zend_mm_realloc_heap(zend_mm_heap *heap, void *p
 				dbg->orig_filename = __zend_orig_filename;
 				dbg->lineno = __zend_lineno;
 				dbg->orig_lineno = __zend_orig_lineno;
+				ZEND_MM_DBG_SET_PHP_LOC(dbg);
 #endif
 				return ret;
 			}  while (0);
@@ -1769,6 +1803,7 @@ static zend_always_inline void *zend_mm_realloc_heap(zend_mm_heap *heap, void *p
 					dbg->orig_filename = __zend_orig_filename;
 					dbg->lineno = __zend_lineno;
 					dbg->orig_lineno = __zend_orig_lineno;
+					ZEND_MM_DBG_SET_PHP_LOC(dbg);
 #endif
 					return ptr;
 				} else if (new_size < old_size) {
@@ -1789,6 +1824,7 @@ static zend_always_inline void *zend_mm_realloc_heap(zend_mm_heap *heap, void *p
 					dbg->orig_filename = __zend_orig_filename;
 					dbg->lineno = __zend_lineno;
 					dbg->orig_lineno = __zend_orig_lineno;
+					ZEND_MM_DBG_SET_PHP_LOC(dbg);
 #endif
 					return ptr;
 				} else /* if (new_size > old_size) */ {
@@ -1816,6 +1852,7 @@ static zend_always_inline void *zend_mm_realloc_heap(zend_mm_heap *heap, void *p
 						dbg->orig_filename = __zend_orig_filename;
 						dbg->lineno = __zend_lineno;
 						dbg->orig_lineno = __zend_orig_lineno;
+						ZEND_MM_DBG_SET_PHP_LOC(dbg);
 #endif
 						return ptr;
 					}
@@ -2430,9 +2467,17 @@ ZEND_API void zend_mm_for_each_live(zend_mm_heap *heap,
 	/* huge_list — single big allocations not owned by a chunk. */
 	for (const zend_mm_huge_list *list = heap->huge_list;
 	     list != NULL; list = list->next) {
+#ifdef ZEND_MM_TRACK_PHP_SOURCE
 		cb(user_data, list->ptr, list->dbg.size,
 		   list->dbg.filename, list->dbg.lineno,
-		   list->dbg.orig_filename, list->dbg.orig_lineno);
+		   list->dbg.orig_filename, list->dbg.orig_lineno,
+		   list->dbg.php_filename, list->dbg.php_lineno);
+#else
+		cb(user_data, list->ptr, list->dbg.size,
+		   list->dbg.filename, list->dbg.lineno,
+		   list->dbg.orig_filename, list->dbg.orig_lineno,
+		   NULL, 0);
+#endif
 	}
 
 	/* per-chunk page map walk. */
@@ -2458,9 +2503,17 @@ ZEND_API void zend_mm_for_each_live(zend_mm_heap *heap,
 						if (dbg->size != 0) {
 							const void *addr = (void*)((char*)p + ZEND_MM_PAGE_SIZE * i
 							                          + bin_data_size[bin_num] * j);
+#ifdef ZEND_MM_TRACK_PHP_SOURCE
 							cb(user_data, addr, dbg->size,
 							   dbg->filename, dbg->lineno,
-							   dbg->orig_filename, dbg->orig_lineno);
+							   dbg->orig_filename, dbg->orig_lineno,
+							   dbg->php_filename, dbg->php_lineno);
+#else
+							cb(user_data, addr, dbg->size,
+							   dbg->filename, dbg->lineno,
+							   dbg->orig_filename, dbg->orig_lineno,
+							   NULL, 0);
+#endif
 						}
 						dbg = (zend_mm_debug_info*)((char*)dbg + bin_data_size[bin_num]);
 						j++;
@@ -2475,9 +2528,17 @@ ZEND_API void zend_mm_for_each_live(zend_mm_heap *heap,
 						                     - ZEND_MM_ALIGNED_SIZE(sizeof(zend_mm_debug_info)));
 					const void *addr = (void*)((char*)p + ZEND_MM_PAGE_SIZE * i);
 
+#ifdef ZEND_MM_TRACK_PHP_SOURCE
 					cb(user_data, addr, dbg->size,
 					   dbg->filename, dbg->lineno,
-					   dbg->orig_filename, dbg->orig_lineno);
+					   dbg->orig_filename, dbg->orig_lineno,
+					   dbg->php_filename, dbg->php_lineno);
+#else
+					cb(user_data, addr, dbg->size,
+					   dbg->filename, dbg->lineno,
+					   dbg->orig_filename, dbg->orig_lineno,
+					   NULL, 0);
+#endif
 
 					i += pages_count;
 				}

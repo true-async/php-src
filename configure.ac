@@ -862,6 +862,35 @@ AS_VAR_IF([PHP_DEBUG_ASSERTIONS], [yes], [
   CXXFLAGS="$CXXFLAGS -UNDEBUG"
 ])
 
+dnl ---------------------------------------------------------------------
+dnl --enable-mm-php-source-track
+dnl
+dnl When enabled on top of --enable-debug, every emalloc/erealloc records
+dnl the executing PHP script's filename + line number into
+dnl zend_mm_debug_info, alongside the C source location it already
+dnl tracks. Surfaced at runtime via zend_mm_dump_live_allocations().
+dnl
+dnl Adds ~16 bytes per live allocation and one EG(current_execute_data)
+dnl read per alloc. Off by default because the read costs in even a
+dnl debug build are non-trivial under heavy churn (large interp_test_*
+dnl suites).
+dnl ---------------------------------------------------------------------
+PHP_ARG_ENABLE([mm-php-source-track],
+  [whether to record PHP source location on each Zend MM allocation],
+  [AS_HELP_STRING([--enable-mm-php-source-track],
+    [Record PHP file:line on every emalloc (requires --enable-debug)])],
+  [no],
+  [no])
+
+AS_VAR_IF([PHP_MM_PHP_SOURCE_TRACK], [yes], [
+  AS_VAR_IF([ZEND_DEBUG], [yes], [
+    AC_DEFINE([ZEND_MM_TRACK_PHP_SOURCE], [1],
+      [Record PHP script:line on each Zend MM allocation.])
+  ], [
+    AC_MSG_ERROR([--enable-mm-php-source-track requires --enable-debug])
+  ])
+])
+
 dnl libbacktrace for C backtraces in debug builds (ZEND_ASSERT, exception traces).
 AS_VAR_IF([ZEND_DEBUG], [yes], [
   PKG_CHECK_MODULES([LIBBACKTRACE], [libbacktrace], [
