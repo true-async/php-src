@@ -208,13 +208,22 @@ function gc_mem_caches(): int {}
 /**
  * Walk every live emalloc on the current thread's Zend MM heap and
  * return one entry per `(file, line, orig_file, orig_line)` group.
- * Each entry holds:
- *   `count`     — how many live allocations match the location
- *   `bytes`     — sum of `size` across them
- *   `file`      — C file that called emalloc (`zend_mm_debug_info.filename`)
- *   `line`      — C line that called emalloc
- *   `orig_file` — PHP file at the time of allocation, NULL outside PHP
- *   `orig_line` — PHP line at the time of allocation, 0 outside PHP
+ *
+ *   `count`     — number of live allocations at that location
+ *   `bytes`     — sum of allocation sizes
+ *   `file`      — C source where emalloc landed (e.g. `zend_string.h`)
+ *   `line`      — C line in `file`
+ *   `orig_file` — C source of the original caller before any wrapper
+ *                 macro expansion. For inline VM allocations the
+ *                 engine clears this to NULL.
+ *   `orig_line` — C line in `orig_file`
+ *
+ * **No PHP-source attribution.** Zend MM only records C `(file, line)`
+ * per allocation. The PHP `.php` filename of the executing script is
+ * captured separately at leak-report time via `ZMSG_LOG_SCRIPT_NAME`
+ * (current EG context, not stored per-allocation). To attribute live
+ * memory to a PHP location you have to wrap the suspect code and
+ * diff `memory_get_usage(false)` around it.
  *
  * Debug build only — returns `[]` on release builds (no per-allocation
  * debug info is recorded).
