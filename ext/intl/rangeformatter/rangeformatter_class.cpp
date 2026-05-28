@@ -22,6 +22,7 @@ extern "C" {
 #include <unicode/numberrangeformatter.h>
 #include <unicode/numberformatter.h>
 #include <unicode/unistr.h>
+#include <unicode/locid.h>
 #include "../intl_convertcpp.h"
 
 extern "C" {
@@ -30,7 +31,6 @@ extern "C" {
     #include "../intl_data.h"
     #include "rangeformatter_arginfo.h"
     #include "rangeformatter_class.h"
-    #include "intl_convert.h"
 }
 
 using icu::number::NumberRangeFormatter;
@@ -91,7 +91,7 @@ U_CFUNC PHP_METHOD(IntlNumberRangeFormatter, createFromSkeleton)
         RETURN_THROWS();
     }
 
-    if (strlen(uloc_getISO3Language(locale)) == 0) {
+    if (icu::Locale(locale).getISO3Language()[0] == '\0') {
         zend_argument_value_error(2, "\"%s\" is invalid", locale);
         RETURN_THROWS();
     }
@@ -219,7 +219,7 @@ void rangeformatter_register_class(void)
     class_entry_IntlNumberRangeFormatter->create_object = IntlNumberRangeFormatter_object_create;
 
     memcpy(&rangeformatter_handlers, zend_get_std_object_handlers(), sizeof(zend_object_handlers));
-    rangeformatter_handlers.offset = XtOffsetOf(IntlNumberRangeFormatter_object, zo);
+    rangeformatter_handlers.offset = offsetof(IntlNumberRangeFormatter_object, zo);
     rangeformatter_handlers.free_obj = IntlNumberRangeFormatter_object_free;
     rangeformatter_handlers.clone_obj = NULL;
 }
