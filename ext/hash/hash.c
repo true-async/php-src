@@ -1397,7 +1397,7 @@ static void php_hashcontext_free(zend_object *obj) {
 
 /* {{{ php_hashcontext_clone */
 static zend_object *php_hashcontext_clone(zend_object *zobj) {
-	php_hashcontext_object *oldobj = php_hashcontext_from_object(zobj);
+	const php_hashcontext_object *oldobj = php_hashcontext_from_object(zobj);
 	zend_object *znew = php_hashcontext_create(zobj->ce);
 	php_hashcontext_object *newobj = php_hashcontext_from_object(znew);
 
@@ -1652,7 +1652,7 @@ PHP_MINIT_FUNCTION(hash)
 
 	memcpy(&php_hashcontext_handlers, &std_object_handlers,
 	       sizeof(zend_object_handlers));
-	php_hashcontext_handlers.offset = XtOffsetOf(php_hashcontext_object, std);
+	php_hashcontext_handlers.offset = offsetof(php_hashcontext_object, std);
 	php_hashcontext_handlers.free_obj = php_hashcontext_free;
 	php_hashcontext_handlers.clone_obj = php_hashcontext_clone;
 

@@ -90,7 +90,7 @@ static void zend_verify_enum_properties(const zend_class_entry *ce)
 
 static void zend_verify_enum_magic_methods(const zend_class_entry *ce)
 {
-	// Only __get, __call and __invoke are allowed
+	// Only __get, __call, __debugInfo and __invoke are allowed
 
 	ZEND_ENUM_DISALLOW_MAGIC_METHOD(constructor, "__construct");
 	ZEND_ENUM_DISALLOW_MAGIC_METHOD(destructor, "__destruct");
@@ -100,7 +100,6 @@ static void zend_verify_enum_magic_methods(const zend_class_entry *ce)
 	ZEND_ENUM_DISALLOW_MAGIC_METHOD(__unset, "__unset");
 	ZEND_ENUM_DISALLOW_MAGIC_METHOD(__isset, "__isset");
 	ZEND_ENUM_DISALLOW_MAGIC_METHOD(__tostring, "__toString");
-	ZEND_ENUM_DISALLOW_MAGIC_METHOD(__debugInfo, "__debugInfo");
 	ZEND_ENUM_DISALLOW_MAGIC_METHOD(__serialize, "__serialize");
 	ZEND_ENUM_DISALLOW_MAGIC_METHOD(__unserialize, "__unserialize");
 
@@ -176,7 +175,7 @@ void zend_register_enum_ce(void)
 	zend_ce_backed_enum->interface_gets_implemented = zend_implement_backed_enum;
 
 	memcpy(&zend_enum_object_handlers, &std_object_handlers, sizeof(zend_object_handlers));
-	zend_enum_object_handlers.offset = XtOffsetOf(zend_enum_obj, std);
+	zend_enum_object_handlers.offset = offsetof(zend_enum_obj, std);
 	zend_enum_object_handlers.clone_obj = NULL;
 	zend_enum_object_handlers.compare = zend_objects_not_comparable;
 }

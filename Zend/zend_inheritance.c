@@ -188,9 +188,9 @@ static void do_inherit_parent_constructor(zend_class_entry *ce) /* {{{ */
 
 	if (ce->constructor) {
 		if (parent->constructor && UNEXPECTED(parent->constructor->common.fn_flags & ZEND_ACC_FINAL)) {
-			zend_error_noreturn(E_ERROR, "Cannot override final %s::%s() with %s::%s()",
-				ZSTR_VAL(parent->name), ZSTR_VAL(parent->constructor->common.function_name),
-				ZSTR_VAL(ce->name), ZSTR_VAL(ce->constructor->common.function_name));
+			zend_error_noreturn(E_ERROR, "Cannot override final %s::__construct() with %s::__construct()",
+				ZSTR_VAL(parent->name),
+				ZSTR_VAL(ce->name));
 		}
 		return;
 	}
@@ -1595,11 +1595,7 @@ static void zend_do_inherit_interfaces(zend_class_entry *ce, const zend_class_en
 
 	ce_num = ce->num_interfaces;
 
-	if (ce->type == ZEND_INTERNAL_CLASS) {
-		ce->interfaces = (zend_class_entry **) realloc(ce->interfaces, sizeof(zend_class_entry *) * (ce_num + if_num));
-	} else {
-		ce->interfaces = (zend_class_entry **) erealloc(ce->interfaces, sizeof(zend_class_entry *) * (ce_num + if_num));
-	}
+	ce->interfaces = (zend_class_entry **) perealloc(ce->interfaces, sizeof(zend_class_entry *) * (ce_num + if_num), ce->type == ZEND_INTERNAL_CLASS);
 
 	/* Inherit the interfaces, only if they're not already inherited by the class */
 	while (if_num--) {
@@ -2234,11 +2230,7 @@ ZEND_API void zend_do_implement_interface(zend_class_entry *ce, zend_class_entry
 		} ZEND_HASH_FOREACH_END();
 	} else {
 		if (ce->num_interfaces >= current_iface_num) {
-			if (ce->type == ZEND_INTERNAL_CLASS) {
-				ce->interfaces = (zend_class_entry **) realloc(ce->interfaces, sizeof(zend_class_entry *) * (++current_iface_num));
-			} else {
-				ce->interfaces = (zend_class_entry **) erealloc(ce->interfaces, sizeof(zend_class_entry *) * (++current_iface_num));
-			}
+			ce->interfaces = (zend_class_entry **) perealloc(ce->interfaces, sizeof(zend_class_entry *) * (++current_iface_num), ce->type == ZEND_INTERNAL_CLASS);
 		}
 		ce->interfaces[ce->num_interfaces++] = iface;
 
@@ -2765,6 +2757,19 @@ static void emit_incompatible_trait_constant_error(
 	);
 }
 
+static void emit_trait_constant_enum_case_conflict_error(
+	const zend_class_entry *ce, const zend_class_constant *trait_constant, zend_string *name
+) {
+	zend_error_noreturn(E_COMPILE_ERROR,
+		"Cannot use trait %s, because %s::%s conflicts with enum case %s::%s",
+		ZSTR_VAL(trait_constant->ce->name),
+		ZSTR_VAL(trait_constant->ce->name),
+		ZSTR_VAL(name),
+		ZSTR_VAL(ce->name),
+		ZSTR_VAL(name)
+	);
+}
+
 static bool do_trait_constant_check(
 	zend_class_entry *ce, zend_class_constant *trait_constant, zend_string *name, zend_class_entry **traits, size_t current_trait
 ) {
@@ -2777,6 +2782,11 @@ static bool do_trait_constant_check(
 	}
 
 	zend_class_constant *existing_constant = Z_PTR_P(zv);
+
+	if (UNEXPECTED(ZEND_CLASS_CONST_FLAGS(existing_constant) & ZEND_CLASS_CONST_IS_CASE)) {
+		emit_trait_constant_enum_case_conflict_error(ce, trait_constant, name);
+		return false;
+	}
 
 	if ((ZEND_CLASS_CONST_FLAGS(trait_constant) & flags_mask) != (ZEND_CLASS_CONST_FLAGS(existing_constant) & flags_mask)) {
 		emit_incompatible_trait_constant_error(ce, existing_constant, trait_constant, name, traits, current_trait);

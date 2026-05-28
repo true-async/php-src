@@ -1641,7 +1641,10 @@ function in_array(mixed $needle, array $haystack, bool $strict = false): bool {}
  */
 function array_search(mixed $needle, array $haystack, bool $strict = false): int|string|false {}
 
-/** @prefer-ref $array */
+/**
+ * @prefer-ref $array
+ * @forbid-dynamic-calls
+ */
 function extract(array &$array, int $flags = EXTR_OVERWRITE, string $prefix = ""): int {}
 
 /**
@@ -1649,6 +1652,7 @@ function extract(array &$array, int $flags = EXTR_OVERWRITE, string $prefix = ""
  * @param array|string $var_names
  * @return array<string, mixed|ref>
  * @refcount 1
+ * @forbid-dynamic-calls
  */
 function compact($var_name, ...$var_names): array {}
 
