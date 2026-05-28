@@ -1,5 +1,5 @@
 /* This is a generated file, edit zend_builtin_functions.stub.php instead.
- * Stub hash: 97a1de3bca42534c380995cb878f054e702875e0 */
+ * Stub hash: 9b22c9fffdcfa9f19f34906736be1cad65388bdb */
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_clone, 0, 1, IS_OBJECT, 0)
 	ZEND_ARG_TYPE_INFO(0, object, IS_OBJECT, 0)
@@ -324,9 +324,21 @@ static const zend_function_entry ext_functions[] = {
 	ZEND_FE(exit, arginfo_exit)
 	ZEND_RAW_FENTRY("die", zif_exit, arginfo_die, 0, NULL, NULL)
 	ZEND_FE(zend_version, arginfo_zend_version)
-	ZEND_FE(func_num_args, arginfo_func_num_args)
-	ZEND_FE(func_get_arg, arginfo_func_get_arg)
-	ZEND_FE(func_get_args, arginfo_func_get_args)
+#if (PHP_VERSION_ID >= 80600)
+	ZEND_RAW_FENTRY("func_num_args", zif_func_num_args, arginfo_func_num_args, ZEND_FENTRY_FLAGS(0, ZEND_ACC2_FORBID_DYN_CALLS), NULL, NULL)
+#elif (PHP_VERSION_ID >= 80400)
+	ZEND_RAW_FENTRY("func_num_args", zif_func_num_args, arginfo_func_num_args, 0, NULL, NULL)
+#endif
+#if (PHP_VERSION_ID >= 80600)
+	ZEND_RAW_FENTRY("func_get_arg", zif_func_get_arg, arginfo_func_get_arg, ZEND_FENTRY_FLAGS(0, ZEND_ACC2_FORBID_DYN_CALLS), NULL, NULL)
+#elif (PHP_VERSION_ID >= 80400)
+	ZEND_RAW_FENTRY("func_get_arg", zif_func_get_arg, arginfo_func_get_arg, 0, NULL, NULL)
+#endif
+#if (PHP_VERSION_ID >= 80600)
+	ZEND_RAW_FENTRY("func_get_args", zif_func_get_args, arginfo_func_get_args, ZEND_FENTRY_FLAGS(0, ZEND_ACC2_FORBID_DYN_CALLS), NULL, NULL)
+#elif (PHP_VERSION_ID >= 80400)
+	ZEND_RAW_FENTRY("func_get_args", zif_func_get_args, arginfo_func_get_args, 0, NULL, NULL)
+#endif
 	ZEND_FE(strlen, arginfo_strlen)
 	ZEND_RAW_FENTRY("strcmp", zif_strcmp, arginfo_strcmp, ZEND_ACC_COMPILE_TIME_EVAL, NULL, NULL)
 	ZEND_RAW_FENTRY("strncmp", zif_strncmp, arginfo_strncmp, ZEND_ACC_COMPILE_TIME_EVAL, NULL, NULL)
@@ -366,7 +378,11 @@ static const zend_function_entry ext_functions[] = {
 	ZEND_FE(get_declared_traits, arginfo_get_declared_traits)
 	ZEND_FE(get_declared_interfaces, arginfo_get_declared_interfaces)
 	ZEND_FE(get_defined_functions, arginfo_get_defined_functions)
-	ZEND_FE(get_defined_vars, arginfo_get_defined_vars)
+#if (PHP_VERSION_ID >= 80600)
+	ZEND_RAW_FENTRY("get_defined_vars", zif_get_defined_vars, arginfo_get_defined_vars, ZEND_FENTRY_FLAGS(0, ZEND_ACC2_FORBID_DYN_CALLS), NULL, NULL)
+#elif (PHP_VERSION_ID >= 80400)
+	ZEND_RAW_FENTRY("get_defined_vars", zif_get_defined_vars, arginfo_get_defined_vars, 0, NULL, NULL)
+#endif
 	ZEND_FE(get_resource_type, arginfo_get_resource_type)
 	ZEND_FE(get_resource_id, arginfo_get_resource_id)
 	ZEND_FE(get_resources, arginfo_get_resources)
