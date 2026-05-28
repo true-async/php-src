@@ -75,7 +75,7 @@ string(%d) "O:15:"Openssl\Session":1:{s:3:"pem";s:%d:"-----BEGIN SSL SESSION PAR
 %a
 -----END SSL SESSION PARAMETERS-----
 ";}"
-object(Openssl\Session)#9 (1) {
+object(Openssl\Session)#%d (1) {
   ["id"]=>
 %a
 }
