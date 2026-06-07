@@ -181,6 +181,7 @@ zend_async_suspend_t zend_async_suspend_fn = suspend;
 zend_async_enqueue_coroutine_t zend_async_enqueue_coroutine_fn = enqueue_coroutine;
 zend_async_resume_t zend_async_resume_fn = NULL;
 zend_async_cancel_t zend_async_cancel_fn = NULL;
+zend_async_scope_await_after_cancellation_t zend_async_scope_await_after_cancellation_fn = NULL;
 zend_async_spawn_and_throw_t zend_async_spawn_and_throw_fn = spawn_and_throw;
 zend_async_shutdown_t zend_async_shutdown_fn = bool_stub;
 zend_async_engine_shutdown_t zend_async_engine_shutdown_fn = bool_stub;
@@ -394,6 +395,7 @@ ZEND_API bool zend_async_scheduler_register(char *module, bool allow_override,
 		zend_async_new_context_t new_context_fn, zend_async_spawn_t spawn_fn,
 		zend_async_suspend_t suspend_fn, zend_async_enqueue_coroutine_t enqueue_coroutine_fn,
 		zend_async_resume_t resume_fn, zend_async_cancel_t cancel_fn,
+		zend_async_scope_await_after_cancellation_t scope_await_after_cancellation_fn,
 		zend_async_spawn_and_throw_t spawn_and_throw_fn, zend_async_shutdown_t shutdown_fn,
 		zend_async_waker_new_t waker_new_fn, zend_async_waker_destroy_t waker_destroy_fn,
 		zend_async_get_coroutines_t get_coroutines_fn, zend_async_add_microtask_t add_microtask_fn,
@@ -436,6 +438,7 @@ ZEND_API bool zend_async_scheduler_register(char *module, bool allow_override,
 	zend_async_enqueue_coroutine_fn = enqueue_coroutine_fn;
 	zend_async_resume_fn = resume_fn;
 	zend_async_cancel_fn = cancel_fn;
+	zend_async_scope_await_after_cancellation_fn = scope_await_after_cancellation_fn;
 	zend_async_spawn_and_throw_fn = spawn_and_throw_fn;
 	zend_async_shutdown_fn = shutdown_fn;
 	zend_async_waker_new_fn = waker_new_fn ? waker_new_fn : zend_async_waker_new_default;
