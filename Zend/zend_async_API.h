@@ -336,11 +336,9 @@ typedef bool (*zend_async_resume_t)(
 		zend_coroutine_t *coroutine, zend_object *error, const bool transfer_error);
 typedef bool (*zend_async_cancel_t)(
 		zend_coroutine_t *coroutine, zend_object *error, bool transfer_error, const bool is_safely);
-/* Suspend `awaiter` until every (already cancelled) coroutine and child scope of
- * `scope` has been physically disposed — not merely flagged complete. `awaiter`
- * must NOT belong to `scope` or its children. `error_fci`/`cancellation` are
- * optional (NULL to ignore). Backs Scope::awaitAfterCancellation and is reused
- * by the thread pool to drain a per-task nursery before freeing its snapshot. */
+/* Suspend `awaiter` until every (cancelled) coroutine/child scope of `scope` is
+ * physically disposed (not just flagged complete). `awaiter` must not belong to
+ * `scope`. `error_fci`/`cancellation` optional. Backs Scope::awaitAfterCancellation. */
 typedef void (*zend_async_scope_await_after_cancellation_t)(
 		zend_async_scope_t *scope, zend_coroutine_t *awaiter,
 		zend_fcall_info *error_fci, zend_fcall_info_cache *error_fci_cache,
