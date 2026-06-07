@@ -21,9 +21,9 @@
 #include "zend_globals.h"
 #include "zend_stream.h"
 
-#define ZEND_ASYNC_API "TrueAsync ABI v0.19.0"
+#define ZEND_ASYNC_API "TrueAsync ABI v0.20.0"
 #define ZEND_ASYNC_API_VERSION_MAJOR 0
-#define ZEND_ASYNC_API_VERSION_MINOR 19
+#define ZEND_ASYNC_API_VERSION_MINOR 20
 #define ZEND_ASYNC_API_VERSION_PATCH 0
 
 #define ZEND_ASYNC_API_VERSION_NUMBER \
@@ -336,6 +336,15 @@ typedef bool (*zend_async_resume_t)(
 		zend_coroutine_t *coroutine, zend_object *error, const bool transfer_error);
 typedef bool (*zend_async_cancel_t)(
 		zend_coroutine_t *coroutine, zend_object *error, bool transfer_error, const bool is_safely);
+/* Suspend `awaiter` until every (already cancelled) coroutine and child scope of
+ * `scope` has been physically disposed — not merely flagged complete. `awaiter`
+ * must NOT belong to `scope` or its children. `error_fci`/`cancellation` are
+ * optional (NULL to ignore). Backs Scope::awaitAfterCancellation and is reused
+ * by the thread pool to drain a per-task nursery before freeing its snapshot. */
+typedef void (*zend_async_scope_await_after_cancellation_t)(
+		zend_async_scope_t *scope, zend_coroutine_t *awaiter,
+		zend_fcall_info *error_fci, zend_fcall_info_cache *error_fci_cache,
+		zend_async_event_t *cancellation);
 typedef bool (*zend_async_spawn_and_throw_t)(
 		zend_object *exception, zend_async_scope_t *scope, int32_t priority);
 typedef bool (*zend_async_shutdown_t)(void);
@@ -1472,6 +1481,10 @@ struct _zend_async_scope_s {
 	((scope)->catch_or_cancel((scope), (coroutine), (from_scope), (exception), (transfer_error), \
 			(is_safely), false))
 
+#define ZEND_ASYNC_SCOPE_AWAIT_AFTER_CANCELLATION(scope, awaiter, error_fci, error_fci_cache, cancellation) \
+	zend_async_scope_await_after_cancellation_fn( \
+			(scope), (awaiter), (error_fci), (error_fci_cache), (cancellation))
+
 #define ZEND_ASYNC_SCOPE_IS_COMPLETED(scope) \
 	((scope)->can_be_disposed((scope), false, false))
 #define ZEND_ASYNC_SCOPE_IS_COMPLETELY_DONE(scope) \
@@ -2262,6 +2275,7 @@ ZEND_API extern zend_async_suspend_t zend_async_suspend_fn;
 ZEND_API extern zend_async_enqueue_coroutine_t zend_async_enqueue_coroutine_fn;
 ZEND_API extern zend_async_resume_t zend_async_resume_fn;
 ZEND_API extern zend_async_cancel_t zend_async_cancel_fn;
+ZEND_API extern zend_async_scope_await_after_cancellation_t zend_async_scope_await_after_cancellation_fn;
 ZEND_API extern zend_async_spawn_and_throw_t zend_async_spawn_and_throw_fn;
 ZEND_API extern zend_async_shutdown_t zend_async_shutdown_fn;
 ZEND_API extern zend_async_engine_shutdown_t zend_async_engine_shutdown_fn;
@@ -2425,6 +2439,7 @@ ZEND_API bool zend_async_scheduler_register(char *module, bool allow_override,
 		zend_async_new_context_t new_context_fn, zend_async_spawn_t spawn_fn,
 		zend_async_suspend_t suspend_fn, zend_async_enqueue_coroutine_t enqueue_coroutine_fn,
 		zend_async_resume_t resume_fn, zend_async_cancel_t cancel_fn,
+		zend_async_scope_await_after_cancellation_t scope_await_after_cancellation_fn,
 		zend_async_spawn_and_throw_t spawn_and_throw_fn, zend_async_shutdown_t shutdown_fn,
 		zend_async_waker_new_t waker_new_fn, zend_async_waker_destroy_t waker_destroy_fn,
 		zend_async_get_coroutines_t get_coroutines_fn, zend_async_add_microtask_t add_microtask_fn,
