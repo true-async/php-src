@@ -604,6 +604,15 @@ static void timer_callback(
 {
 	int running_handles = 0;
 	curl_multi_socket_action(curl_multi_handle, CURL_SOCKET_TIMEOUT, 0, &running_handles);
+#if LIBCURL_VERSION_NUM >= 0x081400 && LIBCURL_VERSION_NUM < 0x081500
+	/* curl 8.20.x regression: the new thread-pool DNS resolver signals completion
+	 * through an internal, multi-level socketpair that is NOT surfaced via
+	 * CURLMOPT_SOCKETFUNCTION. A curl_multi_socket_action()-only event loop (ours)
+	 * therefore never receives the resolve result and DNS times out.
+	 * curl_multi_perform() runs the resolver's result processing so DNS completes.
+	 * Fixed upstream in curl 8.21 (curl/curl#21476) — scoped to the 8.20 series only. */
+	curl_multi_perform(curl_multi_handle, &running_handles);
+#endif
 	process_curl_completed_handles();
 }
 
@@ -853,6 +862,13 @@ static void multi_timer_callback(
 	curl_multi_socket_action(
 		async_event_callback->curl_m_event->curl_m->multi, CURL_SOCKET_TIMEOUT, 0, &running_handles
 	);
+#if LIBCURL_VERSION_NUM >= 0x081400 && LIBCURL_VERSION_NUM < 0x081500
+	/* See timer_callback(): curl 8.20.x thread-pool DNS resolver delivers completion
+	 * via an internal socketpair not exposed through CURLMOPT_SOCKETFUNCTION, so a
+	 * socket-action event loop needs curl_multi_perform() to drive the resolve to
+	 * completion. Fixed upstream in curl 8.21 (curl/curl#21476) — 8.20 series only. */
+	curl_multi_perform(async_event_callback->curl_m_event->curl_m->multi, &running_handles);
+#endif
 
 	if (running_handles < async_event_callback->curl_m_event->last_running_handles) {
 		async_event_callback->curl_m_event->last_running_handles = running_handles;
