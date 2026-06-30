@@ -178,6 +178,12 @@ zend_async_spawn_t zend_async_spawn_fn = spawn;
 zend_async_new_coroutine_t zend_async_new_coroutine_fn = NULL;
 zend_async_new_scope_t zend_async_new_scope_fn = NULL;
 zend_async_suspend_t zend_async_suspend_fn = suspend;
+
+/* Default: no fibers in play (or the async engine not loaded) — the caller is
+ * already on the OS thread stack, so just run it. ext/async overrides this with
+ * the real stack-switching implementation. */
+static void default_call_on_main_stack(void (*fn)(void *), void *arg) { fn(arg); }
+zend_async_call_on_main_stack_t zend_async_call_on_main_stack_fn = default_call_on_main_stack;
 zend_async_enqueue_coroutine_t zend_async_enqueue_coroutine_fn = enqueue_coroutine;
 zend_async_resume_t zend_async_resume_fn = NULL;
 zend_async_cancel_t zend_async_cancel_fn = NULL;
