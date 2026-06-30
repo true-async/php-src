@@ -21,9 +21,9 @@
 #include "zend_globals.h"
 #include "zend_stream.h"
 
-#define ZEND_ASYNC_API "TrueAsync ABI v0.20.0"
+#define ZEND_ASYNC_API "TrueAsync ABI v0.21.0"
 #define ZEND_ASYNC_API_VERSION_MAJOR 0
-#define ZEND_ASYNC_API_VERSION_MINOR 20
+#define ZEND_ASYNC_API_VERSION_MINOR 21
 #define ZEND_ASYNC_API_VERSION_PATCH 0
 
 #define ZEND_ASYNC_API_VERSION_NUMBER \
@@ -331,6 +331,9 @@ typedef zend_async_scope_t *(*zend_async_new_scope_t)(
 typedef zend_coroutine_t *(*zend_async_spawn_t)(
 		zend_async_scope_t *scope, zend_object *scope_provider, int32_t priority);
 typedef bool (*zend_async_suspend_t)(bool from_main, bool is_bailout);
+/* Run fn(arg) on the main coroutine's stack — the OS thread stack the platform
+ * runtime knows about. See zend_async_call_on_main_stack_fn below. */
+typedef void (*zend_async_call_on_main_stack_t)(void (*fn)(void *), void *arg);
 typedef bool (*zend_async_enqueue_coroutine_t)(zend_coroutine_t *coroutine);
 typedef bool (*zend_async_resume_t)(
 		zend_coroutine_t *coroutine, zend_object *error, const bool transfer_error);
@@ -2130,6 +2133,10 @@ typedef struct {
 	zend_async_scope_t *main_scope;
 	/* Scheduler coroutine */
 	zend_coroutine_t *scheduler;
+	/* The main coroutine (runs the top-level script on the OS thread stack).
+	 * Stored so foreign calls made from another coroutine can borrow its stack
+	 * — see ZEND_ASYNC_CALL_ON_MAIN_STACK / async_call_on_main_stack. */
+	zend_coroutine_t *main_coroutine;
 	/* Exit exception object */
 	zend_object *exit_exception;
 	/* Custom heartbeat handler */
@@ -2180,6 +2187,7 @@ END_EXTERN_C()
 #define ZEND_ASYNC_GRACEFUL_SHUTDOWN ZEND_ASYNC_G(graceful_shutdown)
 #define ZEND_ASYNC_EXIT_EXCEPTION ZEND_ASYNC_G(exit_exception)
 #define ZEND_ASYNC_CURRENT_COROUTINE ZEND_ASYNC_G(coroutine)
+#define ZEND_ASYNC_MAIN_COROUTINE ZEND_ASYNC_G(main_coroutine)
 #define ZEND_ASYNC_CURRENT_SCOPE (ZEND_ASYNC_G(coroutine) ? ZEND_ASYNC_G(coroutine)->scope : NULL)
 #define ZEND_ASYNC_REQUEST_SCOPE \
 	(ZEND_ASYNC_CURRENT_SCOPE ? ZEND_ASYNC_CURRENT_SCOPE->request_scope : NULL)
@@ -2270,6 +2278,7 @@ ZEND_API extern zend_async_spawn_t zend_async_spawn_fn;
 ZEND_API extern zend_async_new_coroutine_t zend_async_new_coroutine_fn;
 ZEND_API extern zend_async_new_scope_t zend_async_new_scope_fn;
 ZEND_API extern zend_async_suspend_t zend_async_suspend_fn;
+ZEND_API extern zend_async_call_on_main_stack_t zend_async_call_on_main_stack_fn;
 ZEND_API extern zend_async_enqueue_coroutine_t zend_async_enqueue_coroutine_fn;
 ZEND_API extern zend_async_resume_t zend_async_resume_fn;
 ZEND_API extern zend_async_cancel_t zend_async_cancel_fn;
@@ -2642,6 +2651,10 @@ END_EXTERN_C()
 #define ZEND_ASYNC_NEW_SCOPE_WITH_OBJECT(parent) zend_async_new_scope_fn(parent, true)
 #define ZEND_ASYNC_SUSPEND() zend_async_suspend_fn(false, false)
 #define ZEND_ASYNC_RUN_SCHEDULER_AFTER_MAIN(is_bailout) zend_async_suspend_fn(true, is_bailout)
+/* Run fn(arg) on the main coroutine's (OS thread) stack. Needed for foreign
+ * calls — JNI into ART, some FFI — whose runtime validates the stack pointer
+ * against the OS thread's recorded bounds and so fails from a fiber stack. */
+#define ZEND_ASYNC_CALL_ON_MAIN_STACK(fn, arg) zend_async_call_on_main_stack_fn((fn), (arg))
 #define ZEND_ASYNC_ENQUEUE_COROUTINE(coroutine) zend_async_enqueue_coroutine_fn(coroutine)
 #define ZEND_ASYNC_RESUME(coroutine) zend_async_resume_fn(coroutine, NULL, false)
 #define ZEND_ASYNC_RESUME_WITH_ERROR(coroutine, error, transfer_error) \
