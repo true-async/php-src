@@ -315,7 +315,10 @@ static php_stream * php_stream_url_wrap_php(php_stream_wrapper *wrapper, const c
 			return NULL;
 		}
 
-#ifdef HAVE_UNISTD_H
+#if defined(__ANDROID__)
+		/* Bionic has no getdtablesize(); use POSIX sysconf instead. */
+		dtablesize = (int)sysconf(_SC_OPEN_MAX);
+#elif defined(HAVE_UNISTD_H)
 		dtablesize = getdtablesize();
 #else
 		dtablesize = INT_MAX;
