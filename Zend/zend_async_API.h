@@ -21,9 +21,9 @@
 #include "zend_globals.h"
 #include "zend_stream.h"
 
-#define ZEND_ASYNC_API "TrueAsync ABI v0.21.0"
+#define ZEND_ASYNC_API "TrueAsync ABI v0.22.0"
 #define ZEND_ASYNC_API_VERSION_MAJOR 0
-#define ZEND_ASYNC_API_VERSION_MINOR 21
+#define ZEND_ASYNC_API_VERSION_MINOR 22
 #define ZEND_ASYNC_API_VERSION_PATCH 0
 
 #define ZEND_ASYNC_API_VERSION_NUMBER \
@@ -1978,6 +1978,19 @@ typedef zend_async_event_t *(*zend_thread_pool_submit_internal_t)(
 	zend_async_thread_pool_t *pool,
 	zend_thread_pool_internal_handler_t handler,
 	void *ctx);
+
+/* Replace the worker thread in slot `idx` with a fresh one (clean CG/EG →
+ * reloaded code). The old thread self-terminates once its current task ends and
+ * its exit was requested; the caller drives that ordering. Returns false on a
+ * bad index or a closed pool. */
+typedef bool (*zend_thread_pool_respawn_worker_t)(
+	zend_async_thread_pool_t *pool, int32_t idx);
+
+/* Ask the worker in slot `idx` to leave its receive loop after its current task
+ * completes (cooperative — the running task must return on its own). Wakes the
+ * worker's control channel so a task awaiting it can self-stop. */
+typedef bool (*zend_thread_pool_request_worker_exit_t)(
+	zend_async_thread_pool_t *pool, int32_t idx);
 /**
  * zend_async_thread_pool_t — base structure for a thread pool.
  * Manages a fixed set of worker threads with atomic counters
@@ -2008,6 +2021,11 @@ struct _zend_async_thread_pool_s {
 	zend_thread_pool_close_t close;
 	zend_thread_pool_dispose_t dispose;
 	zend_thread_pool_submit_internal_t submit_internal;
+
+	/* Rolling worker replacement for in-place code reload (blue-green). NULL on
+	 * pools created by a runtime older than ABI 0.22 — gate on the API version. */
+	zend_thread_pool_respawn_worker_t respawn_worker;
+	zend_thread_pool_request_worker_exit_t request_worker_exit;
 };
 
 /* Thread pool refcount helpers */
