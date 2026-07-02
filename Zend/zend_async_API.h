@@ -21,9 +21,9 @@
 #include "zend_globals.h"
 #include "zend_stream.h"
 
-#define ZEND_ASYNC_API "TrueAsync ABI v0.21.0"
+#define ZEND_ASYNC_API "TrueAsync ABI v0.22.0"
 #define ZEND_ASYNC_API_VERSION_MAJOR 0
-#define ZEND_ASYNC_API_VERSION_MINOR 21
+#define ZEND_ASYNC_API_VERSION_MINOR 22
 #define ZEND_ASYNC_API_VERSION_PATCH 0
 
 #define ZEND_ASYNC_API_VERSION_NUMBER \
@@ -1978,6 +1978,17 @@ typedef zend_async_event_t *(*zend_thread_pool_submit_internal_t)(
 	zend_async_thread_pool_t *pool,
 	zend_thread_pool_internal_handler_t handler,
 	void *ctx);
+
+/* Reload the pool's workers in place, rolling (blue-green): fresh workers are
+ * started on a NEW task channel and the old cohort is retired by closing theirs
+ * (workers leave the loop when receive() returns false), so reloaded code takes
+ * effect without dropping the pool. Replacements are spawned as old workers
+ * drain — ~N workers throughout, no 2N spike. Runs on the calling coroutine
+ * (it awaits the old cohort draining) and throws if called outside one.
+ * Overlapping calls serialize and coalesce: callers queued behind an active
+ * rotation are all satisfied by the single follow-up rotation that starts
+ * after their entry. */
+typedef void (*zend_thread_pool_reload_t)(zend_async_thread_pool_t *pool);
 /**
  * zend_async_thread_pool_t — base structure for a thread pool.
  * Manages a fixed set of worker threads with atomic counters
@@ -2008,6 +2019,10 @@ struct _zend_async_thread_pool_s {
 	zend_thread_pool_close_t close;
 	zend_thread_pool_dispose_t dispose;
 	zend_thread_pool_submit_internal_t submit_internal;
+
+	/* In-place rolling worker reload (blue-green). NULL on pools created by a
+	 * runtime older than ABI 0.22 — gate on the API version. */
+	zend_thread_pool_reload_t reload;
 };
 
 /* Thread pool refcount helpers */
