@@ -413,6 +413,13 @@ typedef zend_async_timer_event_t *(*zend_async_new_timer_event_t)(const zend_ulo
 typedef bool (*zend_async_timer_rearm_t)(zend_async_timer_event_t *event,
 		const zend_ulong timeout, const zend_ulong nanoseconds);
 typedef zend_async_signal_event_t *(*zend_async_new_signal_event_t)(int signum, size_t extra_size);
+/* Called from zend_sigaction() after the SIGG(handlers) bookkeeping, instead
+ * of the OS sigaction() install. Return true when the reactor takes delivery
+ * ownership of this signal: it arms its own OS handler and forwards every
+ * delivery to the Zend handler chain, so core must not touch sigaction.
+ * Return false to fall back to the regular zend_signal_handler_defer install
+ * (reactor not running, or the reactor released the signal). */
+typedef bool (*zend_async_sigaction_t)(int signo);
 typedef zend_async_process_event_t *(*zend_async_new_process_event_t)(
 		zend_process_t process_handle, size_t extra_size);
 typedef void (*zend_async_thread_entry_t)(void *arg, size_t extra_size);
@@ -2342,6 +2349,7 @@ ZEND_API extern zend_async_new_poll_proxy_event_t zend_async_new_poll_proxy_even
 ZEND_API extern zend_async_new_timer_event_t zend_async_new_timer_event_fn;
 ZEND_API extern zend_async_timer_rearm_t zend_async_timer_rearm_fn;
 ZEND_API extern zend_async_new_signal_event_t zend_async_new_signal_event_fn;
+ZEND_API extern zend_async_sigaction_t zend_async_sigaction_fn;
 ZEND_API extern zend_async_new_process_event_t zend_async_new_process_event_fn;
 ZEND_API extern zend_async_new_thread_event_t zend_async_new_thread_event_fn;
 ZEND_API extern zend_async_thread_snapshot_create_t zend_async_thread_snapshot_create_fn;
@@ -2731,6 +2739,8 @@ END_EXTERN_C()
 #define ZEND_ASYNC_TIMER_REARM(event, timeout, nanoseconds) \
 	zend_async_timer_rearm_fn(event, timeout, nanoseconds)
 #define ZEND_ASYNC_NEW_SIGNAL_EVENT(signum) zend_async_new_signal_event_fn(signum, 0)
+#define ZEND_ASYNC_SIGACTION(signo) \
+	(zend_async_sigaction_fn != NULL && zend_async_sigaction_fn(signo))
 #define ZEND_ASYNC_NEW_SIGNAL_EVENT_EX(signum, extra_size) \
 	zend_async_new_signal_event_fn(signum, extra_size)
 #define ZEND_ASYNC_NEW_PROCESS_EVENT(process_handle) \

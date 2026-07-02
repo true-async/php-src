@@ -245,6 +245,16 @@ ZEND_API void zend_sigaction(int signo, const struct sigaction *act, struct siga
 			SIGG(handlers)[signo-1].handler = (void *) act->sa_handler;
 		}
 
+		/* TrueAsync: the reactor takes delivery ownership of this signal —
+		 * it arms its own OS handler and forwards to SIGG(handlers) itself.
+		 * The bookkeeping above is all that is needed here. */
+		if (ZEND_ASYNC_SIGACTION(signo)) {
+			sigemptyset(&sigset);
+			sigaddset(&sigset, signo);
+			zend_sigprocmask(SIG_UNBLOCK, &sigset, NULL);
+			return;
+		}
+
 		memset(&sa, 0, sizeof(sa));
 		if (SIGG(handlers)[signo-1].handler == (void *) SIG_IGN) {
 			sa.sa_sigaction = (void *) SIG_IGN;

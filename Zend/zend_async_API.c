@@ -227,6 +227,7 @@ zend_async_new_timer_event_t zend_async_new_timer_event_fn = NULL;
 zend_async_now_t zend_async_now_fn = NULL;
 zend_async_timer_rearm_t zend_async_timer_rearm_fn = NULL;
 zend_async_new_signal_event_t zend_async_new_signal_event_fn = NULL;
+zend_async_sigaction_t zend_async_sigaction_fn = NULL;
 zend_async_new_process_event_t zend_async_new_process_event_fn = NULL;
 zend_async_new_thread_event_t zend_async_new_thread_event_fn = NULL;
 zend_async_new_filesystem_event_t zend_async_new_filesystem_event_fn = NULL;
