@@ -1984,7 +1984,10 @@ typedef zend_async_event_t *(*zend_thread_pool_submit_internal_t)(
  * (workers leave the loop when receive() returns false), so reloaded code takes
  * effect without dropping the pool. Replacements are spawned as old workers
  * drain — ~N workers throughout, no 2N spike. Runs on the calling coroutine
- * (it awaits the old cohort draining). */
+ * (it awaits the old cohort draining) and throws if called outside one.
+ * Overlapping calls serialize and coalesce: callers queued behind an active
+ * rotation are all satisfied by the single follow-up rotation that starts
+ * after their entry. */
 typedef void (*zend_thread_pool_reload_t)(zend_async_thread_pool_t *pool);
 /**
  * zend_async_thread_pool_t — base structure for a thread pool.
