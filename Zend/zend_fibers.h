@@ -21,6 +21,7 @@
 
 #include "zend_API.h"
 #include "zend_types.h"
+#include "zend_async_API.h"
 
 #define ZEND_FIBER_GUARD_PAGES 1
 
@@ -40,6 +41,12 @@ typedef enum {
 	ZEND_FIBER_FLAG_THREW     = 1 << 0,
 	ZEND_FIBER_FLAG_BAILOUT   = 1 << 1,
 	ZEND_FIBER_FLAG_DESTROYED = 1 << 2,
+	/* The parked transfer value is an exception to throw at the
+	 * suspension point (coroutine mode only). */
+	ZEND_FIBER_FLAG_ERROR_TRANSFER = 1 << 3,
+	/* fci.params is a fiber-owned deep copy (coroutine mode: a deferred
+	 * start must not reference the caller's dead stack frame). */
+	ZEND_FIBER_FLAG_PARAMS_COPIED = 1 << 4,
 } zend_fiber_flag;
 
 typedef enum {
@@ -108,8 +115,20 @@ struct _zend_fiber {
 	/* Native C fiber context. */
 	zend_fiber_context context;
 
-	/* Fiber that resumed us. */
-	zend_fiber_context *caller;
+	/*
+	 * Associated coroutine, when a scheduler is active. NULL in legacy
+	 * mode: the fiber then blocks the thread exactly as before. When set,
+	 * the fiber's wait becomes cooperative - resume/suspend route through
+	 * the scheduler slots instead of switching fiber contexts directly.
+	 */
+	zend_coroutine_t *coroutine;
+
+	union {
+		/* Fiber that resumed us (legacy mode, coroutine == NULL). */
+		zend_fiber_context *caller;
+		/* Coroutine that resumed us (coroutine mode). */
+		zend_coroutine_t *caller_coroutine;
+	};
 
 	/* Fiber that suspended us. */
 	zend_fiber_context *previous;
@@ -129,6 +148,15 @@ struct _zend_fiber {
 
 	/* Storage for fiber return value. */
 	zval result;
+
+	/*
+	 * Coroutine mode only: the value crossing the scheduler boundary.
+	 * Before a switch it holds the pending resume value (or the exception
+	 * when ZEND_FIBER_FLAG_ERROR_TRANSFER is set); after a yield it holds
+	 * the value the fiber suspended with, so start()/resume() can return
+	 * it once the scheduler hands control back.
+	 */
+	zval transfer;
 };
 
 ZEND_API zend_result zend_fiber_start(zend_fiber *fiber, zval *return_value);

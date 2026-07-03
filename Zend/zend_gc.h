@@ -61,6 +61,10 @@ void gc_bench_print(void);
 
 /* The default implementation of the gc_collect_cycles callback. */
 ZEND_API int  zend_gc_collect_cycles(void);
+/* Run the destructors pending in the current GC destructor phase. Valid
+ * only while the phase is active (from inside the gc_destructors hook);
+ * otherwise a no-op returning false. */
+ZEND_API bool zend_gc_run_pending_destructors(void);
 
 ZEND_API void zend_gc_get_status(zend_gc_status *status);
 

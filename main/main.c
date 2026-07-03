@@ -87,6 +87,8 @@
 #include "SAPI.h"
 #include "rfc1867.h"
 
+#include "zend_async_API.h"
+
 #include "main_arginfo.h"
 /* }}} */
 
@@ -1992,6 +1994,13 @@ void php_request_shutdown(void *dummy)
 		zend_call_destructors();
 	} zend_end_try();
 
+	/* Before PHP shuts down completely, control is passed to the
+	 * remaining coroutines one last time (if any). */
+	zend_try {
+		ZEND_ASYNC_RUN_SCHEDULER_AFTER_MAIN(false);
+	} zend_end_try();
+	ZEND_ASYNC_DEACTIVATE;
+
 	/* 3. Flush all output buffers */
 	zend_try {
 		php_output_end_all();
@@ -2648,6 +2657,13 @@ PHPAPI bool php_execute_script_ex(zend_file_handle *primary_file, zval *retval)
 			zend_set_timeout(zend_ini_long_literal("max_execution_time"), false);
 		}
 
+		/* The scheduler is not lazy: it always starts right before the
+		 * script code runs. A no-op until a scheduler module has
+		 * registered itself. */
+		if (ZEND_ASYNC_IS_READY) {
+			ZEND_ASYNC_SCHEDULER_LAUNCH();
+		}
+
 		if (prepend_file_p && result) {
 			result = zend_execute_script(ZEND_REQUIRE, NULL, prepend_file_p) == SUCCESS;
 		}
@@ -2657,7 +2673,11 @@ PHPAPI bool php_execute_script_ex(zend_file_handle *primary_file, zval *retval)
 		if (append_file_p && result) {
 			result = zend_execute_script(ZEND_REQUIRE, NULL, append_file_p) == SUCCESS;
 		}
+
+		ZEND_ASYNC_RUN_SCHEDULER_AFTER_MAIN(false);
 	} zend_catch {
+		/* Give the scheduler a chance to handle a bailout in the main flow. */
+		ZEND_ASYNC_RUN_SCHEDULER_AFTER_MAIN(true);
 		result = false;
 	} zend_end_try();
 
