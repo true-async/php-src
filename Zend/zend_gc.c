@@ -70,6 +70,7 @@
 #include "zend_compile.h"
 #include "zend_errors.h"
 #include "zend_fibers.h"
+#include "zend_async_API.h"
 #include "zend_hrtime.h"
 #include "zend_portability.h"
 #include "zend_types.h"
@@ -293,6 +294,9 @@ typedef struct _zend_gc_globals {
 	uint32_t dtor_end;
 	zend_fiber *dtor_fiber;
 	bool dtor_fiber_running;
+	/* The destructor phase is active: zend_gc_run_pending_destructors()
+	 * is allowed to run. */
+	bool dtor_phase_active;
 
 #if GC_BENCH
 	uint32_t root_buf_length;
@@ -535,6 +539,7 @@ static void gc_globals_ctor_ex(zend_gc_globals *gc_globals)
 	gc_globals->dtor_end = 0;
 	gc_globals->dtor_fiber = NULL;
 	gc_globals->dtor_fiber_running = false;
+	gc_globals->dtor_phase_active = false;
 
 #if GC_BENCH
 	gc_globals->root_buf_length = 0;
@@ -583,6 +588,7 @@ void gc_reset(void)
 		GC_G(dtor_end) = 0;
 		GC_G(dtor_fiber) = NULL;
 		GC_G(dtor_fiber_running) = false;
+		GC_G(dtor_phase_active) = false;
 
 #if GC_BENCH
 		GC_G(root_buf_length) = 0;
@@ -1892,7 +1898,15 @@ static zend_always_inline zend_result gc_call_destructors(uint32_t idx, uint32_t
 				GC_TRACE_REF(obj, "calling destructor");
 				GC_ADD_FLAGS(obj, IS_OBJ_DESTRUCTOR_CALLED);
 				GC_ADDREF(obj);
+
+				/* A destructor is application code even when the phase runs
+				 * inside a scheduler hook. */
+				const bool saved_context = ZEND_ASYNC_IN_SCHEDULER_CONTEXT;
+				ZEND_ASYNC_IN_SCHEDULER_CONTEXT = false;
+
 				obj->handlers->dtor_obj(obj);
+
+				ZEND_ASYNC_IN_SCHEDULER_CONTEXT = saved_context;
 				GC_TRACE_REF(obj, "returned from destructor");
 				GC_DELREF(obj);
 				if (UNEXPECTED(fiber != NULL && GC_G(dtor_fiber) != fiber)) {
@@ -1988,6 +2002,29 @@ static zend_never_inline void gc_call_destructors_in_fiber(void)
 	}
 
 	EG(exception) = exception;
+}
+
+/* The engine's destructor-phase executor handed to the gc_destructors
+ * hook. Re-runnable while the phase is active: already-called destructors
+ * are skipped by the IS_OBJ_DESTRUCTOR_CALLED flag. */
+static bool gc_run_destructor_phase(void)
+{
+	if (!GC_G(dtor_phase_active)) {
+		return false;
+	}
+
+	if (EXPECTED(!EG(active_fiber))) {
+		gc_call_destructors(GC_FIRST_ROOT, GC_G(first_unused), NULL);
+	} else {
+		gc_call_destructors_in_fiber();
+	}
+
+	return true;
+}
+
+ZEND_API bool zend_gc_run_pending_destructors(void)
+{
+	return gc_run_destructor_phase();
 }
 
 /* Perform a garbage collection run. The default implementation of gc_collect_cycles. */
@@ -2091,11 +2128,21 @@ rerun_gc:
 
 			/* Actually call destructors. */
 			zend_hrtime_t dtor_start_time = zend_hrtime();
-			if (EXPECTED(!EG(active_fiber))) {
-				gc_call_destructors(GC_FIRST_ROOT, end, NULL);
+			GC_G(dtor_phase_active) = true;
+
+			if (UNEXPECTED(ZEND_ASYNC_IS_ACTIVE && zend_async_gc_destructors_fn != NULL)) {
+				/* The provider brackets the phase (e.g. opens a completion
+				 * group and awaits everything the destructors spawned). */
+				zend_async_gc_destructors_fn(gc_run_destructor_phase);
+
+				/* Safety net: the hook cannot prevent destructors from
+				 * running - execute any that were missed. */
+				gc_run_destructor_phase();
 			} else {
-				gc_call_destructors_in_fiber();
+				gc_run_destructor_phase();
 			}
+
+			GC_G(dtor_phase_active) = false;
 			GC_G(dtor_time) += zend_hrtime() - dtor_start_time;
 
 			if (GC_G(gc_protected)) {

@@ -24,6 +24,7 @@
 #include "zend_API.h"
 #include "zend_exceptions.h"
 #include "zend_builtin_functions.h"
+#include "zend_scheduler_hook.h"
 #include "zend_ini.h"
 #include "zend_vm.h"
 #include "zend_dtrace.h"
@@ -1060,6 +1061,8 @@ void zend_startup(zend_utility_functions *utility_functions) /* {{{ */
 	zend_interned_strings_init();
 	zend_object_handlers_startup();
 	zend_startup_builtin_functions();
+	zend_async_globals_ctor();
+	zend_register_scheduler_hook();
 	zend_register_standard_constants();
 	zend_register_auto_global(zend_string_init_interned("GLOBALS", sizeof("GLOBALS") - 1, 1), 1, php_auto_globals_create_globals);
 
@@ -1167,6 +1170,8 @@ zend_result zend_post_startup(void) /* {{{ */
 
 void zend_shutdown(void) /* {{{ */
 {
+	zend_async_api_shutdown();
+	zend_async_globals_dtor();
 	zend_vm_dtor();
 
 	zend_destroy_rsrc_list(&EG(persistent_list));
@@ -1349,6 +1354,9 @@ ZEND_API void zend_deactivate(void) /* {{{ */
 {
 	/* we're no longer executing anything */
 	EG(current_execute_data) = NULL;
+
+	/* Drop any PHP-registered scheduler handlers held for this request. */
+	zend_scheduler_hook_request_shutdown();
 
 	zend_try {
 		shutdown_scanner();

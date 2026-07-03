@@ -810,6 +810,31 @@ static void zend_fiber_object_free(zend_object *object)
 
 	zval_ptr_dtor(&fiber->fci.function_name);
 	zval_ptr_dtor(&fiber->result);
+	zval_ptr_dtor(&fiber->transfer);
+
+	if (fiber->flags & ZEND_FIBER_FLAG_PARAMS_COPIED) {
+		for (uint32_t i = 0; i < fiber->fci.param_count; i++) {
+			zval_ptr_dtor(&fiber->fci.params[i]);
+		}
+
+		if (fiber->fci.params != NULL) {
+			efree(fiber->fci.params);
+		}
+
+		if (fiber->fci.named_params != NULL) {
+			zend_array_release(fiber->fci.named_params);
+		}
+	}
+
+	/* The coroutine handle is owned by whoever minted it; the dispose
+	 * handler knows how to release it. */
+	if (fiber->coroutine != NULL) {
+		if (fiber->coroutine->extended_dispose != NULL) {
+			fiber->coroutine->extended_dispose(fiber->coroutine);
+		}
+
+		fiber->coroutine = NULL;
+	}
 
 	zend_object_std_dtor(&fiber->std);
 }
@@ -821,6 +846,19 @@ static HashTable *zend_fiber_object_gc(zend_object *object, zval **table, int *n
 
 	zend_get_gc_buffer_add_zval(buf, &fiber->fci.function_name);
 	zend_get_gc_buffer_add_zval(buf, &fiber->result);
+	zend_get_gc_buffer_add_zval(buf, &fiber->transfer);
+
+	/* Coroutine mode: the fiber owns a reference to the scheduler's
+	 * coroutine object (released in the extended_dispose). Declare the
+	 * edge, or a coroutine object referencing the fiber back would form
+	 * an uncollectable cycle. */
+	if (fiber->coroutine != NULL) {
+		zend_object *coroutine_object = ZEND_COROUTINE_OBJECT(fiber->coroutine);
+
+		if (coroutine_object != NULL) {
+			zend_get_gc_buffer_add_obj(buf, coroutine_object);
+		}
+	}
 
 	if (fiber->context.status != ZEND_FIBER_STATUS_SUSPENDED || fiber->caller != NULL) {
 		zend_get_gc_buffer_use(buf, table, num);
@@ -891,13 +929,123 @@ ZEND_METHOD(Fiber, __construct)
 	Z_TRY_ADDREF(fiber->fci.function_name);
 }
 
+/* Coroutine mode, scheduler context: switch directly into a bound fiber.
+ * Runs it until it yields or finishes; the yielded value (or completion
+ * NULL) is written to return_value. The scheduler reaches this through the
+ * plain Fiber API - there is no other switching primitive. */
+static void zend_fiber_scheduler_switch(zend_fiber *fiber, zval *return_value)
+{
+	zend_coroutine_t *coroutine = fiber->coroutine;
+
+	ZVAL_NULL(return_value);
+
+	if (UNEXPECTED(zend_fiber_switch_blocked())) {
+		zend_throw_error(zend_ce_fiber_error, "Cannot switch fibers in current execution context");
+		return;
+	}
+
+	/* Take the parked input (resume value or pending exception). */
+	const bool is_error = (fiber->flags & ZEND_FIBER_FLAG_ERROR_TRANSFER) != 0;
+	fiber->flags &= ~ZEND_FIBER_FLAG_ERROR_TRANSFER;
+
+	zval value;
+	ZVAL_COPY_VALUE(&value, &fiber->transfer);
+	ZVAL_UNDEF(&fiber->transfer);
+
+	if (fiber->context.status == ZEND_FIBER_STATUS_INIT) {
+		if (zend_fiber_init_context(&fiber->context, zend_ce_fiber, zend_fiber_execute,
+					EG(fiber_stack_size)) == FAILURE) {
+			zval_ptr_dtor(&value);
+			return;
+		}
+
+		fiber->previous = &fiber->context;
+	} else if (UNEXPECTED(fiber->context.status != ZEND_FIBER_STATUS_SUSPENDED
+					   || fiber->caller != NULL)) {
+		zval_ptr_dtor(&value);
+		zend_throw_error(zend_ce_fiber_error, "Cannot resume a fiber that is not suspended");
+		return;
+	} else {
+		fiber->stack_bottom->prev_execute_data = EG(current_execute_data);
+	}
+
+	ZEND_COROUTINE_SET_STATUS(coroutine, ZEND_COROUTINE_STATUS_RUNNING);
+
+	/* The fiber body is application code, not the scheduler. */
+	const bool saved_context = ZEND_ASYNC_IN_SCHEDULER_CONTEXT;
+	ZEND_ASYNC_IN_SCHEDULER_CONTEXT = false;
+
+	zend_fiber_transfer transfer = zend_fiber_resume_internal(
+			fiber, Z_ISUNDEF(value) ? NULL : &value, is_error);
+
+	ZEND_ASYNC_IN_SCHEDULER_CONTEXT = saved_context;
+
+	zval_ptr_dtor(&value);
+
+	if (fiber->context.status == ZEND_FIBER_STATUS_DEAD) {
+		ZEND_COROUTINE_SET_STATUS(coroutine, ZEND_COROUTINE_STATUS_FINISHED);
+
+		if (Z_ISUNDEF(coroutine->result) && !Z_ISUNDEF(fiber->result)) {
+			ZVAL_COPY(&coroutine->result, &fiber->result);
+		}
+	} else {
+		ZEND_COROUTINE_SET_STATUS(coroutine, ZEND_COROUTINE_STATUS_SUSPENDED);
+
+		/* Park a copy of the yield for the start()/resume() reader. */
+		if (!(transfer.flags & ZEND_FIBER_TRANSFER_FLAG_ERROR)) {
+			zval_ptr_dtor(&fiber->transfer);
+			ZVAL_COPY(&fiber->transfer, &transfer.value);
+		}
+	}
+
+	/* Deliver the yield (or the escaped exception) to the switchTo caller. */
+	if (transfer.flags & ZEND_FIBER_TRANSFER_FLAG_ERROR) {
+		zend_throw_exception_internal(Z_OBJ(transfer.value));
+	} else {
+		ZVAL_COPY_VALUE(return_value, &transfer.value);
+	}
+}
+
+/* Coroutine mode: wait until the fiber yields (or finishes) and return the
+ * yielded value. Hands control to the scheduler, which continues coroutines
+ * through switchTo; when it hands control back, the value the fiber parked
+ * on yield becomes the result (NULL when it finished or was not run). */
+static void zend_fiber_wait_for_yield(zend_fiber *fiber, zval *return_value)
+{
+	ZEND_ASYNC_SUSPEND();
+
+	if (UNEXPECTED(EG(exception))) {
+		RETVAL_NULL();
+		return;
+	}
+
+	if (Z_ISUNDEF(fiber->transfer)) {
+		RETVAL_NULL();
+	} else {
+		RETVAL_COPY_VALUE(&fiber->transfer);
+		ZVAL_UNDEF(&fiber->transfer);
+	}
+}
+
 ZEND_METHOD(Fiber, start)
 {
 	zend_fiber *fiber = (zend_fiber *) Z_OBJ_P(ZEND_THIS);
+	zval *args;
+	uint32_t argc;
+	HashTable *named_args;
 
 	ZEND_PARSE_PARAMETERS_START(0, -1)
-		Z_PARAM_VARIADIC_WITH_NAMED(fiber->fci.params, fiber->fci.param_count, fiber->fci.named_params);
+		Z_PARAM_VARIADIC_WITH_NAMED(args, argc, named_args);
 	ZEND_PARSE_PARAMETERS_END();
+
+	/* Bind the arguments. A scheduler-context restart with no arguments
+	 * keeps the ones the application call bound. */
+	if (!(ZEND_ASYNC_IN_SCHEDULER_CONTEXT && fiber->coroutine != NULL && argc == 0
+				&& named_args == NULL)) {
+		fiber->fci.params = args;
+		fiber->fci.param_count = argc;
+		fiber->fci.named_params = named_args;
+	}
 
 	if (UNEXPECTED(zend_fiber_switch_blocked())) {
 		zend_throw_error(zend_ce_fiber_error, "Cannot switch fibers in current execution context");
@@ -907,6 +1055,55 @@ ZEND_METHOD(Fiber, start)
 	if (fiber->context.status != ZEND_FIBER_STATUS_INIT) {
 		zend_throw_error(zend_ce_fiber_error, "Cannot start a fiber that has already been started");
 		RETURN_THROWS();
+	}
+
+	/* Coroutine mode: the scheduler may bind a coroutine to this fiber.
+	 * NULL keeps the fiber on the low-level path. */
+	if (fiber->coroutine == NULL) {
+		fiber->coroutine = ZEND_ASYNC_INTERCEPT_FIBER(fiber);
+
+		if (fiber->coroutine != NULL && fiber->coroutine->extended_data == NULL) {
+			fiber->coroutine->extended_data = fiber;
+		}
+	}
+
+	if (fiber->coroutine != NULL) {
+		/* The scheduler runs a bound fiber directly through the plain
+		 * Fiber API; application code hands over to the scheduler. */
+		if (ZEND_ASYNC_IN_SCHEDULER_CONTEXT) {
+			zend_fiber_scheduler_switch(fiber, return_value);
+
+			if (UNEXPECTED(EG(exception))) {
+				RETURN_THROWS();
+			}
+
+			return;
+		}
+
+		/* The start is deferred: the arguments must survive this call
+		 * frame, so the fiber takes an owned deep copy. */
+		if (fiber->fci.param_count > 0) {
+			zval *copy = safe_emalloc(fiber->fci.param_count, sizeof(zval), 0);
+
+			for (uint32_t i = 0; i < fiber->fci.param_count; i++) {
+				ZVAL_COPY(&copy[i], &fiber->fci.params[i]);
+			}
+
+			fiber->fci.params = copy;
+			fiber->flags |= ZEND_FIBER_FLAG_PARAMS_COPIED;
+		}
+
+		if (fiber->fci.named_params != NULL) {
+			GC_ADDREF(fiber->fci.named_params);
+			fiber->flags |= ZEND_FIBER_FLAG_PARAMS_COPIED;
+		}
+
+		if (!ZEND_ASYNC_ENQUEUE_COROUTINE(fiber->coroutine) || EG(exception)) {
+			RETURN_THROWS();
+		}
+
+		zend_fiber_wait_for_yield(fiber, return_value);
+		return;
 	}
 
 	if (zend_fiber_init_context(&fiber->context, zend_ce_fiber, zend_fiber_execute, EG(fiber_stack_size)) == FAILURE) {
@@ -977,6 +1174,44 @@ ZEND_METHOD(Fiber, resume)
 		RETURN_THROWS();
 	}
 
+	/* Coroutine mode: the scheduler switches directly; application code
+	 * parks the value, notifies the scheduler and lets it drive. */
+	if (fiber->coroutine != NULL) {
+		if (ZEND_ASYNC_IN_SCHEDULER_CONTEXT) {
+			/* An explicit value overrides the parked one. */
+			if (value != NULL) {
+				zval_ptr_dtor(&fiber->transfer);
+				ZVAL_COPY(&fiber->transfer, value);
+				fiber->flags &= ~ZEND_FIBER_FLAG_ERROR_TRANSFER;
+			}
+
+			zend_fiber_scheduler_switch(fiber, return_value);
+
+			if (UNEXPECTED(EG(exception))) {
+				RETURN_THROWS();
+			}
+
+			return;
+		}
+
+		zval_ptr_dtor(&fiber->transfer);
+
+		if (value != NULL) {
+			ZVAL_COPY(&fiber->transfer, value);
+		} else {
+			ZVAL_UNDEF(&fiber->transfer);
+		}
+
+		fiber->flags &= ~ZEND_FIBER_FLAG_ERROR_TRANSFER;
+
+		if (!ZEND_ASYNC_RESUME(fiber->coroutine) || EG(exception)) {
+			RETURN_THROWS();
+		}
+
+		zend_fiber_wait_for_yield(fiber, return_value);
+		return;
+	}
+
 	fiber->stack_bottom->prev_execute_data = EG(current_execute_data);
 
 	zend_fiber_transfer transfer = zend_fiber_resume_internal(fiber, value, false);
@@ -1003,6 +1238,33 @@ ZEND_METHOD(Fiber, throw)
 	if (UNEXPECTED(fiber->context.status != ZEND_FIBER_STATUS_SUSPENDED || fiber->caller != NULL)) {
 		zend_throw_error(zend_ce_fiber_error, "Cannot resume a fiber that is not suspended");
 		RETURN_THROWS();
+	}
+
+	/* Coroutine mode: park the exception; the scheduler switches directly
+	 * (the throw happens at the suspension point), application code
+	 * notifies the scheduler and lets it drive. */
+	if (fiber->coroutine != NULL) {
+		zval_ptr_dtor(&fiber->transfer);
+		ZVAL_COPY(&fiber->transfer, exception);
+		fiber->flags |= ZEND_FIBER_FLAG_ERROR_TRANSFER;
+
+		if (ZEND_ASYNC_IN_SCHEDULER_CONTEXT) {
+			zend_fiber_scheduler_switch(fiber, return_value);
+
+			if (UNEXPECTED(EG(exception))) {
+				RETURN_THROWS();
+			}
+
+			return;
+		}
+
+		if (!ZEND_ASYNC_RESUME_WITH_ERROR(fiber->coroutine, Z_OBJ_P(exception), false)
+				|| EG(exception)) {
+			RETURN_THROWS();
+		}
+
+		zend_fiber_wait_for_yield(fiber, return_value);
+		return;
 	}
 
 	fiber->stack_bottom->prev_execute_data = EG(current_execute_data);
