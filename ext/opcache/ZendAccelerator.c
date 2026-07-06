@@ -2400,6 +2400,12 @@ static zend_class_entry* zend_accel_inheritance_cache_add(zend_class_entry *ce, 
 			SHM_PROTECT();
 			if (!needs_autoload) {
 				zend_map_ptr_extend(ZCSG(map_ptr_last));
+				/* Another thread cached this class first; our transient linked
+				 * copy is now unreachable. The MISS path frees it inside persist
+				 * (zend_shared_memdup_free), so the HIT path must free it here. */
+				zval zv_ce;
+				ZVAL_PTR(&zv_ce, ce);
+				destroy_zend_class(&zv_ce);
 				return entry->ce;
 			} else {
 				return NULL;
