@@ -191,6 +191,8 @@ zend_async_scope_await_after_cancellation_t zend_async_scope_await_after_cancell
 zend_async_spawn_and_throw_t zend_async_spawn_and_throw_fn = spawn_and_throw;
 zend_async_shutdown_t zend_async_shutdown_fn = bool_stub;
 zend_async_engine_shutdown_t zend_async_engine_shutdown_fn = bool_stub;
+zend_async_before_fork_t zend_async_before_fork_fn = NULL;
+zend_async_after_fork_child_t zend_async_after_fork_child_fn = NULL;
 zend_async_get_coroutines_t zend_async_get_coroutines_fn = get_coroutines_stub;
 zend_async_add_microtask_t zend_async_add_microtask_fn = add_microtask_stub;
 zend_async_get_awaiting_info_t zend_async_get_awaiting_info_fn = get_awaiting_info_stub;
@@ -469,6 +471,13 @@ ZEND_API bool zend_async_scheduler_register(char *module, bool allow_override,
 	zend_atomic_bool_store(&scheduler_lock, 0);
 
 	return true;
+}
+
+ZEND_API void zend_async_fork_register(zend_async_before_fork_t before_fork_fn,
+		zend_async_after_fork_child_t after_fork_child_fn)
+{
+	zend_async_before_fork_fn = before_fork_fn;
+	zend_async_after_fork_child_fn = after_fork_child_fn;
 }
 
 ZEND_API bool zend_async_reactor_register(char *module, bool allow_override,

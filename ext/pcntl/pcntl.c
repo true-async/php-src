@@ -30,6 +30,7 @@
 #include "php_signal.h"
 #include "php_ticks.h"
 #include "zend_fibers.h"
+#include "zend_async_API.h"
 #include "main/php_main.h"
 
 #if defined(HAVE_GETPRIORITY) || defined(HAVE_SETPRIORITY) || defined(HAVE_WAIT3)
@@ -268,6 +269,12 @@ PHP_FUNCTION(pcntl_fork)
 
 	ZEND_PARSE_PARAMETERS_NONE();
 
+	/* Refuse to fork while non-main coroutines are running: their in-flight
+	 * reactor state and worker threads cannot survive fork(). Throws on refusal. */
+	if (UNEXPECTED(!ZEND_ASYNC_BEFORE_FORK())) {
+		RETURN_THROWS();
+	}
+
 	id = fork();
 	if (id == -1) {
 		PCNTL_G(last_error) = errno;
@@ -293,6 +300,9 @@ PHP_FUNCTION(pcntl_fork)
 		}
 	} else if (id == 0) {
 		php_child_init();
+		/* Give the child an independent reactor: its inherited libuv loop shares
+		 * the parent's epoll, so leave it untouched and reinitialize in the child. */
+		ZEND_ASYNC_AFTER_FORK_CHILD();
 	}
 
 	RETURN_LONG((zend_long) id);
