@@ -21,9 +21,9 @@
 #include "zend_globals.h"
 #include "zend_stream.h"
 
-#define ZEND_ASYNC_API "TrueAsync ABI v0.23.0"
+#define ZEND_ASYNC_API "TrueAsync ABI v0.24.0"
 #define ZEND_ASYNC_API_VERSION_MAJOR 0
-#define ZEND_ASYNC_API_VERSION_MINOR 23
+#define ZEND_ASYNC_API_VERSION_MINOR 24
 #define ZEND_ASYNC_API_VERSION_PATCH 0
 
 #define ZEND_ASYNC_API_VERSION_NUMBER \
@@ -350,6 +350,11 @@ typedef bool (*zend_async_spawn_and_throw_t)(
 		zend_object *exception, zend_async_scope_t *scope, int32_t priority);
 typedef bool (*zend_async_shutdown_t)(void);
 typedef bool (*zend_async_engine_shutdown_t)(void);
+/* Fork hooks. before_fork() runs in the parent before fork(): it returns false
+ * and throws when forking is unsafe (e.g. live non-main coroutines). after_fork_child()
+ * runs in the freshly-forked child to reinitialize the reactor. */
+typedef bool (*zend_async_before_fork_t)(void);
+typedef void (*zend_async_after_fork_child_t)(void);
 typedef zend_array *(*zend_async_get_coroutines_t)(void);
 typedef bool (*zend_async_add_microtask_t)(zend_async_microtask_t *microtask);
 typedef zend_array *(*zend_async_get_awaiting_info_t)(zend_coroutine_t *coroutine);
@@ -2318,6 +2323,12 @@ ZEND_API extern zend_async_new_future_obj_t zend_async_new_future_obj_fn;
 ZEND_API extern zend_async_new_channel_obj_t zend_async_new_channel_obj_fn;
 ZEND_API extern zend_async_scheduler_launch_t zend_async_scheduler_launch_fn;
 
+/* Fork API */
+ZEND_API extern zend_async_before_fork_t zend_async_before_fork_fn;
+ZEND_API extern zend_async_after_fork_child_t zend_async_after_fork_child_fn;
+ZEND_API void zend_async_fork_register(zend_async_before_fork_t before_fork_fn,
+		zend_async_after_fork_child_t after_fork_child_fn);
+
 /* GROUP API */
 ZEND_API extern zend_async_new_group_t zend_async_new_group_fn;
 
@@ -2705,6 +2716,17 @@ END_EXTERN_C()
  */
 #define ZEND_ASYNC_SHUTDOWN() zend_async_shutdown_fn()
 #define ZEND_ASYNC_ENGINE_SHUTDOWN() zend_async_engine_shutdown_fn()
+/* Returns true when it is safe to fork(); returns false (with an exception set)
+ * otherwise. Safe by default when no async engine is registered. */
+#define ZEND_ASYNC_BEFORE_FORK() \
+	(zend_async_before_fork_fn != NULL ? zend_async_before_fork_fn() : true)
+/* Reinitialize the reactor in the freshly-forked child. No-op when unregistered. */
+#define ZEND_ASYNC_AFTER_FORK_CHILD() \
+	do { \
+		if (zend_async_after_fork_child_fn != NULL) { \
+			zend_async_after_fork_child_fn(); \
+		} \
+	} while (0)
 #define ZEND_ASYNC_GET_COROUTINES() zend_async_get_coroutines_fn()
 #define ZEND_ASYNC_ADD_MICROTASK(microtask) zend_async_add_microtask_fn(microtask)
 #define ZEND_ASYNC_GET_AWAITING_INFO(coroutine) zend_async_get_awaiting_info_fn(coroutine)
