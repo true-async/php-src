@@ -1314,7 +1314,11 @@ ZEND_API zend_async_waker_t *zend_async_waker_new_with_timeout(
 	zend_async_waker_t *waker = ZEND_ASYNC_WAKER_NEW(coroutine);
 
 	if (timeout > 0) {
-		zend_async_resume_when(coroutine, &ZEND_ASYNC_NEW_TIMER_EVENT(timeout, false)->base, true,
+		zend_async_timer_event_t *timer = ZEND_ASYNC_NEW_TIMER_EVENT(timeout, false);
+		// This relative timeout may be armed mid-tick after synchronous CPU work;
+		// refresh the reactor clock at arm time so the deadline is not already stale.
+		ZEND_ASYNC_TIMER_SET_REFRESH_CLOCK(timer);
+		zend_async_resume_when(coroutine, &timer->base, true,
 				zend_async_waker_callback_resolve, NULL);
 	}
 
