@@ -1516,6 +1516,12 @@ ZEND_API int php_network_getaddrinfo_async(const char *node, const char *service
 {
 	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 
+	// Callers pass an uninitialized addrinfo pointer. The error path frees *res, so it must start NULL --
+	// otherwise a failure before the DNS callback assigns it would free a garbage pointer.
+	if (res != NULL) {
+		*res = NULL;
+	}
+
 	if (coroutine == NULL) {
 		errno = EINVAL;
 		return -1;
