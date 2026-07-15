@@ -1988,6 +1988,14 @@ void php_request_shutdown(void *dummy)
 	// control is passed to the coroutines one last time (if any remain).
 	zend_try {
 		ZEND_ASYNC_RUN_SCHEDULER_AFTER_MAIN(false);
+
+		// The final scheduler pass can finalize the main coroutine here and rethrow its exit
+		// exception into EG(exception) -- this happens when the entrypoint (e.g. `php -r`) did not
+		// drive the coroutine to completion itself. With no caller left to handle it, report and
+		// release it, exactly as php_execute_script() does for the in-script path.
+		if (UNEXPECTED(EG(exception))) {
+			zend_exception_error(EG(exception), E_ERROR);
+		}
 	} zend_end_try();
 
 	// Detach async IO from all streams (they become sync-only).
