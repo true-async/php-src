@@ -1241,12 +1241,23 @@ struct _zend_async_timer_event_s {
  */
 #define ZEND_ASYNC_TIMER_F_MULTISHOT (1u << 13)
 
+/* Refresh the reactor's cached loop time before arming this timer. Set only on
+ * relative userland timeouts (delay()/timeout()/await-with-timeout) whose deadline
+ * can be armed mid-tick after synchronous CPU work has made the cached clock stale.
+ * Hot per-I/O deadline timers leave it unset and pay only a predicted branch. */
+#define ZEND_ASYNC_TIMER_F_REFRESH_CLOCK (1u << 14)
+
 #define ZEND_ASYNC_TIMER_IS_MULTISHOT(ev) \
 	(((ev)->base.flags & ZEND_ASYNC_TIMER_F_MULTISHOT) != 0)
 #define ZEND_ASYNC_TIMER_SET_MULTISHOT(ev) \
 	((ev)->base.flags |= ZEND_ASYNC_TIMER_F_MULTISHOT)
 #define ZEND_ASYNC_TIMER_CLR_MULTISHOT(ev) \
 	((ev)->base.flags &= ~ZEND_ASYNC_TIMER_F_MULTISHOT)
+
+#define ZEND_ASYNC_TIMER_IS_REFRESH_CLOCK(ev) \
+	(((ev)->base.flags & ZEND_ASYNC_TIMER_F_REFRESH_CLOCK) != 0)
+#define ZEND_ASYNC_TIMER_SET_REFRESH_CLOCK(ev) \
+	((ev)->base.flags |= ZEND_ASYNC_TIMER_F_REFRESH_CLOCK)
 
 struct _zend_async_signal_event_s {
 	zend_async_event_t base;
