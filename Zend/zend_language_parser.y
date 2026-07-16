@@ -229,6 +229,8 @@ static YYSIZE_T zend_yytnamerr(char*, const char*);
 %token T_WHITESPACE      "whitespace"
 %token T_START_HEREDOC   "heredoc start"
 %token T_END_HEREDOC     "heredoc end"
+%token <ast> T_DSL_TAG   "DSL fence tag"
+%token <ast> T_DSL_BODY  "DSL fence body"
 %token T_DOLLAR_OPEN_CURLY_BRACES "'${'"
 %token T_CURLY_OPEN      "'{$'"
 %token T_PAAMAYIM_NEKUDOTAYIM "'::'"
@@ -1384,6 +1386,7 @@ expr:
 	|	T_YIELD expr T_DOUBLE_ARROW expr { $$ = zend_ast_create(ZEND_AST_YIELD, $4, $2); CG(extra_fn_flags) |= ZEND_ACC_GENERATOR; }
 	|	T_YIELD_FROM expr { $$ = zend_ast_create(ZEND_AST_YIELD_FROM, $2); CG(extra_fn_flags) |= ZEND_ACC_GENERATOR; }
 	|	T_THROW expr { $$ = zend_ast_create(ZEND_AST_THROW, $2); }
+	|	T_DSL_TAG T_DSL_BODY { $$ = zend_ast_create(ZEND_AST_DSL, $1, $2); }
 	|	inline_function { $$ = $1; }
 	|	attributes inline_function { $$ = zend_ast_with_attributes($2, $1); }
 	|	T_STATIC inline_function { $$ = $2; ((zend_ast_decl *) $$)->flags |= ZEND_ACC_STATIC; }

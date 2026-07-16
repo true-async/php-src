@@ -704,6 +704,16 @@ const T_START_HEREDOC = UNKNOWN;
 const T_END_HEREDOC = UNKNOWN;
 /**
  * @var int
+ * @cvalue T_DSL_TAG
+ */
+const T_DSL_TAG = UNKNOWN;
+/**
+ * @var int
+ * @cvalue T_DSL_BODY
+ */
+const T_DSL_BODY = UNKNOWN;
+/**
+ * @var int
  * @cvalue T_DOLLAR_OPEN_CURLY_BRACES
  */
 const T_DOLLAR_OPEN_CURLY_BRACES = UNKNOWN;

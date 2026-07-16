@@ -103,6 +103,8 @@ function function_exists(string $function): bool {}
 
 function class_alias(string $class, string $alias, bool $autoload = true): bool {}
 
+function register_dsl(string $tag, callable $handler): void {}
+
 /**
  * @return array<int, string>
  * @refcount 1

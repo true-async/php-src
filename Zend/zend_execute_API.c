@@ -155,6 +155,7 @@ void init_executor(void) /* {{{ */
 
 	zend_hash_init(&EG(included_files), 8, NULL, NULL, 0);
 	zend_hash_init(&EG(autoload_current_classnames), 8, NULL, NULL, 0);
+	zend_hash_init(&EG(dsl_handlers), 8, NULL, ZVAL_PTR_DTOR, 0);
 
 	EG(ticks_count) = 0;
 
@@ -413,6 +414,9 @@ ZEND_API void zend_shutdown_executor_values(bool fast_shutdown)
 			ZVAL_UNDEF(&EG(user_exception_handler));
 		}
 
+		/* Userland DSL handlers are callables and may hold objects too */
+		zend_hash_clean(&EG(dsl_handlers));
+
 		zend_stack_clean(&EG(user_error_handlers_error_reporting), NULL, 1);
 		zend_stack_clean(&EG(user_error_handlers), (void (*)(void *))ZVAL_PTR_DTOR, 1);
 		zend_stack_clean(&EG(user_exception_handlers), (void (*)(void *))ZVAL_PTR_DTOR, 1);
@@ -502,6 +506,7 @@ void shutdown_executor(void) /* {{{ */
 
 		zend_hash_destroy(&EG(included_files));
 		zend_hash_destroy(&EG(autoload_current_classnames));
+		zend_hash_destroy(&EG(dsl_handlers));
 
 		zend_stack_destroy(&EG(user_error_handlers_error_reporting));
 		zend_stack_destroy(&EG(user_error_handlers));

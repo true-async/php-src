@@ -1169,6 +1169,33 @@ static const char *next_newline(const char *str, const char *end, size_t *newlin
 	return NULL;
 }
 
+/* pos is at the start of a DSL block-body line: the line closes the literal
+ * when its only content before a backtick run of at least the opener's
+ * length is blanks. Returns the position right past the run (the whole run
+ * belongs to the closing delimiter), NULL when the line does not close it.
+ * indentation/spacing describe the blanks (heredoc-style strip input). */
+static const unsigned char *scan_dsl_closing_delimiter(
+	const unsigned char *pos, const unsigned char *limit, int delim_length,
+	int *indentation, int *spacing)
+{
+	int run = 0;
+
+	*indentation = 0;
+	*spacing = 0;
+
+	while (pos < limit && (*pos == ' ' || *pos == '\t')) {
+		*spacing |= *pos == '\t' ? HEREDOC_USING_TABS : HEREDOC_USING_SPACES;
+		pos++;
+		(*indentation)++;
+	}
+	while (pos < limit && *pos == '`') {
+		pos++;
+		run++;
+	}
+
+	return run >= delim_length ? pos : NULL;
+}
+
 static bool strip_multiline_string_indentation(
 	zval *zendlval, int indentation, bool using_spaces,
 	bool newline_at_start, bool newline_at_end)
@@ -2826,6 +2853,34 @@ skip_escape_conversion:
 }
 
 
+/* DSL literal opener: tag`...` in the tagged-template style. The backtick
+ * run length is the delimiter: sql``...`` lets the body contain a single
+ * backtick. A newline right after the opener switches to block style,
+ * where the closing run stands on its own line and its indentation is
+ * stripped from the body (heredoc semantics); otherwise the body runs
+ * verbatim to the next run of the same length. */
+<ST_IN_SCRIPTING>{LABEL}[`]+ {
+	int tag_length = yyleng;
+	bool is_inline = true;
+
+	while (tag_length > 0 && yytext[tag_length - 1] == '`') {
+		tag_length--;
+	}
+
+	if (YYCURSOR < YYLIMIT && (*YYCURSOR == '\r' || *YYCURSOR == '\n')) {
+		is_inline = false;
+	}
+
+	SCNG(dsl_delim_length) = yyleng - tag_length;
+	SCNG(dsl_inline_body) = is_inline;
+
+	ZVAL_STRINGL(zendlval, (const char *) yytext, tag_length);
+
+	BEGIN(ST_DSL);
+	RETURN_TOKEN_WITH_VAL(T_DSL_TAG);
+}
+
+
 <ST_IN_SCRIPTING>[`] {
 	BEGIN(ST_BACKQUOTE);
 	RETURN_TOKEN('`');
@@ -3177,6 +3232,114 @@ nowdoc_scan_done:
 
 	HANDLE_NEWLINES(yytext, yyleng - newline);
 	RETURN_TOKEN_WITH_VAL(T_ENCAPSED_AND_WHITESPACE);
+}
+
+
+<ST_DSL>{ANY_CHAR} {
+	const int delim_length = SCNG(dsl_delim_length);
+	const unsigned char *body_start, *body_end = NULL;
+	int indentation = 0, spacing = 0;
+
+	if (YYCURSOR > YYLIMIT) {
+		RETURN_END_TOKEN;
+	}
+
+	YYCURSOR--;
+
+	if (SCNG(dsl_inline_body)) {
+		body_start = YYCURSOR;
+
+		while (YYCURSOR < YYLIMIT) {
+			if (*YYCURSOR == '`') {
+				const unsigned char *run_start = YYCURSOR;
+				do {
+					YYCURSOR++;
+				} while (YYCURSOR < YYLIMIT && *YYCURSOR == '`');
+
+				if (YYCURSOR - run_start >= delim_length) {
+					body_end = run_start;
+					break;
+				}
+			} else {
+				YYCURSOR++;
+			}
+		}
+
+		if (!body_end) {
+			zend_throw_exception(zend_ce_parse_error, "Unterminated DSL literal", 0);
+			if (PARSER_MODE()) {
+				RETURN_TOKEN(T_ERROR);
+			}
+			body_end = YYCURSOR;
+		}
+
+		yyleng = YYCURSOR - SCNG(yy_text);
+		ZVAL_STRINGL(zendlval, (const char *) body_start, body_end - body_start);
+		HANDLE_NEWLINES(yytext, yyleng);
+
+		BEGIN(ST_IN_SCRIPTING);
+		RETURN_TOKEN_WITH_VAL(T_DSL_BODY);
+	}
+
+	/* Block body: text between the opener's newline and the newline before
+	 * the closing delimiter line, whose indentation is stripped from
+	 * every line (heredoc semantics) */
+	if (*YYCURSOR == '\r') {
+		YYCURSOR++;
+	}
+	if (YYCURSOR < YYLIMIT && *YYCURSOR == '\n') {
+		YYCURSOR++;
+	}
+	body_start = YYCURSOR;
+
+	{
+		const unsigned char *line_start = body_start;
+		size_t prev_newline_len = 0;
+
+		while (1) {
+			const unsigned char *after_delim = scan_dsl_closing_delimiter(
+				line_start, YYLIMIT, delim_length, &indentation, &spacing);
+			if (after_delim) {
+				body_end = line_start - prev_newline_len;
+				YYCURSOR = (unsigned char *) after_delim;
+				break;
+			}
+
+			const char *nl = next_newline((const char *) line_start, (const char *) YYLIMIT, &prev_newline_len);
+			if (!nl) {
+				zend_throw_exception(zend_ce_parse_error, "Unterminated DSL literal", 0);
+				if (PARSER_MODE()) {
+					RETURN_TOKEN(T_ERROR);
+				}
+				body_end = YYLIMIT;
+				YYCURSOR = YYLIMIT;
+				break;
+			}
+			line_start = (const unsigned char *) nl + prev_newline_len;
+		}
+	}
+
+	if (spacing == (HEREDOC_USING_SPACES | HEREDOC_USING_TABS)) {
+		zend_throw_exception(zend_ce_parse_error,
+			"Invalid indentation - tabs and spaces cannot be mixed", 0);
+		if (PARSER_MODE()) {
+			RETURN_TOKEN(T_ERROR);
+		}
+	}
+
+	yyleng = YYCURSOR - SCNG(yy_text);
+	ZVAL_STRINGL(zendlval, (const char *) body_start, body_end - body_start);
+
+	if (!EG(exception) && PARSER_MODE()
+	 && !strip_multiline_string_indentation(zendlval, indentation, spacing == HEREDOC_USING_SPACES,
+			/* newline_at_start */ true, /* newline_at_end */ true)) {
+		RETURN_TOKEN(T_ERROR);
+	}
+
+	HANDLE_NEWLINES(yytext, yyleng);
+
+	BEGIN(ST_IN_SCRIPTING);
+	RETURN_TOKEN_WITH_VAL(T_DSL_BODY);
 }
 
 

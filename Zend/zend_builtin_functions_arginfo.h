@@ -1,5 +1,5 @@
 /* This is a generated file, edit zend_builtin_functions.stub.php instead.
- * Stub hash: 64c61862de86d9968930893bf21b516119724064 */
+ * Stub hash: 26e99329d3b2358cfbcaf9043f1c87204a606ad3 */
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_clone, 0, 1, IS_OBJECT, 0)
 	ZEND_ARG_TYPE_INFO(0, object, IS_OBJECT, 0)
@@ -132,6 +132,11 @@ ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_alias, 0, 2, _IS_BOOL, 0)
 	ZEND_ARG_TYPE_INFO(0, class, IS_STRING, 0)
 	ZEND_ARG_TYPE_INFO(0, alias, IS_STRING, 0)
 	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, autoload, _IS_BOOL, 0, "true")
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_register_dsl, 0, 2, IS_VOID, 0)
+	ZEND_ARG_TYPE_INFO(0, tag, IS_STRING, 0)
+	ZEND_ARG_TYPE_INFO(0, handler, IS_CALLABLE, 0)
 ZEND_END_ARG_INFO()
 
 #define arginfo_get_included_files arginfo_func_get_args
@@ -279,6 +284,7 @@ ZEND_FUNCTION(trait_exists);
 ZEND_FUNCTION(enum_exists);
 ZEND_FUNCTION(function_exists);
 ZEND_FUNCTION(class_alias);
+ZEND_FUNCTION(register_dsl);
 ZEND_FUNCTION(get_included_files);
 ZEND_FUNCTION(trigger_error);
 ZEND_FUNCTION(set_error_handler);
@@ -356,6 +362,7 @@ static const zend_function_entry ext_functions[] = {
 	ZEND_FE(enum_exists, arginfo_enum_exists)
 	ZEND_FE(function_exists, arginfo_function_exists)
 	ZEND_FE(class_alias, arginfo_class_alias)
+	ZEND_FE(register_dsl, arginfo_register_dsl)
 	ZEND_FE(get_included_files, arginfo_get_included_files)
 	ZEND_RAW_FENTRY("get_required_files", zif_get_included_files, arginfo_get_required_files, 0, NULL, NULL)
 	ZEND_FE(trigger_error, arginfo_trigger_error)

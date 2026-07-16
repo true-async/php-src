@@ -184,6 +184,7 @@ struct _zend_executor_globals {
 	zend_array symbol_table;		/* main symbol table */
 
 	HashTable included_files;	/* files already included */
+	HashTable dsl_handlers;		/* userland DSL handlers, tag -> callable */
 
 	JMP_BUF *bailout;
 
@@ -383,6 +384,11 @@ struct _zend_php_scanner_globals {
 	bool heredoc_scan_ahead;
 	int heredoc_indentation;
 	bool heredoc_indentation_uses_spaces;
+
+	/* DSL literal (tag`...`): delimiter run length and body style, set by
+	 * the opener rule for the immediately following body scan */
+	int dsl_delim_length;
+	bool dsl_inline_body;
 
 	/* original (unfiltered) script */
 	unsigned char *script_org;

@@ -163,6 +163,8 @@ char *get_token_type_name(int token_type)
 		case T_WHITESPACE: return "T_WHITESPACE";
 		case T_START_HEREDOC: return "T_START_HEREDOC";
 		case T_END_HEREDOC: return "T_END_HEREDOC";
+		case T_DSL_TAG: return "T_DSL_TAG";
+		case T_DSL_BODY: return "T_DSL_BODY";
 		case T_DOLLAR_OPEN_CURLY_BRACES: return "T_DOLLAR_OPEN_CURLY_BRACES";
 		case T_CURLY_OPEN: return "T_CURLY_OPEN";
 		case T_PAAMAYIM_NEKUDOTAYIM: return "T_DOUBLE_COLON";

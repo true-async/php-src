@@ -20,6 +20,7 @@
 #include "zend.h"
 #include "zend_API.h"
 #include "zend_attributes.h"
+#include "zend_dsl.h"
 #include "zend_gc.h"
 #include "zend_builtin_functions.h"
 #include "zend_constants.h"
@@ -1190,6 +1191,34 @@ ZEND_FUNCTION(function_exists)
 	zend_string_release_ex(lcname, 0);
 
 	RETURN_BOOL(exists);
+}
+/* }}} */
+
+/* {{{ Registers a userland compile-time DSL handler for tag`...` literals */
+ZEND_FUNCTION(register_dsl)
+{
+	zend_string *tag;
+	zval *handler;
+
+	ZEND_PARSE_PARAMETERS_START(2, 2)
+		Z_PARAM_STR(tag)
+		Z_PARAM_ZVAL(handler)
+	ZEND_PARSE_PARAMETERS_END();
+
+	if (!zend_is_callable(handler, 0, NULL)) {
+		zend_argument_type_error(2, "must be a valid callback");
+		RETURN_THROWS();
+	}
+
+	if (!zend_dsl_tag_is_valid(ZSTR_VAL(tag), ZSTR_LEN(tag))) {
+		zend_argument_value_error(1, "must be a valid DSL tag ([a-zA-Z_][a-zA-Z0-9_]*)");
+		RETURN_THROWS();
+	}
+
+	if (zend_dsl_register_php_handler(tag, handler) == FAILURE) {
+		zend_throw_error(NULL, "DSL tag \"%s\" is already registered", ZSTR_VAL(tag));
+		RETURN_THROWS();
+	}
 }
 /* }}} */
 

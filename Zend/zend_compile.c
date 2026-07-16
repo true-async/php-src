@@ -37,6 +37,7 @@
 #include "zend_observer.h"
 #include "zend_call_stack.h"
 #include "zend_frameless_function.h"
+#include "zend_dsl.h"
 #include "zend_property_hooks.h"
 
 #define SET_NODE(target, src) do { \
@@ -11254,6 +11255,168 @@ static void zend_compile_shell_exec(znode *result, const zend_ast *ast) /* {{{ *
 }
 /* }}} */
 
+/* Shift linenos of a DSL-generated AST so they point into the enclosing
+ * file (the generated code parses with linenos starting at 1). */
+static void zend_dsl_rebase_linenos(zend_ast *ast, uint32_t offset) /* {{{ */
+{
+	if (!ast) {
+		return;
+	}
+
+	if (zend_ast_is_special(ast)) {
+		switch (ast->kind) {
+			case ZEND_AST_ZVAL:
+			case ZEND_AST_CONSTANT:
+				((zend_ast_zval *) ast)->val.u2.lineno += offset;
+				break;
+			default:
+				if (zend_ast_is_decl(ast)) {
+					zend_ast_decl *decl = (zend_ast_decl *) ast;
+					decl->start_lineno += offset;
+					decl->end_lineno += offset;
+					for (uint32_t i = 0; i < sizeof(decl->child) / sizeof(decl->child[0]); i++) {
+						zend_dsl_rebase_linenos(decl->child[i], offset);
+					}
+				}
+				break;
+		}
+		return;
+	}
+
+	ast->lineno += offset;
+
+	if (zend_ast_is_list(ast)) {
+		zend_ast_list *list = zend_ast_get_list(ast);
+		for (uint32_t i = 0; i < list->children; i++) {
+			zend_dsl_rebase_linenos(list->child[i], offset);
+		}
+	} else {
+		for (uint32_t i = 0; i < zend_ast_get_num_children(ast); i++) {
+			zend_dsl_rebase_linenos(ast->child[i], offset);
+		}
+	}
+}
+/* }}} */
+
+/* Abort compilation, reusing the pending exception's message when the
+ * handler or the parse of its output threw one. */
+static ZEND_COLD ZEND_NORETURN void zend_dsl_compile_error(
+		zend_string *tag, uint32_t lineno, const char *fallback) /* {{{ */
+{
+	zend_string *message = NULL;
+
+	if (EG(exception)) {
+		zval rv;
+		zend_object *ex = EG(exception);
+
+		ZVAL_UNDEF(&rv);
+		const zval *msg_zv = zend_read_property_ex(
+			ex->ce, ex, ZSTR_KNOWN(ZEND_STR_MESSAGE), /* silent */ true, &rv);
+
+		if (msg_zv && Z_TYPE_P(msg_zv) == IS_STRING) {
+			message = zend_string_copy(Z_STR_P(msg_zv));
+		}
+		zval_ptr_dtor(&rv);
+		zend_clear_exception();
+	}
+
+	CG(zend_lineno) = lineno;
+	zend_error_noreturn(E_COMPILE_ERROR, "DSL \"%s\": %s",
+		ZSTR_VAL(tag), message ? ZSTR_VAL(message) : fallback);
+}
+/* }}} */
+
+static void zend_compile_dsl_expr(znode *result, const zend_ast *ast) /* {{{ */
+{
+	zend_string *tag = zend_ast_get_str(ast->child[0]);
+	zend_string *body = zend_ast_get_str(ast->child[1]);
+	const uint32_t lineno = ast->lineno;
+
+	zend_string *filename = zend_get_compiled_filename();
+	zend_string *expr_code;
+
+	const zend_dsl_handler_t handler = zend_dsl_find_handler(tag);
+	if (handler) {
+		expr_code = handler(tag, body, filename, lineno);
+	} else {
+		zval *php_handler = zend_dsl_find_php_handler(tag);
+		if (!php_handler) {
+			zend_error_noreturn(E_COMPILE_ERROR,
+				"No DSL handler registered for tag \"%s\" (load the providing extension or call register_dsl() before this code is compiled)",
+				ZSTR_VAL(tag));
+		}
+		expr_code = zend_dsl_call_php_handler(php_handler, body);
+	}
+	if (!expr_code) {
+		zend_dsl_compile_error(tag, lineno, "handler failed to translate the body");
+	}
+
+	/* The parens force the handler output to be a single expression */
+	zend_string *source = zend_string_concat3(
+		"<?php\n(", sizeof("<?php\n(") - 1,
+		ZSTR_VAL(expr_code), ZSTR_LEN(expr_code),
+		");", sizeof(");") - 1);
+	zend_string_release(expr_code);
+
+	zend_arena *ast_arena;
+	zend_string *virtual_filename = zend_strpprintf(0, "%s(%" PRIu32 ") : DSL \"%s\"",
+		filename ? ZSTR_VAL(filename) : "", lineno, ZSTR_VAL(tag));
+	zend_ast *dsl_ast = zend_compile_string_to_ast(source, &ast_arena, virtual_filename);
+	zend_string_release(virtual_filename);
+	zend_string_release(source);
+
+	if (!dsl_ast) {
+		zend_arena_destroy(ast_arena);
+		zend_dsl_compile_error(tag, lineno, "handler produced unparsable PHP code");
+	}
+
+	zend_ast_list *stmts = zend_ast_get_list(dsl_ast);
+	if (stmts->children != 1) {
+		zend_ast_destroy(dsl_ast);
+		zend_arena_destroy(ast_arena);
+		zend_dsl_compile_error(tag, lineno, "handler must produce a single expression");
+	}
+
+	zend_ast *expr_ast = stmts->child[0];
+	stmts->child[0] = NULL; /* the guard tree below takes ownership */
+	/* -1: generated line 1 is the opener's line */
+	zend_dsl_rebase_linenos(expr_ast, lineno - 1);
+
+	/* The handler contract promises an object; enforce it at runtime by
+	 * compiling  \is_object($tmp = expr) ? $tmp : throw new \TypeError(...)
+	 * where $tmp is a NUL-prefixed CV no userland code can collide with. */
+	zval zv;
+
+	ZVAL_STR(&zv, zend_string_init("\0dsl", sizeof("\0dsl") - 1, 0));
+	zend_ast *assign_var_ast = zend_ast_create(ZEND_AST_VAR, zend_ast_create_zval(&zv));
+	ZVAL_STR(&zv, zend_string_init("\0dsl", sizeof("\0dsl") - 1, 0));
+	zend_ast *read_var_ast = zend_ast_create(ZEND_AST_VAR, zend_ast_create_zval(&zv));
+
+	ZVAL_STR(&zv, zend_string_init("is_object", sizeof("is_object") - 1, 0));
+	zend_ast *check_ast = zend_ast_create(ZEND_AST_CALL,
+		zend_ast_create_zval_ex(&zv, ZEND_NAME_FQ),
+		zend_ast_create_list(1, ZEND_AST_ARG_LIST,
+			zend_ast_create(ZEND_AST_ASSIGN, assign_var_ast, expr_ast)));
+
+	ZVAL_STR(&zv, zend_strpprintf(0, "Result of DSL \"%s\" expression must be an object", ZSTR_VAL(tag)));
+	zend_ast *message_ast = zend_ast_create_zval(&zv);
+	ZVAL_STR(&zv, zend_string_init("TypeError", sizeof("TypeError") - 1, 0));
+	zend_ast *throw_ast = zend_ast_create(ZEND_AST_THROW,
+		zend_ast_create(ZEND_AST_NEW,
+			zend_ast_create_zval_ex(&zv, ZEND_NAME_FQ),
+			zend_ast_create_list(1, ZEND_AST_ARG_LIST, message_ast)));
+
+	zend_ast *guard_ast = zend_ast_create(ZEND_AST_CONDITIONAL, check_ast, read_var_ast, throw_ast);
+
+	zend_compile_expr(result, guard_ast);
+
+	/* Node memory lives in the arenas; this only releases the zval refs
+	 * (ours above and the generated code's literals) */
+	zend_ast_destroy(guard_ast);
+	zend_arena_destroy(ast_arena);
+}
+/* }}} */
+
 static void zend_compile_array(znode *result, zend_ast *ast) /* {{{ */
 {
 	zend_ast_list *list = zend_ast_get_list(ast);
@@ -12236,6 +12399,9 @@ static void zend_compile_expr_inner(znode *result, zend_ast *ast) /* {{{ */
 			return;
 		case ZEND_AST_SHELL_EXEC:
 			zend_compile_shell_exec(result, ast);
+			return;
+		case ZEND_AST_DSL:
+			zend_compile_dsl_expr(result, ast);
 			return;
 		case ZEND_AST_ARRAY:
 			zend_compile_array(result, ast);

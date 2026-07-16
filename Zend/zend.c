@@ -31,6 +31,7 @@
 #include "zend_smart_str.h"
 #include "zend_smart_string.h"
 #include "zend_cpuinfo.h"
+#include "zend_dsl.h"
 #include "zend_attributes.h"
 #include "zend_observer.h"
 #include "zend_fibers.h"
@@ -1021,6 +1022,8 @@ void zend_startup(zend_utility_functions *utility_functions) /* {{{ */
 	zend_hash_init(&module_registry, 32, NULL, module_destructor_zval, 1);
 	zend_init_rsrc_list_dtors();
 
+	zend_dsl_startup();
+
 #ifdef ZTS
 	ts_allocate_fast_id_at(&compiler_globals_id, &compiler_globals_offset, ZEND_CG_OFFSET, sizeof(zend_compiler_globals), (ts_allocate_ctor) compiler_globals_ctor, (ts_allocate_dtor) compiler_globals_dtor);
 	ts_allocate_fast_id_at(&executor_globals_id, &executor_globals_offset, ZEND_EG_OFFSET, sizeof(zend_executor_globals), (ts_allocate_ctor) executor_globals_ctor, (ts_allocate_dtor) executor_globals_dtor);
@@ -1234,6 +1237,7 @@ void zend_shutdown(void) /* {{{ */
 
 	zend_destroy_rsrc_list_dtors();
 
+	zend_dsl_shutdown();
 	zend_unload_modules();
 
 	zend_optimizer_shutdown();
