@@ -169,6 +169,16 @@ struct _zend_compiler_globals {
 #endif
 };
 
+/* Coroutine relay state for shutdown_destructors() / zend_objects_store_
+ * call_destructors_async(): whether a pass is mid-flight, who started it,
+ * and the cursor to resume from. Shared by both — they run in sequence,
+ * never concurrently. See Zend/zend_execute_API.c, Zend/zend_objects_API.c. */
+typedef struct {
+	bool is_started;
+	void *coroutine;
+	uint32_t num_elements;
+	uint32_t idx;
+} zend_shutdown_context_t;
 
 struct _zend_executor_globals {
 	zval uninitialized_zval;
@@ -182,6 +192,8 @@ struct _zend_executor_globals {
 	zend_array **symtable_cache_ptr;
 
 	zend_array symbol_table;		/* main symbol table */
+
+	zend_shutdown_context_t shutdown_context;
 
 	HashTable included_files;	/* files already included */
 

@@ -1,0 +1,7 @@
+// vim:ft=javascript
+
+ARG_ENABLE("async-scheduler-hook", "Enable the Async scheduler hook bridge (Async\\SchedulerHook, Async\\Context)", "no");
+
+if (PHP_ASYNC_SCHEDULER_HOOK != "no") {
+	EXTENSION("async_scheduler_hook", "async_scheduler_hook.c", PHP_ASYNC_SCHEDULER_HOOK_SHARED, "");
+}
