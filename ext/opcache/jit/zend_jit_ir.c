@@ -14,6 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
+#include "Zend/zend_lazy_backtrace.h"
 #include "Zend/zend_cpuinfo.h"
 #include "Zend/zend_types.h"
 #include "Zend/zend_type_info.h"
@@ -3131,6 +3132,7 @@ static void zend_jit_setup_disasm(void)
 	REGISTER_HELPER(zend_jit_vm_stack_free_args_helper);
 	REGISTER_HELPER(zend_free_extra_named_params);
 	REGISTER_HELPER(zend_jit_free_call_frame);
+	REGISTER_HELPER(zend_lazy_trace_capture);
 	REGISTER_HELPER(zend_jit_exception_in_interrupt_handler_helper);
 	REGISTER_HELPER(zend_jit_verify_arg_slow);
 	REGISTER_HELPER(zend_missing_arg_error);
@@ -10674,6 +10676,18 @@ static int zend_jit_do_fcall(zend_jit_ctx *jit, const zend_op *opline, const zen
 			ir_IF_FALSE(if_allocated);
 		}
 
+		/* JIT: if (UNEXPECTED(rx == EG(lazy_watermark))) zend_lazy_trace_capture(rx); */
+		{
+			ir_ref if_wm = ir_IF(ir_EQ(ir_LOAD_A(jit_EG(lazy_watermark)), rx));
+			ir_ref wm_path;
+
+			ir_IF_TRUE_cold(if_wm);
+			ir_CALL_1(IR_VOID, ir_CONST_FC_FUNC(zend_lazy_trace_capture), rx);
+			wm_path = ir_END();
+			ir_IF_FALSE(if_wm);
+			ir_MERGE_WITH(wm_path);
+		}
+
 		ir_STORE(jit_EG(vm_stack_top), rx);
 
 		if (allocated_path) {
@@ -11172,6 +11186,18 @@ static int zend_jit_leave_func(zend_jit_ctx         *jit,
 	}
 
 	// JIT: EG(vm_stack_top) = (zval*)execute_data
+	/* JIT: if (UNEXPECTED(jit_FP(jit) == EG(lazy_watermark))) zend_lazy_trace_capture(jit_FP(jit)); */
+	{
+		ir_ref if_wm = ir_IF(ir_EQ(ir_LOAD_A(jit_EG(lazy_watermark)), jit_FP(jit)));
+		ir_ref wm_path;
+
+		ir_IF_TRUE_cold(if_wm);
+		ir_CALL_1(IR_VOID, ir_CONST_FC_FUNC(zend_lazy_trace_capture), jit_FP(jit));
+		wm_path = ir_END();
+		ir_IF_FALSE(if_wm);
+		ir_MERGE_WITH(wm_path);
+	}
+
 	ir_STORE(jit_EG(vm_stack_top), jit_FP(jit));
 
 	// JITL execute_data = EX(prev_execute_data)

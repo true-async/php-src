@@ -1867,22 +1867,11 @@ ZEND_API void zend_fetch_debug_backtrace(zval *return_value, int skip_last, int 
 }
 /* }}} */
 
-/* Same, but starting from an arbitrary frame.
- *
- * start_opline overrides start->opline for the first frame only. Lazy backtrace
- * needs that: it captures a frame as the frame is being torn down, when the
- * opline has already moved to the return, whereas the walker wants the opline
- * the frame was suspended on. Pass NULL to read start->opline as usual. */
-/* One iteration of the backtrace walk.
- *
- * Appends one entry to return_value and updates state. The walk carries state
- * between frames: a frame can produce a second entry (include/eval), and a
- * frameless entry edits the entry emitted just before it. A caller walking the
- * stack one frame at a time must therefore keep this state rather than start
- * afresh each time. That is what lazy backtrace does, capturing frames as they
- * are torn down.
- *
- * Returns false when the walk should stop. */
+/* Same, but from an arbitrary frame. start_opline overrides start->opline for
+ * the first frame, which lazy backtrace needs: by the time it captures a frame
+ * the real opline has moved to the return. NULL reads start->opline as usual. */
+/* One iteration of the walk: appends to return_value, advances state, and
+ * returns false when the walk should stop. See zend_backtrace_walk_state. */
 ZEND_API bool zend_backtrace_walk_step(zval *return_value, zend_backtrace_walk_state *state, int options) /* {{{ */
 {
 	zend_execute_data *call = state->call;

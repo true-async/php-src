@@ -1153,6 +1153,11 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV 
 {
 	zend_execute_data *old_execute_data;
 	uint32_t call_info = EX_CALL_INFO();
+
+	if (UNEXPECTED(execute_data == EG(lazy_watermark))) {
+		zend_lazy_trace_capture(execute_data);
+	}
+
 #if ZEND_VM_KIND != ZEND_VM_KIND_TAILCALL
 	/* zend_leave_helper may be called with opline=call_leave_op in TAILCALL VM */
 	SAVE_OPLINE();
@@ -1352,6 +1357,9 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_D
 		}
 		zend_vm_stack_free_call_frame_ex(call_info, call);
 	} else {
+		if (UNEXPECTED(call == EG(lazy_watermark))) {
+			zend_lazy_trace_capture(call);
+		}
 		EG(vm_stack_top) = (zval*)call;
 	}
 
@@ -1422,6 +1430,9 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_D
 		}
 		zend_vm_stack_free_call_frame_ex(call_info, call);
 	} else {
+		if (UNEXPECTED(call == EG(lazy_watermark))) {
+			zend_lazy_trace_capture(call);
+		}
 		EG(vm_stack_top) = (zval*)call;
 	}
 
@@ -1491,6 +1502,9 @@ static ZEND_VM_COLD ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_
 		}
 		zend_vm_stack_free_call_frame_ex(call_info, call);
 	} else {
+		if (UNEXPECTED(call == EG(lazy_watermark))) {
+			zend_lazy_trace_capture(call);
+		}
 		EG(vm_stack_top) = (zval*)call;
 	}
 
@@ -1686,6 +1700,9 @@ fcall_by_name_end:
 			}
 			zend_vm_stack_free_call_frame_ex(call_info, call);
 		} else {
+			if (UNEXPECTED(call == EG(lazy_watermark))) {
+				zend_lazy_trace_capture(call);
+			}
 			EG(vm_stack_top) = (zval*)call;
 		}
 
@@ -1804,6 +1821,9 @@ fcall_by_name_end:
 			}
 			zend_vm_stack_free_call_frame_ex(call_info, call);
 		} else {
+			if (UNEXPECTED(call == EG(lazy_watermark))) {
+				zend_lazy_trace_capture(call);
+			}
 			EG(vm_stack_top) = (zval*)call;
 		}
 
@@ -1920,6 +1940,9 @@ fcall_by_name_end:
 			}
 			zend_vm_stack_free_call_frame_ex(call_info, call);
 		} else {
+			if (UNEXPECTED(call == EG(lazy_watermark))) {
+				zend_lazy_trace_capture(call);
+			}
 			EG(vm_stack_top) = (zval*)call;
 		}
 
@@ -54085,6 +54108,11 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV  zend
 {
 	zend_execute_data *old_execute_data;
 	uint32_t call_info = EX_CALL_INFO();
+
+	if (UNEXPECTED(execute_data == EG(lazy_watermark))) {
+		zend_lazy_trace_capture(execute_data);
+	}
+
 #if ZEND_VM_KIND != ZEND_VM_KIND_TAILCALL
 	/* zend_leave_helper may be called with opline=call_leave_op in TAILCALL VM */
 	SAVE_OPLINE();
@@ -54284,6 +54312,9 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_DO_ICA
 		}
 		zend_vm_stack_free_call_frame_ex(call_info, call);
 	} else {
+		if (UNEXPECTED(call == EG(lazy_watermark))) {
+			zend_lazy_trace_capture(call);
+		}
 		EG(vm_stack_top) = (zval*)call;
 	}
 
@@ -54354,6 +54385,9 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_DO_ICA
 		}
 		zend_vm_stack_free_call_frame_ex(call_info, call);
 	} else {
+		if (UNEXPECTED(call == EG(lazy_watermark))) {
+			zend_lazy_trace_capture(call);
+		}
 		EG(vm_stack_top) = (zval*)call;
 	}
 
@@ -54423,6 +54457,9 @@ static ZEND_VM_COLD ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_DO_IC
 		}
 		zend_vm_stack_free_call_frame_ex(call_info, call);
 	} else {
+		if (UNEXPECTED(call == EG(lazy_watermark))) {
+			zend_lazy_trace_capture(call);
+		}
 		EG(vm_stack_top) = (zval*)call;
 	}
 
@@ -54618,6 +54655,9 @@ fcall_by_name_end:
 			}
 			zend_vm_stack_free_call_frame_ex(call_info, call);
 		} else {
+			if (UNEXPECTED(call == EG(lazy_watermark))) {
+				zend_lazy_trace_capture(call);
+			}
 			EG(vm_stack_top) = (zval*)call;
 		}
 
@@ -54736,6 +54776,9 @@ fcall_by_name_end:
 			}
 			zend_vm_stack_free_call_frame_ex(call_info, call);
 		} else {
+			if (UNEXPECTED(call == EG(lazy_watermark))) {
+				zend_lazy_trace_capture(call);
+			}
 			EG(vm_stack_top) = (zval*)call;
 		}
 
@@ -54852,6 +54895,9 @@ fcall_by_name_end:
 			}
 			zend_vm_stack_free_call_frame_ex(call_info, call);
 		} else {
+			if (UNEXPECTED(call == EG(lazy_watermark))) {
+				zend_lazy_trace_capture(call);
+			}
 			EG(vm_stack_top) = (zval*)call;
 		}
 
@@ -110564,6 +110610,11 @@ zend_leave_helper_SPEC_LABEL:
 {
 	zend_execute_data *old_execute_data;
 	uint32_t call_info = EX_CALL_INFO();
+
+	if (UNEXPECTED(execute_data == EG(lazy_watermark))) {
+		zend_lazy_trace_capture(execute_data);
+	}
+
 #if ZEND_VM_KIND != ZEND_VM_KIND_TAILCALL
 	/* zend_leave_helper may be called with opline=call_leave_op in TAILCALL VM */
 	SAVE_OPLINE();

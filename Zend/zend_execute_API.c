@@ -163,6 +163,9 @@ void init_executor(void) /* {{{ */
 	ZVAL_UNDEF(&EG(user_exception_handler));
 
 	EG(current_execute_data) = NULL;
+	EG(lazy_traces) = NULL;
+	EG(lazy_watermark) = NULL;
+	EG(lazy_trace_placeholder) = NULL;
 
 	zend_stack_init(&EG(user_error_handlers_error_reporting), sizeof(int));
 	zend_stack_init(&EG(user_error_handlers), sizeof(zval));
@@ -436,6 +439,7 @@ ZEND_API void zend_shutdown_executor_values(bool fast_shutdown)
 
 void shutdown_executor(void) /* {{{ */
 {
+
 #if ZEND_DEBUG
 	bool fast_shutdown = 0;
 #elif defined(__SANITIZE_ADDRESS__)
@@ -532,6 +536,13 @@ void shutdown_executor(void) /* {{{ */
 	EG(ht_iterators_used) = 0;
 
 	zend_shutdown_fpu();
+	/* Last: shutdown still creates exceptions, and an earlier release would let
+	 * one of them recreate the placeholder and leak it. */
+	if (EG(lazy_trace_placeholder)) {
+		zend_array_release(EG(lazy_trace_placeholder));
+		EG(lazy_trace_placeholder) = NULL;
+	}
+
 }
 /* }}} */
 

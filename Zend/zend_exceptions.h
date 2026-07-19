@@ -22,6 +22,26 @@
 #define ZEND_EXCEPTIONS_H
 
 #include "zend_types.h"
+#include "zend_lazy_backtrace.h"
+
+/* Exceptions carry their lazy backtrace record inline, so arming costs no
+ * allocation.
+ *
+ * std goes last because zend_object ends in properties_table[], which holds the
+ * declared properties inline; anything placed after it would be overwritten.
+ * default_exception_handlers.offset tells the engine where std begins.
+ *
+ * An extension defining its own exception class must either reuse
+ * zend_ce_exception->create_object or allocate this wrapper itself. */
+typedef struct {
+	zend_lazy_trace lazy;
+	zend_object     std;
+} zend_exception_object;
+
+static zend_always_inline zend_exception_object *zend_exception_from_obj(zend_object *obj)
+{
+	return (zend_exception_object *)((char *)obj - offsetof(zend_exception_object, std));
+}
 
 BEGIN_EXTERN_C()
 

@@ -27,6 +27,7 @@
 #include "zend_dtrace.h"
 #include "zend_smart_str.h"
 #include "zend_exceptions_arginfo.h"
+#include "zend_lazy_backtrace.h"
 #include "zend_observer.h"
 
 #define ZEND_EXCEPTION_MESSAGE_OFF 0
@@ -59,6 +60,7 @@ static zend_class_entry zend_ce_graceful_exit;
 ZEND_API void (*zend_throw_exception_hook)(zend_object *ex);
 
 static zend_object_handlers default_exception_handlers;
+
 
 /* {{{ zend_implement_throwable */
 static int zend_implement_throwable(zend_class_entry *interface, zend_class_entry *class_type)
@@ -254,16 +256,74 @@ static void zend_update_property_num_checked(zend_class_entry *scope, zend_objec
 	ZVAL_COPY_VALUE(zv, value);
 }
 
+/* Called from every path that can observe the trace property, get_properties_for
+ * included, so var_dump() and serialize() do not see the placeholder. */
+static void zend_exception_materialize_trace(zend_object *object)
+{
+	zend_exception_object *exc = zend_exception_from_obj(object);
+	zval trace;
+
+	if (!exc->lazy.armed) {
+		return;
+	}
+
+	exc->lazy.armed = false;
+
+	/* Whatever replaced the placeholder wins: unserialize() and Reflection are
+	 * authoritative. Compared by pointer, so an in-place write counts too: the
+	 * placeholder is shared and has to separate first. */
+	if (EXPECTED(object->ce->num_hooked_props == 0)) {
+		const zval *slot = OBJ_PROP_NUM(object, ZEND_EXCEPTION_TRACE_OFF);
+
+		if (Z_TYPE_P(slot) != IS_ARRAY || Z_ARR_P(slot) != EG(lazy_trace_placeholder)) {
+			zend_lazy_trace_abandon(&exc->lazy);
+			return;
+		}
+	}
+
+	zend_lazy_trace_materialize(&exc->lazy, &trace);
+	/* Takes ownership of trace, as it does in the constructor. */
+	zend_update_property_num_checked(i_get_exception_base(object), object,
+		ZEND_EXCEPTION_TRACE_OFF, ZSTR_KNOWN(ZEND_STR_TRACE), &trace);
+}
+
+static void zend_exception_free_obj(zend_object *object)
+{
+	zend_exception_object *exc = zend_exception_from_obj(object);
+
+	if (exc->lazy.armed) {
+		exc->lazy.armed = false;
+		zend_lazy_trace_abandon(&exc->lazy);
+	}
+
+	zend_object_std_dtor(object);
+}
+
+static HashTable *zend_exception_get_properties_for(zend_object *object, zend_prop_purpose purpose)
+{
+	zend_exception_materialize_trace(object);
+	return zend_std_get_properties_for(object, purpose);
+}
+
 static zend_object *zend_default_exception_new(zend_class_entry *class_type) /* {{{ */
 {
 	zval tmp;
 	zval trace;
 	zend_string *filename;
 
-	zend_object *object = zend_objects_new(class_type);
+	zend_exception_object *exc = zend_object_alloc(sizeof(zend_exception_object), class_type);
+	zend_object *object = &exc->std;
+
+	zend_object_std_init(object, class_type);
+	object->handlers = &default_exception_handlers;
 	object_properties_init(object, class_type);
 
-	if (EG(current_execute_data)) {
+	/* When arming takes, the property holds the placeholder until first read. */
+	exc->lazy.armed = zend_lazy_trace_start(&exc->lazy);
+
+	if (exc->lazy.armed) {
+		ZVAL_ARR(&trace, zend_lazy_trace_placeholder());
+	} else if (EG(current_execute_data)) {
 		zend_fetch_debug_backtrace(&trace,
 			0,
 			EG(exception_ignore_args) ? DEBUG_BACKTRACE_IGNORE_ARGS : 0, 0);
@@ -474,6 +534,8 @@ ZEND_METHOD(Exception, getTrace)
 
 	ZEND_PARSE_PARAMETERS_NONE();
 
+	zend_exception_materialize_trace(Z_OBJ_P(ZEND_THIS));
+
 	prop = GET_PROPERTY(ZEND_THIS, ZEND_STR_TRACE);
 	ZVAL_DEREF(prop);
 	ZVAL_COPY(return_value, prop);
@@ -677,6 +739,9 @@ ZEND_METHOD(Exception, getTraceAsString)
 	ZEND_PARSE_PARAMETERS_NONE();
 
 	zval *object = ZEND_THIS;
+
+	zend_exception_materialize_trace(Z_OBJ_P(object));
+
 	zend_class_entry *base_ce = i_get_exception_base(Z_OBJ_P(object));
 	zval rv;
 	const zval *trace = zend_read_property_ex(base_ce, Z_OBJ_P(object), ZSTR_KNOWN(ZEND_STR_TRACE), 1, &rv);
@@ -823,6 +888,9 @@ void zend_register_default_exception(void) /* {{{ */
 
 	memcpy(&default_exception_handlers, &std_object_handlers, sizeof(zend_object_handlers));
 	default_exception_handlers.clone_obj = NULL;
+	default_exception_handlers.offset = offsetof(zend_exception_object, std);
+	default_exception_handlers.free_obj = zend_exception_free_obj;
+	default_exception_handlers.get_properties_for = zend_exception_get_properties_for;
 
 	zend_ce_exception = register_class_Exception(zend_ce_throwable);
 	zend_init_exception_class_entry(zend_ce_exception);

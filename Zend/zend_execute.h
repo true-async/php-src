@@ -348,6 +348,13 @@ static zend_always_inline zend_execute_data *zend_vm_stack_push_call_frame_ex(ui
 
 	ZEND_ASSERT_VM_STACK_GLOBAL;
 
+	/* A frame a pending trace waits for is alive, so its address cannot be
+	 * handed out again; firing means a teardown path skipped the capture hook.
+	 * Debug only: ZEND_ASSUME is not free on this path. */
+#if ZEND_DEBUG
+	ZEND_ASSERT(call != EG(lazy_watermark));
+#endif
+
 	if (UNEXPECTED(used_stack > (size_t)(((char*)EG(vm_stack_end)) - (char*)call))) {
 		call = (zend_execute_data*)zend_vm_stack_extend(used_stack);
 		ZEND_ASSERT_VM_STACK_GLOBAL;
@@ -409,9 +416,16 @@ static zend_always_inline void zend_vm_stack_free_args(zend_execute_data *call)
 	}
 }
 
+ZEND_API void zend_lazy_trace_capture(zend_execute_data *ex);
+
 static zend_always_inline void zend_vm_stack_free_call_frame_ex(uint32_t call_info, zend_execute_data *call)
 {
 	ZEND_ASSERT_VM_STACK_GLOBAL;
+
+	/* Last moment the caller's opline is still frozen on the call opcode. */
+	if (UNEXPECTED(call == EG(lazy_watermark))) {
+		zend_lazy_trace_capture(call);
+	}
 
 	if (UNEXPECTED(call_info & ZEND_CALL_ALLOCATED)) {
 		zend_vm_stack p = EG(vm_stack);

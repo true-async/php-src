@@ -2987,6 +2987,11 @@ ZEND_VM_HOT_HELPER(zend_leave_helper, ANY, ANY)
 {
 	zend_execute_data *old_execute_data;
 	uint32_t call_info = EX_CALL_INFO();
+
+	if (UNEXPECTED(execute_data == EG(lazy_watermark))) {
+		zend_lazy_trace_capture(execute_data);
+	}
+
 #if ZEND_VM_KIND != ZEND_VM_KIND_TAILCALL
 	/* zend_leave_helper may be called with opline=call_leave_op in TAILCALL VM */
 	SAVE_OPLINE();
@@ -4177,6 +4182,9 @@ ZEND_VM_HOT_HANDLER(129, ZEND_DO_ICALL, ANY, ANY, SPEC(RETVAL,OBSERVER))
 		}
 		zend_vm_stack_free_call_frame_ex(call_info, call);
 	} else {
+		if (UNEXPECTED(call == EG(lazy_watermark))) {
+			zend_lazy_trace_capture(call);
+		}
 		EG(vm_stack_top) = (zval*)call;
 	}
 
@@ -4318,6 +4326,9 @@ ZEND_VM_C_LABEL(fcall_by_name_end):
 			}
 			zend_vm_stack_free_call_frame_ex(call_info, call);
 		} else {
+			if (UNEXPECTED(call == EG(lazy_watermark))) {
+				zend_lazy_trace_capture(call);
+			}
 			EG(vm_stack_top) = (zval*)call;
 		}
 

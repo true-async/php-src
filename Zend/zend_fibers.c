@@ -31,6 +31,7 @@
 #include "zend_generators.h"
 
 #include "zend_fibers.h"
+#include "zend_lazy_backtrace.h"
 #include "zend_fibers_arginfo.h"
 
 #ifdef HAVE_VALGRIND
@@ -109,6 +110,7 @@ typedef struct _zend_fiber_vm_state {
 	zval *vm_stack_end;
 	size_t vm_stack_page_size;
 	zend_execute_data *current_execute_data;
+	zend_execute_data *lazy_watermark;
 	int error_reporting;
 	uint32_t jit_trace_num;
 	JMP_BUF *bailout;
@@ -126,6 +128,7 @@ static zend_always_inline void zend_fiber_capture_vm_state(zend_fiber_vm_state *
 	state->vm_stack_end = EG(vm_stack_end);
 	state->vm_stack_page_size = EG(vm_stack_page_size);
 	state->current_execute_data = EG(current_execute_data);
+	state->lazy_watermark = EG(lazy_watermark);
 	state->error_reporting = EG(error_reporting);
 	state->jit_trace_num = EG(jit_trace_num);
 	state->bailout = EG(bailout);
@@ -143,6 +146,7 @@ static zend_always_inline void zend_fiber_restore_vm_state(zend_fiber_vm_state *
 	EG(vm_stack_end) = state->vm_stack_end;
 	EG(vm_stack_page_size) = state->vm_stack_page_size;
 	EG(current_execute_data) = state->current_execute_data;
+	EG(lazy_watermark) = state->lazy_watermark;
 	EG(error_reporting) = state->error_reporting;
 	EG(jit_trace_num) = state->jit_trace_num;
 	EG(bailout) = state->bailout;
@@ -463,6 +467,11 @@ ZEND_API zend_result zend_fiber_init_context(zend_fiber_context *context, void *
 
 ZEND_API void zend_fiber_destroy_context(zend_fiber_context *context)
 {
+	/* Last moment the frames on this stack are still readable. */
+	if (UNEXPECTED(EG(lazy_traces) != NULL)) {
+		zend_lazy_trace_finish_on_stack(context);
+	}
+
 	zend_observer_fiber_destroy_notify(context);
 
 	if (context->cleanup) {
@@ -749,6 +758,10 @@ ZEND_API void zend_fiber_resume_exception(zend_fiber *fiber, zval *exception, zv
 
 ZEND_API void zend_fiber_suspend(zend_fiber *fiber, zval *value, zval *return_value)
 {
+	if (UNEXPECTED(EG(lazy_traces) != NULL)) {
+		zend_lazy_trace_capture_fiber_tail(fiber->stack_bottom);
+	}
+
 	fiber->stack_bottom->prev_execute_data = NULL;
 
 	zend_fiber_transfer transfer = zend_fiber_suspend_internal(fiber, value);
@@ -947,6 +960,10 @@ ZEND_METHOD(Fiber, suspend)
 	}
 
 	ZEND_ASSERT(fiber->context.status == ZEND_FIBER_STATUS_RUNNING || fiber->context.status == ZEND_FIBER_STATUS_SUSPENDED);
+
+	if (UNEXPECTED(EG(lazy_traces) != NULL)) {
+		zend_lazy_trace_capture_fiber_tail(fiber->stack_bottom);
+	}
 
 	fiber->stack_bottom->prev_execute_data = NULL;
 

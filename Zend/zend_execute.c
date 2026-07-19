@@ -35,6 +35,7 @@
 #include "zend_closures.h"
 #include "zend_generators.h"
 #include "zend_vm.h"
+#include "zend_lazy_backtrace.h"
 #include "zend_dtrace.h"
 #include "zend_inheritance.h"
 #include "zend_type_info.h"
@@ -208,6 +209,10 @@ ZEND_API void zend_vm_stack_init_ex(size_t page_size)
 
 ZEND_API void zend_vm_stack_destroy(void)
 {
+	if (UNEXPECTED(EG(lazy_traces) != NULL)) {
+		zend_lazy_trace_finish_all();
+	}
+
 	zend_vm_stack stack = EG(vm_stack);
 
 	while (stack != NULL) {
@@ -1613,12 +1618,7 @@ ZEND_API void zend_frameless_observed_call(zend_execute_data *execute_data)
 
 	zend_vm_stack_free_args(call);
 
-	uint32_t call_info = ZEND_CALL_INFO(call);
-	if (UNEXPECTED(call_info & ZEND_CALL_ALLOCATED)) {
-		zend_vm_stack_free_call_frame_ex(call_info, call);
-	} else {
-		EG(vm_stack_top) = (zval*)call;
-	}
+	zend_vm_stack_free_call_frame_ex(ZEND_CALL_INFO(call), call);
 }
 
 

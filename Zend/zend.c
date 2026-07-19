@@ -24,6 +24,7 @@
 #include "zend_API.h"
 #include "zend_exceptions.h"
 #include "zend_builtin_functions.h"
+#include "zend_lazy_backtrace.h"
 #include "zend_ini.h"
 #include "zend_vm.h"
 #include "zend_dtrace.h"
@@ -1268,6 +1269,11 @@ ZEND_API ZEND_COLD ZEND_NORETURN void _zend_bailout(const char *filename, uint32
 		zend_output_debug_string(1, "%s(%d) : Bailed out without a bailout address!", filename, lineno);
 		exit(-1);
 	}
+	/* The longjmp skips every frame teardown, so this is the last chance. */
+	if (UNEXPECTED(EG(lazy_traces) != NULL)) {
+		zend_lazy_trace_finish_all();
+	}
+
 	gc_protect(1);
 	CG(unclean_shutdown) = 1;
 	CG(active_class_entry) = NULL;
