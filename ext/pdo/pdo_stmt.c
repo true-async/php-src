@@ -2040,15 +2040,7 @@ PDO_API void php_pdo_free_statement(pdo_stmt_t *stmt)
 		pconn->pool_slot_refcount--;
 
 		if (pconn->pool_slot_refcount == 0) {
-			if (pdo_pool_peek_conn(stmt->dbh) == pconn) {
-				pdo_pool_maybe_release(stmt->dbh);
-			} else {
-				/* Orphaned conn (binding switched away or coroutine ended) —
-				 * release directly; pool destroys it if broken. */
-				zval conn_zval;
-				ZVAL_PTR(&conn_zval, pconn);
-				ZEND_ASYNC_POOL_RELEASE(stmt->dbh->pool, &conn_zval);
-			}
+			pdo_pool_release_stmt_conn(pconn);
 		}
 
 		stmt->pooled_conn = NULL;
