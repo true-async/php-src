@@ -85,7 +85,10 @@ static int pdo_mysql_stmt_dtor(pdo_stmt_t *stmt) /* {{{ */
 
 	pdo_mysql_free_result(S);
 	if (S->einfo.errmsg) {
-		pefree(S->einfo.errmsg, stmt->dbh->is_persistent);
+		/* stmt->dbh may already be freed (GC can destroy the PDO first), and a
+		 * pooled slot is never persistent — so fall back to non-persistent. */
+		pefree(S->einfo.errmsg,
+			php_pdo_stmt_valid_db_obj_handle(stmt) && stmt->dbh->is_persistent);
 		S->einfo.errmsg = NULL;
 	}
 	if (S->stmt) {
