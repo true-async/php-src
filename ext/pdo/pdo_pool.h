@@ -60,6 +60,10 @@ pdo_dbh_t *pdo_pool_peek_conn(pdo_dbh_t *dbh);
  */
 void pdo_pool_maybe_release(pdo_dbh_t *dbh);
 
+/* Release a conn borrowed by a statement back to the pool. Reaches the pool
+ * through the conn itself, so it is safe when stmt->dbh is already freed. */
+void pdo_pool_release_stmt_conn(pdo_dbh_t *conn);
+
 PDO_API pdo_stmt_t *pdo_dbh_get_last_failed_query_stmt(pdo_dbh_t *dbh);
 PDO_API void pdo_dbh_set_last_failed_query_stmt(pdo_dbh_t *dbh, pdo_stmt_t *stmt, zend_object *obj);
 PDO_API void pdo_dbh_release_last_failed_query_stmt(pdo_dbh_t *dbh);

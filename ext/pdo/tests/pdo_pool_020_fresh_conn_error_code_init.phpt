@@ -6,12 +6,16 @@ pdo_mysql
 true_async
 --SKIPIF--
 <?php
-require_once __DIR__ . '/inc/pdo_pool_test.inc';
+$pdo_pool_inc_dir = getenv('REDIR_TEST_DIR');
+if (false === $pdo_pool_inc_dir) $pdo_pool_inc_dir = __DIR__ . '/';
+require_once $pdo_pool_inc_dir . 'inc/pdo_pool_test.inc';
 PDOPoolTest::skip();
 ?>
 --FILE--
 <?php
-require_once __DIR__ . '/inc/pdo_pool_test.inc';
+$pdo_pool_inc_dir = getenv('REDIR_TEST_DIR');
+if (false === $pdo_pool_inc_dir) $pdo_pool_inc_dir = __DIR__ . '/';
+require_once $pdo_pool_inc_dir . 'inc/pdo_pool_test.inc';
 
 use function Async\spawn;
 use function Async\await;

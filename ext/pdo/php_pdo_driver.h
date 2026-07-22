@@ -28,6 +28,9 @@ struct pdo_bound_param_data;
 /* forward declaration for async pool (from zend_async_API.h) */
 typedef struct _zend_async_pool_s zend_async_pool_t;
 
+/* forward declaration for the per-coroutine pool binding (private to pdo_pool.c) */
+typedef struct _pdo_pool_binding pdo_pool_binding_t;
+
 #ifndef TRUE
 # define TRUE 1
 #endif
@@ -35,7 +38,7 @@ typedef struct _zend_async_pool_s zend_async_pool_t;
 # define FALSE 0
 #endif
 
-#define PDO_DRIVER_API	20260205
+#define PDO_DRIVER_API	20260722
 
 /* Doctrine hardcodes these constants, avoid changing their values. */
 enum pdo_param_type {
@@ -531,8 +534,9 @@ struct _pdo_dbh_t {
 
 	/* Connection pool (requires async extension) */
 	zend_async_pool_t *pool;		/* internal pool, NULL if pooling disabled */
-	HashTable *pool_bindings;	/* coroutine_id => pdo_pool_binding_t* */
+	HashTable *pool_bindings;	/* execution context key => pdo_pool_binding_t*, main flow is 0 */
 	zend_object *pool_wrapper;		/* cached PHP Async\Pool object for getPool() */
+	pdo_pool_binding_t *owner_binding;	/* binding holding this slot; NULL when unowned (idle, or stmt-held orphan) */
 	uint32_t pool_slot_refcount;	/* number of statements borrowing this pooled connection */
 	uint32_t pool_stmt_cache_size;	/* configured per-conn prepared-stmt cache capacity (template only); 0 = disabled */
 	bool conn_broken:1;				/* connection lost or protocol desynchronized — must not return to pool */
