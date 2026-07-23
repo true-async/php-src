@@ -38,7 +38,7 @@ typedef struct _pdo_pool_binding pdo_pool_binding_t;
 # define FALSE 0
 #endif
 
-#define PDO_DRIVER_API	20260722
+#define PDO_DRIVER_API	20260723
 
 /* Doctrine hardcodes these constants, avoid changing their values. */
 enum pdo_param_type {
@@ -540,6 +540,16 @@ struct _pdo_dbh_t {
 	uint32_t pool_slot_refcount;	/* number of statements borrowing this pooled connection */
 	uint32_t pool_stmt_cache_size;	/* configured per-conn prepared-stmt cache capacity (template only); 0 = disabled */
 	bool conn_broken:1;				/* connection lost or protocol desynchronized — must not return to pool */
+
+	/* Constructor options kept on the template so every slot the factory
+	 * creates is configured like a direct connection would be. IS_UNDEF when
+	 * pooling is off. Released in pdo_pool_destroy(). */
+	zval pool_driver_options;
+
+	/* Connection-level attributes set after construction, recorded on the
+	 * template (attribute number => value) and re-applied to every slot.
+	 * NULL until the first setAttribute() the driver accepts. */
+	HashTable *pool_conn_attributes;
 
 	/* Driver-owned per-template auxiliary state for pool mode (e.g. SQLite UDF
 	 * registry). NULL by default. Lifetime: allocated by driver on demand,
