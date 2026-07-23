@@ -405,20 +405,6 @@ PDO_API void php_pdo_internal_construct_driver(INTERNAL_FUNCTION_PARAMETERS, zen
 		pdo_dbh_t *pdbh = NULL;
 		zval *v;
 
-		/* Refuse pooling rather than silently dropping options the pool
-		 * cannot carry yet — for the SSL_* family that would mean an
-		 * unencrypted connection with nothing reported. */
-		if (pdo_attr_lval(options, PDO_ATTR_POOL_ENABLED, 0)) {
-			const zend_long unapplied = pdo_pool_find_unapplied_option(options);
-
-			if (unapplied >= 0) {
-				zend_throw_exception_ex(php_pdo_get_exception(), 0,
-					"PDO::ATTR_POOL_ENABLED cannot be used with driver-specific option " ZEND_LONG_FMT
-					", it would not be applied to pooled connections", unapplied);
-				RETURN_THROWS();
-			}
-		}
-
 		if ((v = zend_hash_index_find_deref(Z_ARRVAL_P(options), PDO_ATTR_PERSISTENT)) != NULL) {
 			if (Z_TYPE_P(v) == IS_STRING &&
 				!is_numeric_string(Z_STRVAL_P(v), Z_STRLEN_P(v), NULL, NULL, 0) && Z_STRLEN_P(v) > 0) {
@@ -771,8 +757,12 @@ PHP_METHOD(PDO, prepare)
 
 
 static bool pdo_is_in_transaction(pdo_dbh_t *dbh) {
-	pdo_dbh_t *conn = pdo_pool_acquire_conn(dbh);
-	if (UNEXPECTED(conn == NULL)) {
+	/* Peek, never acquire: a transaction pins the slot that opened it, so with
+	 * no slot bound to this context there is nothing to be inside of. Taking
+	 * one here burned a pool slot for a call that answers "no transaction",
+	 * and in the main flow it stayed pinned for the whole request. */
+	pdo_dbh_t *conn = pdo_pool_peek_conn(dbh);
+	if (conn == NULL) {
 		return false;
 	}
 
@@ -1104,6 +1094,11 @@ static bool pdo_dbh_attribute_set(pdo_dbh_t *dbh, zend_long attr, zval *value, u
 
 		PDO_DBH_CLEAR_ERR();
 		if (attr_conn->methods->set_attribute(attr_conn, attr, value)) {
+			/* The driver wrote this onto one slot. Keep it on the template as
+			 * well, or every other slot stays on the value it was born with —
+			 * for ATTR_AUTOCOMMIT that silently commits what a later
+			 * rollBack() was meant to undo. */
+			pdo_pool_record_conn_attribute(dbh, attr, value);
 			pdo_pool_sync_error(dbh, attr_conn);
 			pdo_pool_maybe_release(dbh);
 			return true;

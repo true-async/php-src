@@ -213,6 +213,41 @@ static void pdo_pool_free_conn(pdo_dbh_t *conn)
 	efree(conn);
 }
 
+/* Push the attributes recorded on the template onto a slot. Runs for fresh
+ * connections and again on acquire, since a slot can predate the setAttribute
+ * call that recorded them. Driver rejections are ignored: the same call
+ * already reported itself to userland when it was made. */
+static void pdo_pool_apply_conn_attributes(const pdo_dbh_t *dbh, pdo_dbh_t *conn)
+{
+	if (dbh->pool_conn_attributes == NULL || conn->methods == NULL
+		|| conn->methods->set_attribute == NULL) {
+		return;
+	}
+
+	zend_ulong attr;
+	zval *value;
+
+	ZEND_HASH_FOREACH_NUM_KEY_VAL(dbh->pool_conn_attributes, attr, value) {
+		conn->methods->set_attribute(conn, (zend_long)attr, value);
+	} ZEND_HASH_FOREACH_END();
+}
+
+void pdo_pool_record_conn_attribute(pdo_dbh_t *dbh, zend_long attr, zval *value)
+{
+	if (dbh->pool == NULL) {
+		return;
+	}
+
+	if (dbh->pool_conn_attributes == NULL) {
+		dbh->pool_conn_attributes = emalloc(sizeof(HashTable));
+		zend_hash_init(dbh->pool_conn_attributes, 8, NULL, ZVAL_PTR_DTOR, 0);
+	}
+
+	zval copy;
+	ZVAL_COPY(&copy, value);
+	zend_hash_index_update(dbh->pool_conn_attributes, (zend_ulong)attr, &copy);
+}
+
 /* Factory: creates a new driver connection */
 static bool pdo_pool_factory(zend_async_pool_t *pool, zval *result)
 {
@@ -246,11 +281,21 @@ static bool pdo_pool_factory(zend_async_pool_t *pool, zval *result)
 	conn->pool = pool;
 	ZEND_ASYNC_EVENT_ADD_REF(&pool->event);
 
+	/* Hand the driver the constructor options, so a pooled connection ends up
+	 * configured exactly like a direct one — TLS included. The template is
+	 * const only to mark that the factory does not mutate it; the options
+	 * array is passed straight through to the driver. */
+	zval *const options = Z_TYPE(dbh->pool_driver_options) == IS_ARRAY
+		? (zval *) &dbh->pool_driver_options
+		: NULL;
+
 	/* Call driver factory to create actual connection */
-	if (UNEXPECTED(!dbh->driver->db_handle_factory(conn, NULL))) {
+	if (UNEXPECTED(!dbh->driver->db_handle_factory(conn, options))) {
 		pdo_pool_free_conn(conn);
 		return false;
 	}
+
+	pdo_pool_apply_conn_attributes(dbh, conn);
 
 	/* Driver owns driver_data now — free credential copies */
 	if (conn->data_source) { efree((char *)conn->data_source); conn->data_source = NULL; }
@@ -301,9 +346,12 @@ static bool pdo_pool_before_acquire(zend_async_pool_t *pool, zval *resource)
 		return false;
 	}
 
-	if (conn->methods->pool_before_acquire) {
-		return conn->methods->pool_before_acquire(conn);
+	if (conn->methods->pool_before_acquire && !conn->methods->pool_before_acquire(conn)) {
+		return false;
 	}
+
+	/* This slot may predate the setAttribute() calls recorded on the template. */
+	pdo_pool_apply_conn_attributes((const pdo_dbh_t *)pool->user_data, conn);
 
 	return true;
 }
@@ -526,28 +574,6 @@ PDO_API uint32_t pdo_pool_stmt_cache_capacity(const pdo_pool_stmt_cache_t *cache
  * Public API
  */
 
-/* pdo_pool_factory calls db_handle_factory() with options = NULL, so no
- * driver-specific option ever reaches a pooled connection. Dropping them
- * silently downgrades the transport (the SSL_* family) and re-enables what
- * the user disabled (MULTI_STATEMENTS), so pooling refuses them instead. */
-zend_long pdo_pool_find_unapplied_option(const zval *options)
-{
-	if (options == NULL) {
-		return -1;
-	}
-
-	zend_ulong long_key;
-	zend_string *str_key;
-
-	ZEND_HASH_FOREACH_KEY(Z_ARRVAL_P(options), long_key, str_key) {
-		if (str_key == NULL && long_key >= PDO_ATTR_DRIVER_SPECIFIC) {
-			return (zend_long)long_key;
-		}
-	} ZEND_HASH_FOREACH_END();
-
-	return -1;
-}
-
 /* Create pool for a PDO handle based on options */
 bool pdo_pool_create(pdo_dbh_t *dbh, zval *options)
 {
@@ -585,8 +611,34 @@ bool pdo_pool_create(pdo_dbh_t *dbh, zval *options)
 
 	dbh->pool->user_data = dbh;
 
+	/* Keep the options for the factory: it runs long after the constructor
+	 * returned, so it cannot borrow the caller's array. */
+	if (options != NULL && Z_TYPE_P(options) == IS_ARRAY) {
+		ZVAL_COPY(&dbh->pool_driver_options, options);
+	}
+
 	dbh->pool_bindings = emalloc(sizeof(HashTable));
 	zend_hash_init(dbh->pool_bindings, 8, NULL, NULL, 0);
+
+	/* The pool pre-warms inside its own constructor, before user_data can be
+	 * set, so the factory had no template to build from and POOL_MIN never
+	 * created anything. Warm up here, where the template is reachable.
+	 * All of them must be held at once: releasing as we go would just hand
+	 * the same connection back to the next iteration. */
+	if (min_size > 0) {
+		zval *warm = safe_emalloc((size_t)min_size, sizeof(zval), 0);
+		zend_long warmed = 0;
+
+		while (warmed < min_size && ZEND_ASYNC_POOL_TRY_ACQUIRE(dbh->pool, &warm[warmed])) {
+			warmed++;
+		}
+
+		while (warmed-- > 0) {
+			ZEND_ASYNC_POOL_RELEASE(dbh->pool, &warm[warmed]);
+		}
+
+		efree(warm);
+	}
 
 	return true;
 }
@@ -640,6 +692,16 @@ void pdo_pool_destroy(pdo_dbh_t *dbh)
 		ZEND_ASYNC_POOL_CLOSE(dbh->pool);
 		ZEND_ASYNC_EVENT_RELEASE(&dbh->pool->event);
 		dbh->pool = NULL;
+	}
+
+	/* Step 4: no factory or acquire can run any more, drop what they fed on */
+	zval_ptr_dtor(&dbh->pool_driver_options);
+	ZVAL_UNDEF(&dbh->pool_driver_options);
+
+	if (dbh->pool_conn_attributes != NULL) {
+		zend_hash_destroy(dbh->pool_conn_attributes);
+		efree(dbh->pool_conn_attributes);
+		dbh->pool_conn_attributes = NULL;
 	}
 }
 
