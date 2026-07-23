@@ -296,10 +296,12 @@ void pdo_pool_note_statement(pdo_dbh_t *conn, const zend_string *sql)
 		}
 
 		if (*p == '/' && end - p >= 2 && p[1] == '*') {
-			/* MySQL executes what is inside a versioned comment, so this one
-			 * is SQL wearing a disguise -- do not skip it, and do not try to
-			 * classify it either. */
-			if (end - p >= 3 && p[2] == '!') {
+			/* MySQL and MariaDB execute what is inside a versioned comment, so
+			 * this one is SQL wearing a disguise -- do not skip it, and do not
+			 * try to classify it either. MySQL spells it with a bang after
+			 * the opener, MariaDB with an M before the bang. */
+			if ((end - p >= 3 && p[2] == '!')
+				|| (end - p >= 4 && (p[2] == 'M' || p[2] == 'm') && p[3] == '!')) {
 				conn->pool_session_dirty = true;
 				return;
 			}
