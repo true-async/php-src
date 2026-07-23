@@ -321,6 +321,7 @@ typedef enum_func_status (*func_mysqlnd_execute_com_stmt_send_long_data)(MYSQLND
 typedef enum_func_status (*func_mysqlnd_execute_com_stmt_close)(MYSQLND_CONN_DATA * const conn, const zend_ulong stmt_id);
 typedef enum_func_status (*func_mysqlnd_execute_com_enable_ssl)(MYSQLND_CONN_DATA * const conn, const size_t client_capabilities, const size_t server_capabilities, const unsigned int charset_no);
 typedef enum_func_status (*func_mysqlnd_execute_com_handshake)(MYSQLND_CONN_DATA * const conn, const MYSQLND_CSTRING username, const MYSQLND_CSTRING password, const MYSQLND_CSTRING database, const size_t client_flags);
+typedef enum_func_status (*func_mysqlnd_execute_com_reset_connection)(MYSQLND_CONN_DATA * const conn);
 
 
 MYSQLND_CLASS_METHODS_TYPE(mysqlnd_command)
@@ -344,6 +345,7 @@ MYSQLND_CLASS_METHODS_TYPE(mysqlnd_command)
 	func_mysqlnd_execute_com_stmt_close stmt_close;
 	func_mysqlnd_execute_com_enable_ssl enable_ssl;
 	func_mysqlnd_execute_com_handshake handshake;
+	func_mysqlnd_execute_com_reset_connection reset_connection;
 };
 
 
@@ -441,6 +443,7 @@ typedef enum_func_status	(*func_mysqlnd_conn_data__shutdown_server)(MYSQLND_CONN
 typedef enum_func_status	(*func_mysqlnd_conn_data__refresh_server)(MYSQLND_CONN_DATA * const conn, uint8_t options);
 
 typedef enum_func_status	(*func_mysqlnd_conn_data__ping)(MYSQLND_CONN_DATA * const conn);
+typedef enum_func_status	(*func_mysqlnd_conn_data__reset_connection)(MYSQLND_CONN_DATA * const conn);
 typedef enum_func_status	(*func_mysqlnd_conn_data__kill_connection)(MYSQLND_CONN_DATA * conn, unsigned int pid);
 typedef enum_func_status	(*func_mysqlnd_conn_data__select_db)(MYSQLND_CONN_DATA * const conn, const char * const db, const size_t db_len);
 typedef enum_func_status	(*func_mysqlnd_conn_data__server_dump_debug_information)(MYSQLND_CONN_DATA * const conn);
@@ -532,6 +535,7 @@ MYSQLND_CLASS_METHODS_TYPE(mysqlnd_conn_data)
 	func_mysqlnd_conn_data__refresh_server refresh_server;
 
 	func_mysqlnd_conn_data__ping ping;
+	func_mysqlnd_conn_data__reset_connection reset_connection;
 	func_mysqlnd_conn_data__kill_connection kill_connection;
 	func_mysqlnd_conn_data__select_db select_db;
 	func_mysqlnd_conn_data__server_dump_debug_information server_dump_debug_information;

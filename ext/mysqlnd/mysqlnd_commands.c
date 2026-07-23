@@ -639,6 +639,33 @@ err:
 /* }}} */
 
 
+/* {{{ mysqlnd_command::reset_connection */
+static enum_func_status
+MYSQLND_METHOD(mysqlnd_command, reset_connection)(MYSQLND_CONN_DATA * const conn)
+{
+	const func_mysqlnd_protocol_payload_decoder_factory__send_command send_command = conn->payload_decoder_factory->m.send_command;
+	const func_mysqlnd_protocol_payload_decoder_factory__send_command_handle_response send_command_handle_response = conn->payload_decoder_factory->m.send_command_handle_response;
+	enum_func_status ret = FAIL;
+
+	DBG_ENTER("mysqlnd_command::reset_connection");
+
+	ret = send_command(conn->payload_decoder_factory, COM_RESET_CONNECTION, NULL, 0, TRUE,
+					   &conn->state,
+					   conn->error_info,
+					   conn->upsert_status,
+					   conn->stats,
+					   conn->m->send_close,
+					   conn);
+	if (PASS == ret) {
+		ret = send_command_handle_response(conn->payload_decoder_factory, PROT_OK_PACKET, FALSE, COM_RESET_CONNECTION, TRUE,
+										   conn->error_info, conn->upsert_status, &conn->last_message);
+	}
+
+	DBG_RETURN(ret);
+}
+/* }}} */
+
+
 MYSQLND_CLASS_METHODS_START(mysqlnd_command)
 	MYSQLND_METHOD(mysqlnd_command, set_option),
 	MYSQLND_METHOD(mysqlnd_command, debug),
@@ -659,4 +686,5 @@ MYSQLND_CLASS_METHODS_START(mysqlnd_command)
 	MYSQLND_METHOD(mysqlnd_command, stmt_close),
 	MYSQLND_METHOD(mysqlnd_command, enable_ssl),
 	MYSQLND_METHOD(mysqlnd_command, handshake),
+	MYSQLND_METHOD(mysqlnd_command, reset_connection),
 MYSQLND_CLASS_METHODS_END;
