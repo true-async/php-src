@@ -341,7 +341,20 @@ void pdo_pool_note_statement(pdo_dbh_t *conn, const zend_string *sql)
 		return;
 	}
 
-	/* A function call, so it can sit anywhere in an expression. */
+	/* A function call, so it can sit anywhere in an expression -- except in
+	 * DDL, which stores the body rather than running it. Marking there would
+	 * pin the slot to a CREATE PROCEDURE that merely mentions a lock. */
+	static const struct { const char *kw; size_t len; } ddl[] = {
+		{ "CREATE", 6 }, { "DROP", 4 }, { "ALTER", 5 },
+	};
+
+	for (size_t i = 0; i < sizeof(ddl) / sizeof(ddl[0]); i++) {
+		if (left >= ddl[i].len
+			&& zend_binary_strncasecmp(p, ddl[i].len, ddl[i].kw, ddl[i].len, ddl[i].len) == 0) {
+			return;
+		}
+	}
+
 	if (zend_memnistr(p, "GET_LOCK", sizeof("GET_LOCK") - 1, end) != NULL) {
 		conn->pool_session_dirty = true;
 		return;
