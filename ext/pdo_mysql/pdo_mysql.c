@@ -22,6 +22,7 @@
 #include "ext/standard/info.h"
 #include "ext/pdo/php_pdo.h"
 #include "ext/pdo/php_pdo_driver.h"
+#include "ext/pdo/pdo_pool.h"
 #include "php_pdo_mysql.h"
 #include "php_pdo_mysql_int.h"
 #include "pdo_mysql_arginfo.h"
@@ -71,7 +72,15 @@ static MYSQLND * pdo_mysql_convert_zv_to_mysqlnd(zval * zv)
 			return NULL;
 		}
 
-		return ((pdo_mysql_db_handle *)dbh->driver_data)->server;
+		/* Same template caveat as getWarningCount(): in pool mode the real
+		 * connection lives in the slot bound to the current coroutine. */
+		const pdo_dbh_t *conn = pdo_pool_peek_conn(dbh);
+		if (conn == NULL) {
+			php_error_docref(NULL, E_WARNING, "Provided PDO instance has no active pooled connection");
+			return NULL;
+		}
+
+		return ((pdo_mysql_db_handle *)conn->driver_data)->server;
 	}
 	return NULL;
 }
@@ -93,7 +102,14 @@ PHP_METHOD(Pdo_Mysql, getWarningCount)
 	dbh = Z_PDO_DBH_P(ZEND_THIS);
 	PDO_CONSTRUCT_CHECK;
 
-	H = (pdo_mysql_db_handle *)dbh->driver_data;
+	/* In pool mode dbh is the template (driver_data == NULL); the warnings
+	 * belong to the slot this coroutine last used. No slot, no warnings. */
+	const pdo_dbh_t *conn = pdo_pool_peek_conn(dbh);
+	if (conn == NULL) {
+		RETURN_LONG(0);
+	}
+
+	H = (pdo_mysql_db_handle *)conn->driver_data;
 	RETURN_LONG(mysql_warning_count(H->server));
 }
 
