@@ -86,6 +86,19 @@ static pdo_pool_binding_t *pdo_pool_current_binding(pdo_dbh_t *dbh)
 	return zend_hash_index_find_ptr(dbh->pool_bindings, pdo_pool_current_key());
 }
 
+/* Real transaction state, as the server sees it. conn->in_txn only tracks
+ * beginTransaction(), so it misses a transaction opened with raw SQL and the
+ * implicit one every statement starts under autocommit=0. Drivers answer this
+ * from cached connection status, without a round trip. */
+static zend_always_inline bool pdo_pool_conn_in_transaction(pdo_dbh_t *conn)
+{
+	if (conn->methods != NULL && conn->methods->in_transaction != NULL) {
+		return conn->methods->in_transaction(conn);
+	}
+
+	return conn->in_txn;
+}
+
 /* Break the ownership link between a pooled conn and its binding.
  * Must run before either side is freed or handed to someone else. */
 static zend_always_inline void pdo_pool_detach_conn(pdo_dbh_t *conn)
@@ -248,6 +261,71 @@ void pdo_pool_record_conn_attribute(pdo_dbh_t *dbh, zend_long attr, zval *value)
 	zend_hash_index_update(dbh->pool_conn_attributes, (zend_ulong)attr, &copy);
 }
 
+/* Statements that leave state on the wire the next coroutine would inherit.
+ *
+ * Marking is deliberately coarse: a false positive costs one reset round trip
+ * on the next acquire, a false negative silently hands over a held lock or a
+ * changed sql_mode. The hot path -- parameterized SELECT/INSERT/UPDATE -- is
+ * decided by the first keyword and a memchr, and never reaches the scans. */
+void pdo_pool_note_statement(pdo_dbh_t *conn, const zend_string *sql)
+{
+	if (conn == NULL || conn->pool == NULL || conn->pool_session_dirty) {
+		return;
+	}
+
+	const char *p = ZSTR_VAL(sql);
+	const char *const end = p + ZSTR_LEN(sql);
+
+	while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) {
+		p++;
+	}
+
+	const size_t left = (size_t)(end - p);
+
+	/* User variables. MySQL has no SET LOCAL, so `SET @app_user_id = ...` read
+	 * back by a trigger is the idiomatic way to pass request context -- leaked,
+	 * it mis-attributes the next coroutine's audit rows. Cheap to spot. */
+	if (memchr(p, '@', left) != NULL) {
+		conn->pool_session_dirty = true;
+		return;
+	}
+
+	/* SET  — sql_mode changes what identical SQL means, time_zone shifts every
+	 *        TIMESTAMP, autocommit turns writes into an uncommitted transaction.
+	 * USE  — the schema is the isolation boundary in db-per-tenant setups.
+	 * LOCK/FLUSH — held until an explicit UNLOCK; every statement outside the
+	 *        lock set fails meanwhile, and a ping still succeeds, so the pool
+	 *        would never evict the slot.
+	 * HANDLER/PREPARE/DEALLOCATE/XA — named server-side state. */
+	static const struct { const char *kw; size_t len; } stateful[] = {
+		{ "SET",       3 }, { "USE",      3 }, { "LOCK",     4 },
+		{ "UNLOCK",    6 }, { "FLUSH",    5 }, { "HANDLER",  7 },
+		{ "PREPARE",   7 }, { "DEALLOCATE", 10 }, { "XA",     2 },
+	};
+
+	for (size_t i = 0; i < sizeof(stateful) / sizeof(stateful[0]); i++) {
+		if (left >= stateful[i].len
+			&& zend_binary_strncasecmp(p, stateful[i].len, stateful[i].kw, stateful[i].len, stateful[i].len) == 0) {
+			conn->pool_session_dirty = true;
+			return;
+		}
+	}
+
+	/* CREATE TEMPORARY TABLE — the one class userland cannot clean up itself,
+	 * since temporary tables are not listed in information_schema. */
+	if (left >= 6 && zend_binary_strncasecmp(p, 6, "CREATE", 6, 6) == 0
+		&& zend_memnistr(p, "TEMPORARY", sizeof("TEMPORARY") - 1, end) != NULL) {
+		conn->pool_session_dirty = true;
+		return;
+	}
+
+	/* GET_LOCK()/RELEASE_LOCK() are functions and can sit anywhere in an
+	 * expression, so these two need a scan rather than a keyword test. */
+	if (zend_memnistr(p, "GET_LOCK", sizeof("GET_LOCK") - 1, end) != NULL) {
+		conn->pool_session_dirty = true;
+	}
+}
+
 /* Factory: creates a new driver connection */
 static bool pdo_pool_factory(zend_async_pool_t *pool, zval *result)
 {
@@ -371,11 +449,15 @@ static bool pdo_pool_before_release(zend_async_pool_t *pool, zval *resource)
 		return false;
 	}
 
-	/* Rollback uncommitted transactions before returning to pool */
-	if (conn->in_txn && conn->methods) {
-		if (conn->methods->rollback) {
+	/* Roll back before the slot goes back, asking the driver rather than our
+	 * own flag: in_txn is set only by beginTransaction(), so a transaction
+	 * opened with raw SQL — or implicitly under autocommit=0 — was handed to
+	 * the next coroutine, dirty rows and row locks included. */
+	if (conn->methods != NULL) {
+		if (pdo_pool_conn_in_transaction(conn) && conn->methods->rollback != NULL) {
 			conn->methods->rollback(conn);
 		}
+
 		conn->in_txn = false;
 	}
 
@@ -820,7 +902,11 @@ void pdo_pool_maybe_release(pdo_dbh_t *dbh)
 		return;
 	}
 
-	if (binding->conn->in_txn || binding->conn->pool_slot_refcount > 0) {
+	/* A connection inside a transaction belongs to whoever opened it, however
+	 * it was opened — returning it hands the next coroutine dirty rows and
+	 * row locks, and cuts the owner's own transaction short. */
+	if (binding->conn->pool_slot_refcount > 0 || binding->conn->pool_session_dirty
+		|| pdo_pool_conn_in_transaction(binding->conn)) {
 		return;
 	}
 
@@ -835,7 +921,8 @@ void pdo_pool_release_stmt_conn(pdo_dbh_t *conn)
 	/* An owning binding releases the conn itself once the txn ends. With no
 	 * owner left this statement was the last holder, so release now and let
 	 * the pool's before_release roll the transaction back. */
-	if (conn->in_txn && conn->owner_binding != NULL) {
+	if (conn->owner_binding != NULL
+		&& (conn->pool_session_dirty || pdo_pool_conn_in_transaction(conn))) {
 		return;
 	}
 

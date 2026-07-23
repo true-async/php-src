@@ -719,6 +719,8 @@ PHP_METHOD(PDO, prepare)
 		RETURN_FALSE;
 	}
 
+	pdo_pool_note_statement(conn, statement);
+
 	if (!pdo_stmt_instantiate(dbh, return_value, dbstmt_ce, &ctor_args)) {
 		pdo_pool_maybe_release(dbh);
 		RETURN_THROWS();
@@ -1263,6 +1265,8 @@ PHP_METHOD(PDO, exec)
 		RETURN_FALSE;
 	}
 
+	pdo_pool_note_statement(conn, statement);
+
 	ret = conn->methods->doer(conn, statement);
 	pdo_pool_sync_error(dbh, conn);
 	pdo_pool_maybe_release(dbh);
@@ -1420,6 +1424,8 @@ PHP_METHOD(PDO, query)
 		pdo_raise_impl_error(dbh, NULL, "HY000", "Failed to acquire connection from pool");
 		RETURN_FALSE;
 	}
+
+	pdo_pool_note_statement(conn, statement);
 
 	if (!pdo_stmt_instantiate(dbh, return_value, dbh->def_stmt_ce, &dbh->def_stmt_ctor_args)) {
 		pdo_pool_maybe_release(dbh);

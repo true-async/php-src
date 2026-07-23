@@ -64,6 +64,7 @@
 #define mysql_num_fields(r)				mysqlnd_num_fields((r))
 #define mysql_num_rows(r)				mysqlnd_num_rows((r))
 #define mysql_ping(r)					mysqlnd_ping((r))
+#define mysql_reset_connection(r)		mysqlnd_reset_connection((r))
 #define mysql_real_escape_string(r,a,b,c) mysqlnd_real_escape_string((r), (a), (b), (c))
 #define mysql_real_query(r,a,b)			mysqlnd_query((r), (a), (b))
 #define mysql_refresh(conn, options)	mysqlnd_refresh((conn), (options))
