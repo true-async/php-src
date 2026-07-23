@@ -152,6 +152,47 @@ static void pdo_mysql_fetch_error_func(pdo_dbh_t *dbh, pdo_stmt_t *stmt, zval *i
 }
 /* }}} */
 
+/* {{{ pdo_mysql_pool_before_acquire */
+static bool pdo_mysql_pool_before_acquire(pdo_dbh_t *dbh)
+{
+	pdo_mysql_db_handle *H = (pdo_mysql_db_handle *)dbh->driver_data;
+
+	PDO_DBG_ENTER("pdo_mysql_pool_before_acquire");
+
+	if (H == NULL || H->server == NULL) {
+		PDO_DBG_RETURN(false);
+	}
+
+	/* Nothing session-specific was touched, so there is nothing to hand over:
+	 * skip the round trip and keep the prepared statements cached. */
+	if (!dbh->pool_session_dirty) {
+		PDO_DBG_RETURN(true);
+	}
+
+	/* Clean up here rather than on release: this call does I/O and suspends,
+	 * and a release runs from coroutine finalization, where the connection is
+	 * accounted to nobody while it is parked. Whoever reuses the slot pays,
+	 * and a slot nobody reuses costs nothing.
+	 *
+	 * COM_RESET_CONNECTION drops user variables, session variables, temporary
+	 * tables, table locks and GET_LOCK -- everything the next coroutine must
+	 * not inherit. It also releases the server-side prepared statements, so
+	 * the cache tracking them has to go with it. */
+	if (mysql_reset_connection(H->server)) {
+		PDO_DBG_RETURN(false);
+	}
+
+	if (H->stmt_cache) {
+		pdo_pool_stmt_cache_destroy(H->stmt_cache);
+		H->stmt_cache = NULL;
+	}
+
+	dbh->pool_session_dirty = false;
+
+	PDO_DBG_RETURN(true);
+}
+/* }}} */
+
 /* {{{ mysql_handle_closer */
 static void mysql_handle_closer(pdo_dbh_t *dbh)
 {
@@ -711,7 +752,7 @@ static const struct pdo_dbh_methods mysql_methods = {
 	pdo_mysql_in_transaction,
 	NULL, /* get_gc */
     pdo_mysql_scanner,
-	NULL, /* pool_before_acquire */
+	pdo_mysql_pool_before_acquire,
 	NULL, /* pool_before_release */
 };
 /* }}} */

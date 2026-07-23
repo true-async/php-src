@@ -996,6 +996,20 @@ MYSQLND_METHOD(mysqlnd_conn_data, ping)(MYSQLND_CONN_DATA * const conn)
 /* }}} */
 
 
+/* {{{ mysqlnd_conn_data::reset_connection */
+static enum_func_status
+MYSQLND_METHOD(mysqlnd_conn_data, reset_connection)(MYSQLND_CONN_DATA * const conn)
+{
+	DBG_ENTER("mysqlnd_conn_data::reset_connection");
+	DBG_INF_FMT("conn=%" PRIu64, conn->thread_id);
+
+	enum_func_status ret = conn->command->reset_connection(conn);
+	DBG_INF_FMT("ret=%u", ret);
+	DBG_RETURN(ret);
+}
+/* }}} */
+
+
 /* {{{ mysqlnd_conn_data::statistic */
 static enum_func_status
 MYSQLND_METHOD(mysqlnd_conn_data, statistic)(MYSQLND_CONN_DATA * conn, zend_string **message)
@@ -1941,6 +1955,7 @@ MYSQLND_CLASS_METHODS_START(mysqlnd_conn_data)
 	MYSQLND_METHOD(mysqlnd_conn_data, refresh),
 
 	MYSQLND_METHOD(mysqlnd_conn_data, ping),
+	MYSQLND_METHOD(mysqlnd_conn_data, reset_connection),
 	MYSQLND_METHOD(mysqlnd_conn_data, kill),
 	MYSQLND_METHOD(mysqlnd_conn_data, select_db),
 	MYSQLND_METHOD(mysqlnd_conn_data, dump_debug_info),

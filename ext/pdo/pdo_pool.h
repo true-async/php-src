@@ -36,6 +36,11 @@ void pdo_pool_destroy(pdo_dbh_t *dbh);
  * or acquired later carry it too. No-op when pooling is disabled. */
 void pdo_pool_record_conn_attribute(pdo_dbh_t *dbh, zend_long attr, zval *value);
 
+/* Inspect a statement about to run on a pooled connection and mark the slot
+ * when it can leave session state behind (locks for now). A marked slot stays
+ * with its coroutine and is reset before anyone else gets it. */
+void pdo_pool_note_statement(pdo_dbh_t *conn, const zend_string *sql);
+
 /* Get PHP Pool wrapper object for getPool() method */
 zend_object *pdo_pool_get_wrapper(pdo_dbh_t *dbh);
 

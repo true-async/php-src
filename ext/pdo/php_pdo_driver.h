@@ -540,6 +540,8 @@ struct _pdo_dbh_t {
 	uint32_t pool_slot_refcount;	/* number of statements borrowing this pooled connection */
 	uint32_t pool_stmt_cache_size;	/* configured per-conn prepared-stmt cache capacity (template only); 0 = disabled */
 	bool conn_broken:1;				/* connection lost or protocol desynchronized — must not return to pool */
+	bool pool_session_dirty:1;		/* slot carries session state (locks, temp tables, user/session vars)
+									 * that must not reach the next coroutine; pins it, reset on release */
 
 	/* Constructor options kept on the template so every slot the factory
 	 * creates is configured like a direct connection would be. IS_UNDEF when
