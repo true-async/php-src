@@ -384,6 +384,13 @@ static void pdo_pool_binding_on_coroutine_finish(
 		}
 	}
 
+	/* The release above performs driver I/O and can suspend this coroutine.
+	 * The PDO may have been destroyed while it was parked, in which case
+	 * pdo_pool_destroy() already dropped the whole table and cleared dbh. */
+	if (binding->dbh == NULL) {
+		return;
+	}
+
 	/* Remove binding from pool_bindings */
 	if (binding->dbh->pool_bindings != NULL) {
 		zend_hash_index_del(binding->dbh->pool_bindings, binding->coro_key);
@@ -519,6 +526,28 @@ PDO_API uint32_t pdo_pool_stmt_cache_capacity(const pdo_pool_stmt_cache_t *cache
  * Public API
  */
 
+/* pdo_pool_factory calls db_handle_factory() with options = NULL, so no
+ * driver-specific option ever reaches a pooled connection. Dropping them
+ * silently downgrades the transport (the SSL_* family) and re-enables what
+ * the user disabled (MULTI_STATEMENTS), so pooling refuses them instead. */
+zend_long pdo_pool_find_unapplied_option(const zval *options)
+{
+	if (options == NULL) {
+		return -1;
+	}
+
+	zend_ulong long_key;
+	zend_string *str_key;
+
+	ZEND_HASH_FOREACH_KEY(Z_ARRVAL_P(options), long_key, str_key) {
+		if (str_key == NULL && long_key >= PDO_ATTR_DRIVER_SPECIFIC) {
+			return (zend_long)long_key;
+		}
+	} ZEND_HASH_FOREACH_END();
+
+	return -1;
+}
+
 /* Create pool for a PDO handle based on options */
 bool pdo_pool_create(pdo_dbh_t *dbh, zval *options)
 {
@@ -619,7 +648,7 @@ void pdo_pool_destroy(pdo_dbh_t *dbh)
  * Never acquires a new connection from the pool.
  * Returns dbh itself when pool is disabled, NULL if no active connection.
  */
-pdo_dbh_t *pdo_pool_peek_conn(pdo_dbh_t *dbh)
+PDO_API pdo_dbh_t *pdo_pool_peek_conn(pdo_dbh_t *dbh)
 {
 	if (dbh->pool == NULL) {
 		return dbh;
