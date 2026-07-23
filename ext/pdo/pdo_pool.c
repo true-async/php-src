@@ -384,6 +384,13 @@ static void pdo_pool_binding_on_coroutine_finish(
 		}
 	}
 
+	/* The release above performs driver I/O and can suspend this coroutine.
+	 * The PDO may have been destroyed while it was parked, in which case
+	 * pdo_pool_destroy() already dropped the whole table and cleared dbh. */
+	if (binding->dbh == NULL) {
+		return;
+	}
+
 	/* Remove binding from pool_bindings */
 	if (binding->dbh->pool_bindings != NULL) {
 		zend_hash_index_del(binding->dbh->pool_bindings, binding->coro_key);
