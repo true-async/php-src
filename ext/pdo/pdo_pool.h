@@ -55,7 +55,7 @@ pdo_dbh_t *pdo_pool_acquire_conn(pdo_dbh_t *dbh);
  * - Pool + slot empty: returns NULL (never acquires)
  * Use for lastInsertId/errorInfo where a wrong connection is worse than none.
  */
-pdo_dbh_t *pdo_pool_peek_conn(pdo_dbh_t *dbh);
+PDO_API pdo_dbh_t *pdo_pool_peek_conn(pdo_dbh_t *dbh);
 
 /*
  * Release connection if slot exists and no active transaction.

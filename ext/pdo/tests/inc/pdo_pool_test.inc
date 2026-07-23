@@ -6,7 +6,9 @@ use function Async\await;
 
 class PDOPoolTest {
 
-    static function factory($options = []) {
+    /* $class lets a test ask for the driver-specific subclass (Pdo\Mysql),
+     * which `new PDO` never returns — needed for driver-only methods. */
+    static function factory($options = [], string $class = PDO::class) {
         $dsn = "mysql:host=" . MYSQL_TEST_HOST;
         if (MYSQL_TEST_PORT) {
             $dsn .= ";port=" . MYSQL_TEST_PORT;
@@ -26,15 +28,15 @@ class PDOPoolTest {
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
         ];
 
-        return new PDO($dsn, MYSQL_TEST_USER, MYSQL_TEST_PASSWD, $options + $defaults);
+        return new $class($dsn, MYSQL_TEST_USER, MYSQL_TEST_PASSWD, $options + $defaults);
     }
 
-    static function poolFactory($poolMax = 3, $extra = []) {
+    static function poolFactory($poolMax = 3, $extra = [], string $class = PDO::class) {
         return self::factory([
             PDO::ATTR_POOL_ENABLED => true,
             PDO::ATTR_POOL_MIN => 0,
             PDO::ATTR_POOL_MAX => $poolMax,
-        ] + $extra);
+        ] + $extra, $class);
     }
 
     static function skip() {

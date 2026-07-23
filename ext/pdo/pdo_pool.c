@@ -641,7 +641,7 @@ void pdo_pool_destroy(pdo_dbh_t *dbh)
  * Never acquires a new connection from the pool.
  * Returns dbh itself when pool is disabled, NULL if no active connection.
  */
-pdo_dbh_t *pdo_pool_peek_conn(pdo_dbh_t *dbh)
+PDO_API pdo_dbh_t *pdo_pool_peek_conn(pdo_dbh_t *dbh)
 {
 	if (dbh->pool == NULL) {
 		return dbh;
