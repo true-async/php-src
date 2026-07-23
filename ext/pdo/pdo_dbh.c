@@ -405,6 +405,20 @@ PDO_API void php_pdo_internal_construct_driver(INTERNAL_FUNCTION_PARAMETERS, zen
 		pdo_dbh_t *pdbh = NULL;
 		zval *v;
 
+		/* Refuse pooling rather than silently dropping options the pool
+		 * cannot carry yet — for the SSL_* family that would mean an
+		 * unencrypted connection with nothing reported. */
+		if (pdo_attr_lval(options, PDO_ATTR_POOL_ENABLED, 0)) {
+			const zend_long unapplied = pdo_pool_find_unapplied_option(options);
+
+			if (unapplied >= 0) {
+				zend_throw_exception_ex(php_pdo_get_exception(), 0,
+					"PDO::ATTR_POOL_ENABLED cannot be used with driver-specific option " ZEND_LONG_FMT
+					", it would not be applied to pooled connections", unapplied);
+				RETURN_THROWS();
+			}
+		}
+
 		if ((v = zend_hash_index_find_deref(Z_ARRVAL_P(options), PDO_ATTR_PERSISTENT)) != NULL) {
 			if (Z_TYPE_P(v) == IS_STRING &&
 				!is_numeric_string(Z_STRVAL_P(v), Z_STRLEN_P(v), NULL, NULL, 0) && Z_STRLEN_P(v) > 0) {
@@ -561,8 +575,10 @@ options:
 				}
 				ZVAL_DEREF(attr_value);
 
-				/* Skip pool attributes - handled separately */
-				if (long_key >= PDO_ATTR_POOL_ENABLED && long_key <= PDO_ATTR_POOL_HEALTHCHECK_INTERVAL) {
+				/* Skip pool attributes - handled separately. The bound must stay
+				 * on the last of them: dispatching one to the driver acquires a
+				 * slot just to set an attribute no driver knows. */
+				if (long_key >= PDO_ATTR_POOL_ENABLED && long_key <= PDO_ATTR_POOL_STMT_CACHE_SIZE) {
 					continue;
 				}
 

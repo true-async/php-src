@@ -29,6 +29,10 @@ void pdo_pool_shutdown(void);
 /* Create pool for a PDO handle based on options */
 bool pdo_pool_create(pdo_dbh_t *dbh, zval *options);
 
+/* Return the first driver-specific option key in `options`, or -1 if none.
+ * Such options are not applied to pooled connections yet. */
+zend_long pdo_pool_find_unapplied_option(const zval *options);
+
 /* Destroy pool for a PDO handle */
 void pdo_pool_destroy(pdo_dbh_t *dbh);
 
