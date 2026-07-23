@@ -540,17 +540,13 @@ struct _pdo_dbh_t {
 	uint32_t pool_slot_refcount;	/* number of statements borrowing this pooled connection */
 	uint32_t pool_stmt_cache_size;	/* configured per-conn prepared-stmt cache capacity (template only); 0 = disabled */
 	bool conn_broken:1;				/* connection lost or protocol desynchronized — must not return to pool */
-	bool pool_session_dirty:1;		/* slot carries session state (locks, temp tables, user/session vars)
-									 * that must not reach the next coroutine; pins it, reset on release */
+	bool pool_session_dirty:1;		/* slot carries session state; pinned, cleaned before reuse */
 
-	/* Constructor options kept on the template so every slot the factory
-	 * creates is configured like a direct connection would be. IS_UNDEF when
-	 * pooling is off. Released in pdo_pool_destroy(). */
+	/* Constructor options, so every slot is configured like a direct
+	 * connection. IS_UNDEF without a pool; released in pdo_pool_destroy(). */
 	zval pool_driver_options;
 
-	/* Connection-level attributes set after construction, recorded on the
-	 * template (attribute number => value) and re-applied to every slot.
-	 * NULL until the first setAttribute() the driver accepts. */
+	/* setAttribute() values replayed onto every slot, attribute => value. */
 	HashTable *pool_conn_attributes;
 
 	/* Driver-owned per-template auxiliary state for pool mode (e.g. SQLite UDF

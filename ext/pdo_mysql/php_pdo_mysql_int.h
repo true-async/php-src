@@ -119,8 +119,7 @@ typedef struct {
 	 * itself; on eviction the dtor calls mysql_stmt_close. Per-stmt usage
 	 * is checkout-style: prepare path takes from cache, dtor inserts back. */
 	pdo_pool_stmt_cache_t *stmt_cache;
-	/* DSN default schema, kept for pool slots: COM_RESET_CONNECTION does not
-	 * restore it and mysqlnd stores it nowhere. NULL when the DSN had none. */
+	/* DSN schema: the reset drops it and mysqlnd stores it nowhere. */
 	char *pool_dbname;
 } pdo_mysql_db_handle;
 
