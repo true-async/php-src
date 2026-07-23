@@ -561,9 +561,7 @@ options:
 				}
 				ZVAL_DEREF(attr_value);
 
-				/* Skip pool attributes - handled separately. The bound must stay
-				 * on the last of them: dispatching one to the driver acquires a
-				 * slot just to set an attribute no driver knows. */
+				/* Skip pool attributes: dispatching one would acquire a slot. */
 				if (long_key >= PDO_ATTR_POOL_ENABLED && long_key <= PDO_ATTR_POOL_STMT_CACHE_SIZE) {
 					continue;
 				}
@@ -759,10 +757,7 @@ PHP_METHOD(PDO, prepare)
 
 
 static bool pdo_is_in_transaction(pdo_dbh_t *dbh) {
-	/* Peek, never acquire: a transaction pins the slot that opened it, so with
-	 * no slot bound to this context there is nothing to be inside of. Taking
-	 * one here burned a pool slot for a call that answers "no transaction",
-	 * and in the main flow it stayed pinned for the whole request. */
+	/* Peek, never acquire: no slot bound means no transaction to be inside. */
 	pdo_dbh_t *conn = pdo_pool_peek_conn(dbh);
 	if (conn == NULL) {
 		return false;
@@ -1096,10 +1091,7 @@ static bool pdo_dbh_attribute_set(pdo_dbh_t *dbh, zend_long attr, zval *value, u
 
 		PDO_DBH_CLEAR_ERR();
 		if (attr_conn->methods->set_attribute(attr_conn, attr, value)) {
-			/* The driver wrote this onto one slot. Keep it on the template as
-			 * well, or every other slot stays on the value it was born with —
-			 * for ATTR_AUTOCOMMIT that silently commits what a later
-			 * rollBack() was meant to undo. */
+			/* The driver wrote it onto one slot; keep it for the others. */
 			pdo_pool_record_conn_attribute(dbh, attr, value);
 			pdo_pool_sync_error(dbh, attr_conn);
 			pdo_pool_maybe_release(dbh);

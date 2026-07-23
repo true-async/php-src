@@ -165,24 +165,16 @@ static bool pdo_mysql_pool_before_acquire(pdo_dbh_t *dbh)
 		PDO_DBG_RETURN(false);
 	}
 
-	/* Nothing session-specific was touched, so there is nothing to hand over:
-	 * skip the round trip and keep the prepared statements cached. */
+	/* Nothing to hand over: skip the round trip, keep the cache. */
 	if (!dbh->pool_session_dirty) {
 		PDO_DBG_RETURN(true);
 	}
 
 #ifdef PDO_USE_MYSQLND
-	/* Clean up here rather than on release: this does I/O and suspends, and a
-	 * release runs from coroutine finalization, where the connection is
-	 * accounted to nobody while it is parked. Whoever reuses the slot pays,
-	 * and a slot nobody reuses costs nothing.
-	 *
-	 * COM_RESET_CONNECTION drops user variables, session variables, temporary
-	 * tables, table locks and GET_LOCK — everything the next coroutine must
-	 * not inherit. It also drops what the constructor asked for, so the whole
-	 * connect-time configuration is restored below, in the order the connect
-	 * path applies it. Anything that cannot be restored means the slot is not
-	 * demonstrably clean: say so and let the pool build a fresh connection. */
+	/* On acquire, not release: this suspends, and whoever reuses the slot
+	 * should pay. The reset also drops what the constructor asked for, so the
+	 * connect-time configuration is restored below in the same order. Any step
+	 * failing means the slot is not demonstrably clean. */
 	if (H->pool_dbname == NULL) {
 		/* COM_INIT_DB cannot express "no default schema". */
 		PDO_DBG_RETURN(false);
@@ -196,28 +188,24 @@ static bool pdo_mysql_pool_before_acquire(pdo_dbh_t *dbh)
 		PDO_DBG_RETURN(false);
 	}
 
-	/* The effective charset, not the DSN one: with no charset= in the DSN the
-	 * option is NULL, while this is always the charset the client escapes by.
-	 * Restoring it keeps PDO::quote() and the server in agreement. */
+	/* The effective charset, not the DSN option, which may be unset. It is
+	 * what PDO::quote() escapes by. */
 	const char *const charset = mysqlnd_character_set_name(H->server);
 	if (charset != NULL && mysqlnd_set_character_set(H->server, charset) != PASS) {
 		PDO_DBG_RETURN(false);
 	}
 
-	/* After the charset, so a `SET NAMES ... COLLATE ...` init command wins —
-	 * the same order the connect path uses. */
+	/* After the charset, so a SET NAMES init command wins, as at connect. */
 	if (H->server->data->m->execute_init_commands(H->server->data) != PASS) {
 		PDO_DBG_RETURN(false);
 	}
 
-	/* Unconditionally: the reset returned the session to the global default,
-	 * which may be either value, so neither state can be assumed. */
+	/* Unconditionally: the global default may be either value. */
 	if (!mysql_handle_autocommit(dbh)) {
 		PDO_DBG_RETURN(false);
 	}
 
-	/* The reset released the server-side statements the cache tracked. Start
-	 * a fresh one rather than leaving the slot without a cache for good. */
+	/* The reset released the statements the cache tracked. */
 	if (H->stmt_cache) {
 		pdo_pool_stmt_cache_destroy(H->stmt_cache);
 		H->stmt_cache = NULL;
@@ -233,9 +221,8 @@ static bool pdo_mysql_pool_before_acquire(pdo_dbh_t *dbh)
 
 	PDO_DBG_RETURN(true);
 #else
-	/* libmysqlclient exposes no way to read back the init commands, so the
-	 * restore list could not be derived from the connection — drop the slot
-	 * and let the factory build one that is configured from the DSN. */
+	/* libmysqlclient cannot read back its init commands, so the restore list
+	 * could not be derived: let the factory build a configured one. */
 	PDO_DBG_RETURN(false);
 #endif
 }
@@ -1073,8 +1060,7 @@ static int pdo_mysql_handle_factory(pdo_dbh_t *dbh, zval *driver_options)
 	}
 
 	dbname = vars[1].optval;
-	/* Stash it where the DSN is already parsed, so a pooled slot can restore
-	 * the schema after a reset without re-parsing the data source. */
+	/* Stashed where the DSN is already parsed. */
 	if (dbname && *dbname) {
 		H->pool_dbname = pestrdup(dbname, dbh->is_persistent);
 	}
