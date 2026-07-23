@@ -276,8 +276,38 @@ void pdo_pool_note_statement(pdo_dbh_t *conn, const zend_string *sql)
 	const char *p = ZSTR_VAL(sql);
 	const char *const end = p + ZSTR_LEN(sql);
 
-	while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) {
-		p++;
+	/* Skip whitespace and leading comments together: the keyword tests below
+	 * look at the first token, and a block comment before SET SESSION would sail
+	 * past all of them. Both MySQL line-comment forms and the block form are
+	 * handled; an unterminated block comment leaves nothing to inspect. */
+	while (p < end) {
+		if (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') {
+			p++;
+			continue;
+		}
+
+		if (*p == '#' || (*p == '-' && end - p >= 2 && p[1] == '-')) {
+			const char *const nl = memchr(p, '\n', (size_t)(end - p));
+			if (nl == NULL) {
+				return;
+			}
+			p = nl + 1;
+			continue;
+		}
+
+		if (*p == '/' && end - p >= 2 && p[1] == '*') {
+			const char *scan = p + 2;
+			while (scan + 1 < end && !(scan[0] == '*' && scan[1] == '/')) {
+				scan++;
+			}
+			if (scan + 1 >= end) {
+				return;
+			}
+			p = scan + 2;
+			continue;
+		}
+
+		break;
 	}
 
 	const size_t left = (size_t)(end - p);
@@ -301,6 +331,9 @@ void pdo_pool_note_statement(pdo_dbh_t *conn, const zend_string *sql)
 		{ "SET",       3 }, { "USE",      3 }, { "LOCK",     4 },
 		{ "UNLOCK",    6 }, { "FLUSH",    5 }, { "HANDLER",  7 },
 		{ "PREPARE",   7 }, { "DEALLOCATE", 10 }, { "XA",     2 },
+		/* A stored program can hold a lock or change the session from inside,
+		 * and its body is not ours to read. One reset per call is the price. */
+		{ "CALL",      4 }, { "DO",       2 },
 	};
 
 	for (size_t i = 0; i < sizeof(stateful) / sizeof(stateful[0]); i++) {
@@ -323,6 +356,21 @@ void pdo_pool_note_statement(pdo_dbh_t *conn, const zend_string *sql)
 	 * expression, so these two need a scan rather than a keyword test. */
 	if (zend_memnistr(p, "GET_LOCK", sizeof("GET_LOCK") - 1, end) != NULL) {
 		conn->pool_session_dirty = true;
+		return;
+	}
+
+	/* Only the first statement was classified. pdo_mysql enables
+	 * CLIENT_MULTI_STATEMENTS by default, so anything after a ';' is a second
+	 * statement this function never looked at. A ';' inside a string literal
+	 * costs a reset that was not needed — cheaper than missing a SET. */
+	const char *const semi = memchr(p, ';', (size_t)(end - p));
+	if (semi != NULL) {
+		for (const char *rest = semi + 1; rest < end; rest++) {
+			if (*rest != ' ' && *rest != '\t' && *rest != '\n' && *rest != '\r') {
+				conn->pool_session_dirty = true;
+				return;
+			}
+		}
 	}
 }
 
@@ -425,6 +473,14 @@ static bool pdo_pool_before_acquire(zend_async_pool_t *pool, zval *resource)
 	}
 
 	if (conn->methods->pool_before_acquire && !conn->methods->pool_before_acquire(conn)) {
+		return false;
+	}
+
+	/* Whatever the driver did or did not do above, a slot still carrying
+	 * session state must not reach another coroutine. Drivers with no cleanup
+	 * hook land here, and the pool destroys the connection and builds a fresh
+	 * one instead of handing this one over — or pinning it forever. */
+	if (conn->pool_session_dirty) {
 		return false;
 	}
 
