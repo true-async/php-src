@@ -296,11 +296,21 @@ void pdo_pool_note_statement(pdo_dbh_t *conn, const zend_string *sql)
 		}
 
 		if (*p == '/' && end - p >= 2 && p[1] == '*') {
+			/* MySQL executes what is inside a versioned comment, so this one
+			 * is SQL wearing a disguise -- do not skip it, and do not try to
+			 * classify it either. */
+			if (end - p >= 3 && p[2] == '!') {
+				conn->pool_session_dirty = true;
+				return;
+			}
+
 			const char *scan = p + 2;
 			while (scan + 1 < end && !(scan[0] == '*' && scan[1] == '/')) {
 				scan++;
 			}
 			if (scan + 1 >= end) {
+				/* Unterminated: whatever it hides cannot be classified. */
+				conn->pool_session_dirty = true;
 				return;
 			}
 			p = scan + 2;
