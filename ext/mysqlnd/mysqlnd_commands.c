@@ -657,7 +657,7 @@ MYSQLND_METHOD(mysqlnd_command, reset_connection)(MYSQLND_CONN_DATA * const conn
 					   conn->m->send_close,
 					   conn);
 	if (PASS == ret) {
-		ret = send_command_handle_response(conn->payload_decoder_factory, PROT_OK_PACKET, FALSE, COM_RESET_CONNECTION, TRUE,
+		ret = send_command_handle_response(conn->payload_decoder_factory, PROT_OK_PACKET, FALSE, COM_RESET_CONNECTION, FALSE,
 										   conn->error_info, conn->upsert_status, &conn->last_message);
 	}
 

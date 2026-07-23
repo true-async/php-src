@@ -185,6 +185,8 @@ const MYSQLND_STRING mysqlnd_stats_values_names[STAT_LAST] =
 	{ MYSQLND_STR_W_LEN("com_stmt_set_option") },
 	{ MYSQLND_STR_W_LEN("com_stmt_fetch") },
 	{ MYSQLND_STR_W_LEN("com_deamon") },
+	{ MYSQLND_STR_W_LEN("com_binlog_dump_gtid") },
+	{ MYSQLND_STR_W_LEN("com_reset_connection") },
 	{ MYSQLND_STR_W_LEN("bytes_received_real_data_normal") },
 	{ MYSQLND_STR_W_LEN("bytes_received_real_data_ps") }
 };

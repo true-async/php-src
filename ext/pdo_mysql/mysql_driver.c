@@ -152,6 +152,8 @@ static void pdo_mysql_fetch_error_func(pdo_dbh_t *dbh, pdo_stmt_t *stmt, zval *i
 }
 /* }}} */
 
+static inline int mysql_handle_autocommit(pdo_dbh_t *dbh);
+
 /* {{{ pdo_mysql_pool_before_acquire */
 static bool pdo_mysql_pool_before_acquire(pdo_dbh_t *dbh)
 {
@@ -169,27 +171,73 @@ static bool pdo_mysql_pool_before_acquire(pdo_dbh_t *dbh)
 		PDO_DBG_RETURN(true);
 	}
 
-	/* Clean up here rather than on release: this call does I/O and suspends,
-	 * and a release runs from coroutine finalization, where the connection is
+#ifdef PDO_USE_MYSQLND
+	/* Clean up here rather than on release: this does I/O and suspends, and a
+	 * release runs from coroutine finalization, where the connection is
 	 * accounted to nobody while it is parked. Whoever reuses the slot pays,
 	 * and a slot nobody reuses costs nothing.
 	 *
 	 * COM_RESET_CONNECTION drops user variables, session variables, temporary
-	 * tables, table locks and GET_LOCK -- everything the next coroutine must
-	 * not inherit. It also releases the server-side prepared statements, so
-	 * the cache tracking them has to go with it. */
-	if (mysql_reset_connection(H->server)) {
+	 * tables, table locks and GET_LOCK — everything the next coroutine must
+	 * not inherit. It also drops what the constructor asked for, so the whole
+	 * connect-time configuration is restored below, in the order the connect
+	 * path applies it. Anything that cannot be restored means the slot is not
+	 * demonstrably clean: say so and let the pool build a fresh connection. */
+	if (H->pool_dbname == NULL) {
+		/* COM_INIT_DB cannot express "no default schema". */
 		PDO_DBG_RETURN(false);
 	}
 
+	if (mysqlnd_reset_connection(H->server) != PASS) {
+		PDO_DBG_RETURN(false);
+	}
+
+	if (mysqlnd_select_db(H->server, H->pool_dbname, strlen(H->pool_dbname)) != PASS) {
+		PDO_DBG_RETURN(false);
+	}
+
+	/* The effective charset, not the DSN one: with no charset= in the DSN the
+	 * option is NULL, while this is always the charset the client escapes by.
+	 * Restoring it keeps PDO::quote() and the server in agreement. */
+	const char *const charset = mysqlnd_character_set_name(H->server);
+	if (charset != NULL && mysqlnd_set_character_set(H->server, charset) != PASS) {
+		PDO_DBG_RETURN(false);
+	}
+
+	/* After the charset, so a `SET NAMES ... COLLATE ...` init command wins —
+	 * the same order the connect path uses. */
+	if (H->server->data->m->execute_init_commands(H->server->data) != PASS) {
+		PDO_DBG_RETURN(false);
+	}
+
+	/* Unconditionally: the reset returned the session to the global default,
+	 * which may be either value, so neither state can be assumed. */
+	if (!mysql_handle_autocommit(dbh)) {
+		PDO_DBG_RETURN(false);
+	}
+
+	/* The reset released the server-side statements the cache tracked. Start
+	 * a fresh one rather than leaving the slot without a cache for good. */
 	if (H->stmt_cache) {
 		pdo_pool_stmt_cache_destroy(H->stmt_cache);
 		H->stmt_cache = NULL;
 	}
 
+	const pdo_dbh_t *const template_dbh = dbh->pool ? (const pdo_dbh_t *)dbh->pool->user_data : NULL;
+	if (template_dbh != NULL && template_dbh->pool_stmt_cache_size > 0) {
+		H->stmt_cache = pdo_pool_stmt_cache_create(template_dbh->pool_stmt_cache_size);
+	}
+
+	/* Only now is the slot demonstrably clean. */
 	dbh->pool_session_dirty = false;
 
 	PDO_DBG_RETURN(true);
+#else
+	/* libmysqlclient exposes no way to read back the init commands, so the
+	 * restore list could not be derived from the connection — drop the slot
+	 * and let the factory build one that is configured from the DSN. */
+	PDO_DBG_RETURN(false);
+#endif
 }
 /* }}} */
 
@@ -206,6 +254,10 @@ static void mysql_handle_closer(pdo_dbh_t *dbh)
 			 * no COM_STMT_CLOSE needed. Entry dtors will free MYSQL_STMT* clients. */
 			pdo_pool_stmt_cache_destroy(H->stmt_cache);
 			H->stmt_cache = NULL;
+		}
+		if (H->pool_dbname) {
+			pefree(H->pool_dbname, dbh->is_persistent);
+			H->pool_dbname = NULL;
 		}
 		if (H->server) {
 			mysql_close(H->server);
@@ -1021,6 +1073,11 @@ static int pdo_mysql_handle_factory(pdo_dbh_t *dbh, zval *driver_options)
 	}
 
 	dbname = vars[1].optval;
+	/* Stash it where the DSN is already parsed, so a pooled slot can restore
+	 * the schema after a reset without re-parsing the data source. */
+	if (dbname && *dbname) {
+		H->pool_dbname = pestrdup(dbname, dbh->is_persistent);
+	}
 	host = vars[2].optval;
 	if(vars[3].optval) {
 		port = atoi(vars[3].optval);
