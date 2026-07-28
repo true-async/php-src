@@ -480,6 +480,13 @@ typedef void (*zend_async_thread_load_zval_toplevel_t)(zval *dst, const zval *sr
  * call the zval is undef. */
 typedef void (*zend_async_thread_release_transferred_zval_t)(zval *z);
 
+/* Release several roots of ONE transfer under a single visited set, so an object
+ * reached from more than one root (a transferred closure that captured an object
+ * transferred alongside it) is freed exactly once. Releasing such roots with the
+ * single-zval call each — a fresh visited set per call — double-frees the shared
+ * object. */
+typedef void (*zend_async_thread_release_transferred_zvals_t)(zval **roots, size_t count);
+
 typedef void (*zend_async_thread_xlat_put_t)(
 		zend_async_thread_transfer_ctx_t *ctx, const void *src, void *dst);
 /* Defer release of an emalloc zval until the load ctx is torn down. The zval
@@ -2398,6 +2405,7 @@ ZEND_API extern zend_async_thread_load_zval_t zend_async_thread_load_zval_fn;
 ZEND_API extern zend_async_thread_transfer_zval_toplevel_t zend_async_thread_transfer_zval_toplevel_fn;
 ZEND_API extern zend_async_thread_load_zval_toplevel_t zend_async_thread_load_zval_toplevel_fn;
 ZEND_API extern zend_async_thread_release_transferred_zval_t zend_async_thread_release_transferred_zval_fn;
+ZEND_API extern zend_async_thread_release_transferred_zvals_t zend_async_thread_release_transferred_zvals_fn;
 ZEND_API extern zend_async_thread_xlat_put_t zend_async_thread_xlat_put_fn;
 ZEND_API extern zend_async_thread_defer_release_t zend_async_thread_defer_release_fn;
 
@@ -2412,6 +2420,8 @@ ZEND_API extern zend_async_thread_defer_release_t zend_async_thread_defer_releas
 	zend_async_thread_load_zval_toplevel_fn((dst), (src))
 #define ZEND_ASYNC_THREAD_RELEASE_TRANSFERRED_ZVAL(z) \
 	zend_async_thread_release_transferred_zval_fn(z)
+#define ZEND_ASYNC_THREAD_RELEASE_TRANSFERRED_ZVALS(roots, count) \
+	zend_async_thread_release_transferred_zvals_fn((roots), (count))
 #define ZEND_ASYNC_THREAD_XLAT_PUT(ctx, src, dst) \
 	zend_async_thread_xlat_put_fn((ctx), (src), (dst))
 #define ZEND_ASYNC_THREAD_DEFER_RELEASE(ctx, z) \
