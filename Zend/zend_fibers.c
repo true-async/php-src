@@ -614,9 +614,6 @@ static ZEND_STACK_ALIGNED void zend_fiber_execute(zend_fiber_transfer *transfer)
 		EG(current_execute_data) = fiber->execute_data;
 		EG(jit_trace_num) = 0;
 		EG(error_reporting) = error_reporting;
-		/* A fiber starts outside anyone's EH_THROW window. */
-		EG(error_handling) = EH_NORMAL;
-		EG(exception_class) = NULL;
 
 #ifdef ZEND_CHECK_STACK_LIMIT
 		EG(stack_base) = zend_fiber_stack_base(fiber->context.stack);
