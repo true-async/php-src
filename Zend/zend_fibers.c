@@ -512,6 +512,13 @@ ZEND_API void zend_fiber_switch_context(zend_fiber_transfer *transfer)
 
 	zend_fiber_capture_vm_state(&state);
 
+	/* Leave our EH_THROW window behind: it belongs to whoever opened it. A context
+	 * resumed by this switch restores its own below, in its own frame of this
+	 * function; a context entered for the first time never reaches that restore,
+	 * and without this would run inside a window it never opened. */
+	EG(error_handling) = EH_NORMAL;
+	EG(exception_class) = NULL;
+
 	to->status = ZEND_FIBER_STATUS_RUNNING;
 
 	if (EXPECTED(from->status == ZEND_FIBER_STATUS_RUNNING)) {
