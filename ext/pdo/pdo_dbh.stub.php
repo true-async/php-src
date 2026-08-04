@@ -123,15 +123,36 @@ class PDO
     public const int ATTR_DEFAULT_STR_PARAM = UNKNOWN;
 
     /* Connection pool attributes (requires async extension) */
-    /** @cvalue LONG_CONST(PDO_ATTR_POOL_ENABLED) */
+    /**
+     * Share one connection between coroutines through a pool (bool).
+     *
+     * @cvalue LONG_CONST(PDO_ATTR_POOL_ENABLED)
+     */
     public const int ATTR_POOL_ENABLED = UNKNOWN;
-    /** @cvalue LONG_CONST(PDO_ATTR_POOL_MIN) */
+    /**
+     * Connections opened up front and kept idle (int).
+     *
+     * @cvalue LONG_CONST(PDO_ATTR_POOL_MIN)
+     */
     public const int ATTR_POOL_MIN = UNKNOWN;
-    /** @cvalue LONG_CONST(PDO_ATTR_POOL_MAX) */
+    /**
+     * Connections the pool may hold in total, idle and busy (int). A coroutine
+     * asking past the limit waits for one to come back.
+     *
+     * @cvalue LONG_CONST(PDO_ATTR_POOL_MAX)
+     */
     public const int ATTR_POOL_MAX = UNKNOWN;
-    /** @cvalue LONG_CONST(PDO_ATTR_POOL_HEALTHCHECK_INTERVAL) */
+    /**
+     * How often idle connections are checked, in milliseconds (int, 0 disables).
+     *
+     * @cvalue LONG_CONST(PDO_ATTR_POOL_HEALTHCHECK_INTERVAL)
+     */
     public const int ATTR_POOL_HEALTHCHECK_INTERVAL = UNKNOWN;
-    /** @cvalue LONG_CONST(PDO_ATTR_POOL_STMT_CACHE_SIZE) */
+    /**
+     * Prepared statements cached per pooled connection (int, 0 disables).
+     *
+     * @cvalue LONG_CONST(PDO_ATTR_POOL_STMT_CACHE_SIZE)
+     */
     public const int ATTR_POOL_STMT_CACHE_SIZE = UNKNOWN;
 
     /** @cvalue LONG_CONST(PDO_ERRMODE_SILENT) */
