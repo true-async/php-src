@@ -481,11 +481,13 @@ ZEND_ATTRIBUTE_CONST static zend_always_inline uint32_t HT_HASH_TO_IDX(uint32_t 
 	HT_HASH_EX((ht)->arHash, idx)
 
 ZEND_ATTRIBUTE_CONST static zend_always_inline uint32_t HT_SIZE_TO_MASK(uint32_t nTableSize) {
-	return (uint32_t)(-(nTableSize + nTableSize));
+	/* Wrap around zero rather than negating an unsigned value: MSVC reports
+	 * C4146 for the latter, which is an error for extensions built with /sdl. */
+	return (uint32_t)(0u - (nTableSize + nTableSize));
 }
 
 ZEND_ATTRIBUTE_CONST static zend_always_inline size_t HT_HASH_SIZE(uint32_t nTableMask) {
-	return ((size_t)(-nTableMask)) * sizeof(uint32_t);
+	return ((size_t)(0u - nTableMask)) * sizeof(uint32_t);
 }
 
 ZEND_ATTRIBUTE_CONST static zend_always_inline size_t HT_DATA_SIZE(uint32_t nTableSize) {
