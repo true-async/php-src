@@ -1291,6 +1291,16 @@ function system_with_timeout(
 
     $stat = proc_get_status($proc);
 
+    /* The pipes reach EOF as soon as the child releases its descriptors, which
+     * happens before the kernel makes its exit status available. Reading the
+     * status right away can therefore report a still-running process and lose
+     * the Termsig line for a test that died on a signal. */
+    $wait_until = microtime(true) + 1.0;
+    while ($stat['running'] && microtime(true) < $wait_until) {
+        usleep(1000);
+        $stat = proc_get_status($proc);
+    }
+
     if ($stat['signaled']) {
         $data .= "\nTermsig=" . $stat['stopsig'] . "\n";
     }
