@@ -70,10 +70,7 @@ typedef struct _spl_pqueue_elem {
 	zval priority;
 } spl_pqueue_elem;
 
-static inline spl_heap_object *spl_heap_from_obj(zend_object *obj) /* {{{ */ {
-	return ZEND_CONTAINER_OF(obj, spl_heap_object, std);
-}
-/* }}} */
+#define spl_heap_from_obj(obj) ZEND_CONTAINER_OF(obj, spl_heap_object, std)
 
 #define Z_SPLHEAP_P(zv)  spl_heap_from_obj(Z_OBJ_P((zv)))
 
@@ -493,7 +490,7 @@ static zend_result spl_heap_object_count_elements(zend_object *object, zend_long
 
 	if (intern->fptr_count) {
 		zval rv;
-		zend_call_method_with_0_params(object, intern->std.ce, &intern->fptr_count, "count", &rv);
+		zend_call_known_function(intern->fptr_count, object, intern->std.ce, &rv, 0, NULL, NULL);
 		if (!Z_ISUNDEF(rv)) {
 			*count = zval_get_long(&rv);
 			zval_ptr_dtor(&rv);

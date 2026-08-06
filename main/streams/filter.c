@@ -30,7 +30,7 @@ PHPAPI HashTable *php_get_stream_filters_hash_global(void)
 }
 
 /* Normal hash selection/retrieval call */
-PHPAPI HashTable *_php_get_stream_filters_hash(void)
+PHPAPI HashTable *php_get_stream_filters_hash(void)
 {
 	return (FG(stream_filters) ? FG(stream_filters) : &stream_filters_hash);
 }
@@ -277,7 +277,7 @@ PHPAPI php_stream_filter *_php_stream_filter_alloc(const php_stream_filter_ops *
 }
 
 PHPAPI zend_result php_stream_filter_parse_write_seek_mode(
-		zval *filterparams,
+		const zval *filterparams,
 		php_stream_filter_seekable_t *write_seekable)
 {
 	*write_seekable = PSFS_SEEKABLE_ALWAYS;
@@ -285,18 +285,17 @@ PHPAPI zend_result php_stream_filter_parse_write_seek_mode(
 	if (filterparams == NULL) {
 		return SUCCESS;
 	}
-	if (Z_TYPE_P(filterparams) != IS_ARRAY && Z_TYPE_P(filterparams) != IS_OBJECT) {
+	if (Z_TYPE_P(filterparams) != IS_ARRAY) {
 		return SUCCESS;
 	}
 
-	zval *tmp = zend_hash_str_find_ind(HASH_OF(filterparams),
-			"write_seek_mode", sizeof("write_seek_mode") - 1);
-	if (tmp == NULL) {
+	const zval *write_seek_mode = zend_hash_str_find(Z_ARR_P(filterparams), ZEND_STRL("write_seek_mode"));
+	if (write_seek_mode == NULL) {
 		return SUCCESS;
 	}
 
 	zend_string *tmp_str;
-	zend_string *str = zval_get_tmp_string(tmp, &tmp_str);
+	const zend_string *str = zval_get_tmp_string(write_seek_mode, &tmp_str);
 	zend_result result = SUCCESS;
 
 	if (zend_string_equals_literal(str, "preserve")) {
@@ -340,10 +339,11 @@ PHPAPI void php_stream_filter_prepend_ex(php_stream_filter_chain *chain, php_str
 		chain->tail = filter;
 	}
 	chain->head = filter;
+	chain->num_filters += 1;
 	filter->chain = chain;
 }
 
-PHPAPI void _php_stream_filter_prepend(php_stream_filter_chain *chain, php_stream_filter *filter)
+PHPAPI void php_stream_filter_prepend(php_stream_filter_chain *chain, php_stream_filter *filter)
 {
 	php_stream_filter_prepend_ex(chain, filter);
 }
@@ -360,6 +360,7 @@ PHPAPI zend_result php_stream_filter_append_ex(php_stream_filter_chain *chain, p
 		chain->head = filter;
 	}
 	chain->tail = filter;
+	chain->num_filters += 1;
 	filter->chain = chain;
 
 	if (&(stream->readfilters) == chain && (stream->writepos - stream->readpos) > 0) {
@@ -391,7 +392,8 @@ PHPAPI zend_result php_stream_filter_append_ex(php_stream_filter_chain *chain, p
 					php_stream_bucket_unlink(bucket);
 					php_stream_bucket_delref(bucket);
 				}
-				php_error_docref(NULL, E_WARNING, "Filter failed to process pre-buffered data");
+				php_stream_warn(stream, FilterFailed,
+						"Filter failed to process pre-buffered data");
 				return FAILURE;
 			case PSFS_FEED_ME:
 				/* We don't actually need data yet,
@@ -434,7 +436,7 @@ PHPAPI zend_result php_stream_filter_append_ex(php_stream_filter_chain *chain, p
 	return SUCCESS;
 }
 
-PHPAPI void _php_stream_filter_append(php_stream_filter_chain *chain, php_stream_filter *filter)
+PHPAPI void php_stream_filter_append(php_stream_filter_chain *chain, php_stream_filter *filter)
 {
 	if (php_stream_filter_append_ex(chain, filter) != SUCCESS) {
 		if (chain->head == filter) {
@@ -444,10 +446,11 @@ PHPAPI void _php_stream_filter_append(php_stream_filter_chain *chain, php_stream
 			filter->prev->next = NULL;
 			chain->tail = filter->prev;
 		}
+		chain->num_filters -= 1;
 	}
 }
 
-PHPAPI zend_result _php_stream_filter_flush(php_stream_filter *filter, bool finish)
+PHPAPI zend_result php_stream_filter_flush(php_stream_filter *filter, bool finish)
 {
 	php_stream_bucket_brigade brig_a = { NULL, NULL }, brig_b = { NULL, NULL }, *inp = &brig_a, *outp = &brig_b, *brig_temp;
 	php_stream_bucket *bucket;
@@ -544,6 +547,8 @@ PHPAPI php_stream_filter *php_stream_filter_remove(php_stream_filter *filter, bo
 	} else {
 		filter->chain->tail = filter->prev;
 	}
+
+	filter->chain->num_filters -= 1;
 
 	if (filter->res) {
 		zend_list_delete(filter->res);

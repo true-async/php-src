@@ -335,10 +335,7 @@ static zend_result dba_connection_cast_object(zend_object *obj, zval *result, in
 	return zend_std_cast_object_tostring(obj, result, type);
 }
 
-static inline dba_connection *dba_connection_from_obj(zend_object *obj)
-{
-	return ZEND_CONTAINER_OF(obj, dba_connection, std);
-}
+#define dba_connection_from_obj(obj) ZEND_CONTAINER_OF(obj, dba_connection, std)
 
 #define Z_DBA_CONNECTION_P(zv) dba_connection_from_obj(Z_OBJ_P(zv))
 #define Z_DBA_INFO_P(zv) Z_DBA_CONNECTION_P(zv)->info
@@ -1285,10 +1282,8 @@ PHP_FUNCTION(dba_handlers)
 
 	for (const dba_handler *hptr = handler; hptr->name; hptr++) {
 		if (full_info) {
-			// TODO: avoid reallocation ???
-			char *str = hptr->info(hptr, NULL);
+			const char *str = hptr->info(hptr, NULL);
 			add_assoc_string(return_value, hptr->name, str);
-			efree(str);
 		} else {
 			add_next_index_string(return_value, hptr->name);
 		}

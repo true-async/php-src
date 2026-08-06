@@ -148,6 +148,7 @@ AC_CHECK_FUNCS(m4_normalize([
   pthread_attr_getstack
   pthread_get_stackaddr_np
   pthread_getattr_np
+  pthread_getthrds_np
   pthread_stackseg_np
   strnlen
 ]))
@@ -317,6 +318,7 @@ int emu(const opcode_handler_t *ip, void *fp) {
   while ((*ip)());
   FP = orig_fp;
   IP = orig_ip;
+  return 0;
 }], [])],
   [php_cv_have_global_register_vars=yes],
   [php_cv_have_global_register_vars=no])

@@ -195,7 +195,7 @@ extern zend_class_entry* soap_sdl_class_entry;
 
 extern HashTable php_soap_defEncNs, php_soap_defEnc, php_soap_defEncIndex;
 
-void add_soap_fault(zval *obj, char *fault_code, char *fault_string, char *fault_actor, zval *fault_detail, zend_string *lang);
+void add_soap_fault(zval *obj, const char *fault_code, const char *fault_string, zend_string *fault_actor, zval *fault_detail, zend_string *lang);
 
 #define soap_error0(severity, format) \
 	php_error(severity, "SOAP-ERROR: " format)
@@ -258,10 +258,7 @@ typedef struct soap_url_object {
 	zend_object std;
 } soap_url_object;
 
-static inline soap_url_object *soap_url_object_fetch(zend_object *obj)
-{
-	return ZEND_CONTAINER_OF(obj, soap_url_object, std);
-}
+#define soap_url_object_fetch(obj) ZEND_CONTAINER_OF(obj, soap_url_object, std)
 
 #define Z_SOAP_URL_P(zv) soap_url_object_fetch(Z_OBJ_P(zv))
 

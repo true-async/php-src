@@ -394,6 +394,18 @@ static zend_long php_session_gc(bool immediate)
 	if ((PS(mod_data) || PS(mod_user_implemented))) {
 		/* Use probability-based GC if not forced and probability is configured */
 		if (!collect && PS(gc_probability) > 0) {
+			/* Seed lazily on first GC draw per process. */
+			if (UNEXPECTED(!PS(random_seeded))) {
+				php_random_uint128_t seed;
+				if (php_random_bytes_silent(&seed, sizeof(seed)) == FAILURE) {
+					seed = php_random_uint128_constant(
+						php_random_generate_fallback_seed(),
+						php_random_generate_fallback_seed()
+					);
+				}
+				php_random_pcgoneseq128xslrr64_seed128(PS(random).state, seed);
+				PS(random_seeded) = true;
+			}
 			collect = php_random_range(PS(random), 0, PS(gc_divisor) - 1) < PS(gc_probability);
 		}
 
@@ -431,6 +443,7 @@ static zend_result php_session_initialize(void)
 	if (!PS(id) || !ZSTR_VAL(PS(id))[0]) {
 		if (PS(id)) {
 			zend_string_release_ex(PS(id), false);
+			PS(id) = NULL;
 		}
 		PS(id) = PS(mod)->s_create_sid(&PS(mod_data));
 		if (!PS(id)) {
@@ -447,6 +460,7 @@ static zend_result php_session_initialize(void)
 		PS(mod)->s_validate_sid(&PS(mod_data), PS(id)) == FAILURE
 	) {
 		zend_string_release_ex(PS(id), false);
+		PS(id) = NULL;
 		PS(id) = PS(mod)->s_create_sid(&PS(mod_data));
 		if (!PS(id)) {
 			PS(id) = php_session_create_id(NULL);
@@ -635,12 +649,15 @@ static PHP_INI_MH(OnUpdateSaveDir)
 	SESSION_CHECK_ACTIVE_STATE;
 	SESSION_CHECK_OUTPUT_STATE;
 
+	if (zend_str_has_nul_byte(new_value)) {
+		if (stage != ZEND_INI_STAGE_DEACTIVATE) {
+			php_error_docref(NULL, E_WARNING, "\"%s\" must not contain null bytes", ZSTR_VAL(entry->name));
+		}
+		return FAILURE;
+	}
+
 	/* Only do the open_basedir check at runtime */
 	if (stage == PHP_INI_STAGE_RUNTIME || stage == PHP_INI_STAGE_HTACCESS) {
-		if (zend_str_has_nul_byte(new_value)) {
-			return FAILURE;
-		}
-
 		/* we do not use zend_memrchr() since path can contain ; itself */
 		const char *p = strchr(ZSTR_VAL(new_value), ';');
 		if (p) {
@@ -906,6 +923,13 @@ static PHP_INI_MH(OnUpdateRefererCheck)
 {
 	SESSION_CHECK_ACTIVE_STATE;
 	SESSION_CHECK_OUTPUT_STATE;
+
+	if (zend_str_has_nul_byte(new_value)) {
+		if (stage != ZEND_INI_STAGE_DEACTIVATE) {
+			php_error_docref(NULL, E_WARNING, "\"%s\" must not contain null bytes", ZSTR_VAL(entry->name));
+		}
+		return FAILURE;
+	}
 
 	if (ZSTR_LEN(new_value) != 0) {
 		php_error_docref("session.configuration", E_DEPRECATED, "Usage of session.referer_check INI setting is deprecated");
@@ -2397,6 +2421,7 @@ PHP_FUNCTION(session_regenerate_id)
 			/* Try to generate non-existing ID */
 			while (limit-- && PS(mod)->s_validate_sid(&PS(mod_data), PS(id)) == SUCCESS) {
 				zend_string_release_ex(PS(id), false);
+				PS(id) = NULL;
 				PS(id) = PS(mod)->s_create_sid(&PS(mod_data));
 				if (!PS(id)) {
 					PS(mod)->s_close(&PS(mod_data));
@@ -2891,14 +2916,7 @@ static PHP_GINIT_FUNCTION(ps)
 		.algo = &php_random_algo_pcgoneseq128xslrr64,
 		.state = &ps_globals->random_state,
 	};
-	php_random_uint128_t seed;
-	if (php_random_bytes_silent(&seed, sizeof(seed)) == FAILURE) {
-		seed = php_random_uint128_constant(
-			php_random_generate_fallback_seed(),
-			php_random_generate_fallback_seed()
-		);
-	}
-	php_random_pcgoneseq128xslrr64_seed128(ps_globals->random.state, seed);
+	ps_globals->random_seeded = false;
 }
 
 static PHP_MINIT_FUNCTION(session)

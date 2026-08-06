@@ -1438,6 +1438,26 @@ static void curl_async_read_callback_complete(
 
 		if (!Z_ISUNDEF_P(retval) && Z_TYPE_P(retval) == IS_STRING) {
 			state->callback.result = zend_string_copy(Z_STR_P(retval));
+		} else if (!Z_ISUNDEF_P(retval) && Z_TYPE_P(retval) == IS_LONG) {
+			/* Same contract as the synchronous curl_read(): a returned integer is
+			 * only meaningful as 0 (end of data), ABORT or PAUSE. */
+			const zend_long long_rv = Z_LVAL_P(retval);
+
+			if (long_rv == CURL_READFUNC_ABORT) {
+				state->flags |= CURL_READ_ABORT;
+			} else if (long_rv == CURL_READFUNC_PAUSE) {
+				state->flags |= CURL_READ_PAUSE;
+			} else if (long_rv == 0) {
+				state->callback.result = ZSTR_EMPTY_ALLOC();
+			} else {
+				zend_throw_exception(zend_ce_value_error,
+					"The CURLOPT_READFUNCTION callback must return a string or CURL_READFUNC_ABORT or CURL_READFUNC_PAUSE", 0);
+				zend_object *ex = EG(exception);
+				GC_ADDREF(ex);
+				zend_clear_exception();
+				curl_async_event_set_callback_exception(curl_event, ex);
+				state->flags |= CURL_READ_ERROR;
+			}
 		} else {
 			state->callback.result = ZSTR_EMPTY_ALLOC();
 		}
@@ -1445,6 +1465,13 @@ static void curl_async_read_callback_complete(
 
 	if (curl_event->done_deferred) {
 		curl_async_write_finish_deferred(curl_event);
+		return;
+	}
+
+	/* A callback that asked for a pause keeps the transfer paused until the
+	 * user resumes it with curl_pause(). */
+	if (state->flags & CURL_READ_PAUSE) {
+		state->flags &= ~CURL_READ_PAUSE;
 		return;
 	}
 
@@ -1572,7 +1599,21 @@ static size_t curl_async_read_callback_sync(
 			length = MIN(requested, Z_STRLEN(retval));
 			memcpy(buffer, Z_STRVAL(retval), length);
 		} else if (Z_TYPE(retval) == IS_LONG) {
-			length = Z_LVAL_P(&retval);
+			/* Same contract as the synchronous curl_read(). */
+			const zend_long long_rv = Z_LVAL_P(&retval);
+
+			if (long_rv == 0 || long_rv == CURL_READFUNC_ABORT || long_rv == CURL_READFUNC_PAUSE) {
+				length = (size_t) long_rv;
+			} else {
+				zend_throw_exception(zend_ce_value_error,
+					"The CURLOPT_READFUNCTION callback must return a string or CURL_READFUNC_ABORT or CURL_READFUNC_PAUSE", 0);
+				zend_object *ex = EG(exception);
+				GC_ADDREF(ex);
+				zend_clear_exception();
+				curl_async_event_set_callback_exception(state->event, ex);
+				state->flags |= CURL_READ_ERROR;
+				length = CURL_READFUNC_ABORT;
+			}
 		}
 		zval_ptr_dtor(&retval);
 	}
@@ -1623,7 +1664,7 @@ size_t curl_async_read(curl_async_read_state_t *state, char *buffer, const size_
 #else
 	/* curl >= 8.11.1: use async PAUSE/unpause pattern */
 
-	if (state->flags & CURL_READ_ERROR) {
+	if (state->flags & (CURL_READ_ERROR | CURL_READ_ABORT)) {
 		return CURL_READFUNC_ABORT;
 	}
 

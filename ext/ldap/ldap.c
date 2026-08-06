@@ -100,9 +100,7 @@ ZEND_TSRMLS_CACHE_DEFINE()
 ZEND_GET_MODULE(ldap)
 #endif
 
-static inline ldap_linkdata *ldap_link_from_obj(zend_object *obj) {
-	return ZEND_CONTAINER_OF(obj, ldap_linkdata, std);
-}
+#define ldap_link_from_obj(obj) ZEND_CONTAINER_OF(obj, ldap_linkdata, std)
 
 #define Z_LDAP_LINK_P(zv) ldap_link_from_obj(Z_OBJ_P(zv))
 
@@ -147,9 +145,7 @@ static void ldap_link_free_obj(zend_object *obj)
 	zend_object_std_dtor(&ld->std);
 }
 
-static inline ldap_resultdata *ldap_result_from_obj(zend_object *obj) {
-	return ZEND_CONTAINER_OF(obj, ldap_resultdata, std);
-}
+#define ldap_result_from_obj(obj) ZEND_CONTAINER_OF(obj, ldap_resultdata, std)
 
 #define Z_LDAP_RESULT_P(zv) ldap_result_from_obj(Z_OBJ_P(zv))
 
@@ -184,9 +180,7 @@ static void ldap_result_free_obj(zend_object *obj)
 	zend_object_std_dtor(&result->std);
 }
 
-static inline ldap_result_entry *ldap_result_entry_from_obj(zend_object *obj) {
-	return ZEND_CONTAINER_OF(obj, ldap_result_entry, std);
-}
+#define ldap_result_entry_from_obj(obj) ZEND_CONTAINER_OF(obj, ldap_result_entry, std)
 
 #define Z_LDAP_RESULT_ENTRY_P(zv) ldap_result_entry_from_obj(Z_OBJ_P(zv))
 
@@ -583,6 +577,7 @@ static int php_ldap_control_from_array(LDAP *ld, LDAPControl** ctrl, const HashT
 
 			uint32_t num_keys = zend_hash_num_elements(Z_ARRVAL_P(val));
 			sort_keys = safe_emalloc((num_keys+1), sizeof(LDAPSortKey*), 0);
+			memset(sort_keys, 0, (num_keys+1) * sizeof(LDAPSortKey*));
 			tmpstrings1 = safe_emalloc(num_keys, sizeof(zend_string*), 0);
 			tmpstrings2 = safe_emalloc(num_keys, sizeof(zend_string*), 0);
 			num_tmpstrings1 = 0;
@@ -2207,6 +2202,8 @@ PHP_FUNCTION(ldap_explode_dn)
 	zend_long with_attrib;
 	char *dn, **ldap_value;
 	size_t dn_len;
+	int i, count;
+
 
 	if (zend_parse_parameters(ZEND_NUM_ARGS(), "pl", &dn, &dn_len, &with_attrib) != SUCCESS) {
 		RETURN_THROWS();
@@ -2218,11 +2215,15 @@ PHP_FUNCTION(ldap_explode_dn)
 	}
 
 	array_init(return_value);
-	int i;
-	for (i = 0; ldap_value[i] != NULL; i++) {
+	i = 0;
+	while (ldap_value[i] != NULL) i++;
+	count = i;
+
+	add_assoc_long(return_value, "count", count);
+
+	for (i = 0; i < count; i++) {
 		add_index_string(return_value, i, ldap_value[i]);
 	}
-	add_assoc_long(return_value, "count", i);
 
 	ldap_memvfree((void **)ldap_value);
 }

@@ -660,6 +660,7 @@ static int readline_shell_run(void) /* {{{ */
 				zend_string_release_ex(prompt, 0);
 				/* TODO: This might be wrong! */
 				prompt = cli_get_prompt("php", '>');
+				free(line);
 				continue;
 			}
 		}
@@ -709,7 +710,7 @@ static int readline_shell_run(void) /* {{{ */
 		}
 
 		if (pager_pipe) {
-			fclose(pager_pipe);
+			pclose(pager_pipe);
 			pager_pipe = NULL;
 		}
 

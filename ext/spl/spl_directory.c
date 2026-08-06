@@ -48,11 +48,7 @@ PHPAPI zend_class_entry *spl_ce_GlobIterator;
 PHPAPI zend_class_entry *spl_ce_SplFileObject;
 PHPAPI zend_class_entry *spl_ce_SplTempFileObject;
 
-/* Object helper */
-static inline spl_filesystem_object *spl_filesystem_from_obj(zend_object *obj) /* {{{ */ {
-	return ZEND_CONTAINER_OF(obj, spl_filesystem_object, std);
-}
-/* }}} */
+#define spl_filesystem_from_obj(obj) ZEND_CONTAINER_OF(obj, spl_filesystem_object, std)
 
 /* define an overloaded iterator structure */
 typedef struct {
@@ -484,7 +480,7 @@ static spl_filesystem_object *spl_filesystem_object_create_info(zend_string *fil
 
 	if (ce->constructor->common.scope != spl_ce_SplFileInfo) {
 		ZVAL_STR(&arg1, file_path);
-		zend_call_method_with_1_params(Z_OBJ_P(return_value), ce, &ce->constructor, "__construct", NULL, &arg1);
+		zend_call_known_function(ce->constructor, Z_OBJ_P(return_value), ce, NULL, 1, &arg1, NULL);
 	} else {
 		spl_filesystem_info_set_filename(intern, file_path);
 	}
@@ -523,7 +519,7 @@ static spl_filesystem_object *spl_filesystem_object_create_type(int num_args, sp
 
 			if (ce->constructor->common.scope != spl_ce_SplFileInfo) {
 				ZVAL_STR(&arg1, source->file_name);
-				zend_call_method_with_1_params(Z_OBJ_P(return_value), ce, &ce->constructor, "__construct", NULL, &arg1);
+				zend_call_known_function(ce->constructor, Z_OBJ_P(return_value), ce, NULL, 1, &arg1, NULL);
 			} else {
 				intern->file_name = zend_string_copy(source->file_name);
 				intern->path = spl_filesystem_object_get_path(source);
@@ -2154,6 +2150,8 @@ PHP_METHOD(SplFileObject, next)
 
 	ZEND_PARSE_PARAMETERS_NONE();
 
+	CHECK_SPL_FILE_OBJECT_IS_INITIALIZED(intern);
+
 	if (!intern->u.file.current_line && Z_ISUNDEF(intern->u.file.current_zval)) {
 		if (spl_filesystem_file_read_line(ZEND_THIS, intern, true) == FAILURE) {
 			return;
@@ -2303,6 +2301,8 @@ PHP_METHOD(SplFileObject, fputcsv)
 	if (zend_parse_parameters(ZEND_NUM_ARGS(), "a|ssSS", &fields, &delim, &d_len, &enclo, &e_len, &escape_str, &eol) == FAILURE) {
 		RETURN_THROWS();
 	}
+
+	CHECK_SPL_FILE_OBJECT_IS_INITIALIZED(intern);
 
 	if (delim) {
 		if (d_len != 1) {

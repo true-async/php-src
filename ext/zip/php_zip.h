@@ -37,7 +37,8 @@ extern zend_module_entry zip_module_entry;
 /* Additional flags not from libzip */
 #define ZIP_FL_OPEN_FILE_NOW (1u<<30)
 
-#define PHP_ZIP_VERSION "1.22.8"
+#include "php_version.h"
+#define PHP_ZIP_VERSION PHP_VERSION
 
 #ifdef HAVE_LIBZIP_VERSION
 #define LIBZIP_VERSION_STR zip_libzip_version()
@@ -69,9 +70,12 @@ typedef struct _ze_zip_object {
 	HashTable *prop_handler;
 	char *filename;
 	size_t filename_len;
+	zend_string *out_str;
+	bool from_string;
 	zip_int64_t last_id;
 	int err_zip;
 	int err_sys;
+	bool bailout_callback;
 #ifdef HAVE_PROGRESS_CALLBACK
 	zend_fcall_info_cache progress_callback;
 #endif
@@ -81,9 +85,7 @@ typedef struct _ze_zip_object {
 	zend_object zo;
 } ze_zip_object;
 
-static inline ze_zip_object *php_zip_fetch_object(zend_object *obj) {
-	return ZEND_CONTAINER_OF(obj, ze_zip_object, zo);
-}
+#define php_zip_fetch_object(obj) ZEND_CONTAINER_OF(obj, ze_zip_object, zo)
 
 #define Z_ZIP_P(zv) php_zip_fetch_object(Z_OBJ_P((zv)))
 
