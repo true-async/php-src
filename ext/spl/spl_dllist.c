@@ -85,10 +85,7 @@ struct _spl_dllist_it {
 	int                    flags;
 };
 
-static inline spl_dllist_object *spl_dllist_from_obj(zend_object *obj) /* {{{ */ {
-	return ZEND_CONTAINER_OF(obj, spl_dllist_object, std);
-}
-/* }}} */
+#define spl_dllist_from_obj(obj) ZEND_CONTAINER_OF(obj, spl_dllist_object, std)
 
 #define Z_SPLDLLIST_P(zv)  spl_dllist_from_obj(Z_OBJ_P((zv)))
 
@@ -385,7 +382,7 @@ static zend_result spl_dllist_object_count_elements(zend_object *object, zend_lo
 
 	if (intern->fptr_count) {
 		zval rv;
-		zend_call_method_with_0_params(object, intern->std.ce, &intern->fptr_count, "count", &rv);
+		zend_call_known_function(intern->fptr_count, object, intern->std.ce, &rv, 0, NULL, NULL);
 		if (!Z_ISUNDEF(rv)) {
 			*count = zval_get_long(&rv);
 			zval_ptr_dtor(&rv);

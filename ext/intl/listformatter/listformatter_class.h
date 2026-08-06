@@ -21,9 +21,8 @@
 #include "intl_error.h"
 #include "intl_data.h"
 
-#include <unicode/listformatter.h>
-
 #ifdef __cplusplus
+#include <unicode/listformatter.h>
 using icu::ListFormatter;
 #else
 typedef void ListFormatter;
@@ -42,9 +41,7 @@ typedef struct {
     zend_object     zo;
 } ListFormatter_object;
 
-static inline ListFormatter_object *php_intl_listformatter_fetch_object(zend_object *obj) {
-    return ZEND_CONTAINER_OF(obj, ListFormatter_object, zo);
-}
+#define php_intl_listformatter_fetch_object(obj) ZEND_CONTAINER_OF(obj, ListFormatter_object, zo)
 #define Z_INTL_LISTFORMATTER_P(zv) php_intl_listformatter_fetch_object(Z_OBJ_P(zv))
 
 #define LISTFORMATTER_ERROR(lfo) (lfo)->lf_data.error

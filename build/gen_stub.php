@@ -13,6 +13,7 @@ use PhpParser\Node\Stmt\Class_;
 use PhpParser\Node\Stmt\Enum_;
 use PhpParser\Node\Stmt\Interface_;
 use PhpParser\Node\Stmt\Trait_;
+use PhpParser\Node\Stmt\TraitUse;
 use PhpParser\PrettyPrinter\Standard;
 use PhpParser\PrettyPrinterAbstract;
 
@@ -84,7 +85,7 @@ function processDirectory(string $dir, Context $context): array {
         RecursiveIteratorIterator::LEAVES_ONLY
     );
     foreach ($it as $file) {
-        $pathName = $file->getPathName();
+        $pathName = $file->getPathname();
         if (str_ends_with($pathName, '.stub.php')) {
             $pathNames[] = $pathName;
         }
@@ -2344,9 +2345,28 @@ class EvaluatedValue
         // $this->expr has all its PHP constants replaced by C constants
         $prettyPrinter = new Standard;
         $expr = $prettyPrinter->prettyPrintExpr($this->expr);
-        // PHP single-quote to C double-quote string
         if ($this->type->isString()) {
-            $expr = preg_replace("/(^'|'$)/", '"', $expr);
+            // The string in $expr has had the octal, hex, and unicode
+            // backslash sequences already applied for double-quoted strings,
+            // but not the other sequences.
+            //
+            // PHP has single quote strings, C doesn't (they're one char).
+            // Single-quoted strings need handling to replace their escapes
+            // with the double-quoted equivalent; namely single quote escapes.
+            //
+            // Double-quoted strings have similar escape sequences as C does,
+            // so we can pass them through directly. However, C does *not*
+            // support the \$ escape sequence (in ""), so strip that. Variable
+            // interpolation shouldn't be possible in a stub, so we don't need
+            // to worry about mangling such a case.
+            if (preg_match("/(^'|'$)/", $expr)) {
+                $expr = substr($expr, 1, -1); // strip quotes, readd later
+                $expr = str_replace("\\'", "'", $expr);
+                $expr = addcslashes($expr, "\\\"");
+                $expr = "\"$expr\"";
+            } else {
+                $expr = str_replace('\$', "$", $expr);
+            }
         }
         return $expr[0] == '"' ? $expr : preg_replace('(\bnull\b)', 'NULL', str_replace('\\', '', $expr));
     }
@@ -2957,6 +2977,7 @@ class StringBuilder {
     // NEW in 8.6
     private const PHP_86_KNOWN = [
         "arguments" => "ZEND_STR_ARGUMENTS",
+        "NoDiscard" => "ZEND_STR_NODISCARD",
     ];
 
     /**
@@ -3363,6 +3384,7 @@ class ClassInfo {
      * @param AttributeInfo[] $attributes
      * @param Name[] $extends
      * @param Name[] $implements
+     * @param Name[] $uses
      * @param ConstInfo[] $constInfos
      * @param PropertyInfo[] $propertyInfos
      * @param FuncInfo[] $funcInfos
@@ -3381,10 +3403,12 @@ class ClassInfo {
         private bool $isNotSerializable,
         private readonly array $extends,
         private readonly array $implements,
+        private readonly array $uses,
         public /* readonly */ array $constInfos,
         private /* readonly */ array $propertyInfos,
         public array $funcInfos,
         private readonly array $enumCaseInfos,
+        private readonly bool $generateCNameTable,
         public readonly ?string $cond,
         public ?int $phpVersionIdMinimumCompatibility,
         public readonly bool $isUndocumentable,
@@ -3399,6 +3423,9 @@ class ClassInfo {
         }
         foreach ($this->implements as $implements) {
             $params[] = "zend_class_entry *class_entry_" . implode("_", $implements->getParts());
+        }
+        foreach ($this->uses as $use) {
+            $params[] = "zend_class_entry *class_entry_" . implode("_", $use->getParts());
         }
 
         $escapedName = implode("_", $this->name->getParts());
@@ -3495,6 +3522,17 @@ class ClassInfo {
 
         if (!empty($implements)) {
             $code .= "\tzend_class_implements(class_entry, " . count($implements) . ", " . implode(", ", $implements) . ");\n";
+        }
+
+        $traits = array_map(
+            function (Name $item) {
+                return "class_entry_" . implode("_", $item->getParts());
+            },
+            $this->uses
+        );
+
+        if (!empty($traits)) {
+            $code .= "\tzend_class_use_internal_traits(class_entry, " . count($traits) . ", " . implode(", ", $traits) . ");\n";
         }
 
         if ($this->alias) {
@@ -3598,6 +3636,25 @@ class ClassInfo {
         }
 
         $code .= "} {$cEnumName};\n";
+
+        $caseCount = count($this->enumCaseInfos);
+
+        if ($this->generateCNameTable && $caseCount > 0) {
+            $cPrefix = 'ZEND_ENUM_' . str_replace('\\', '_', $this->name->toString());
+            $useGuard = $cPrefix . '_USE_NAME_TABLE';
+
+            $code .= "\n#define {$cPrefix}_CASE_COUNT {$caseCount}\n";
+            $code .= "\n#ifdef {$useGuard}\n";
+            $code .= "static const char *{$cEnumName}_case_names[{$cPrefix}_CASE_COUNT + 1] = {\n";
+
+            foreach ($this->enumCaseInfos as $case) {
+                $cName = $cPrefix . '_' . $case->name->case;
+                $code .= "\t[{$cName}] = \"{$case->name->case}\",\n";
+            }
+
+            $code .= "};\n";
+            $code .= "#endif\n";
+        }
 
         if ($this->cond) {
             $code .= "#endif\n";
@@ -4368,6 +4425,7 @@ class FileInfo {
                 $propertyInfos = [];
                 $methodInfos = [];
                 $enumCaseInfos = [];
+                $traitUses = [];
                 foreach ($stmt->stmts as $classStmt) {
                     $cond = self::handlePreprocessorConditions($conds, $classStmt);
                     if ($classStmt instanceof Stmt\Nop) {
@@ -4429,6 +4487,13 @@ class FileInfo {
                             $classStmt->expr,
                             $classStmt->expr ? $prettyPrinter->prettyPrintExpr($classStmt->expr) : null,
                         );
+                    } else if ($classStmt instanceof TraitUse) {
+                        if ($classStmt->adaptations) {
+                            throw new Exception("Trait adaptations are not supported");
+                        }
+                        foreach ($classStmt->traits as $trait) {
+                            $traitUses[] = $trait;
+                        }
                     } else {
                         throw new Exception("Not implemented {$classStmt->getType()}");
                     }
@@ -4441,6 +4506,7 @@ class FileInfo {
                     $propertyInfos,
                     $methodInfos,
                     $enumCaseInfos,
+                    $traitUses,
                     $cond,
                     $this->getMinimumPhpVersionIdCompatibility(),
                     $this->isUndocumentable
@@ -5127,6 +5193,7 @@ function parseProperty(
  * @param PropertyInfo[] $properties
  * @param FuncInfo[] $methods
  * @param EnumCaseInfo[] $enumCases
+ * @param Name[] $traitUses
  */
 function parseClass(
     Name $name,
@@ -5135,6 +5202,7 @@ function parseClass(
     array $properties,
     array $methods,
     array $enumCases,
+    array $traitUses,
     ?string $cond,
     ?int $minimumPhpVersionIdCompatibility,
     bool $isUndocumentable
@@ -5149,6 +5217,7 @@ function parseClass(
     $isStrictProperties = array_key_exists('strict-properties', $tagMap);
     $isNotSerializable = array_key_exists('not-serializable', $tagMap);
     $isUndocumentable = $isUndocumentable || array_key_exists('undocumentable', $tagMap);
+    $generateCNameTable = array_key_exists('c-name-table', $tagMap);
     foreach ($tags as $tag) {
         if ($tag->name === 'alias') {
             $alias = $tag->getValue();
@@ -5206,10 +5275,12 @@ function parseClass(
         $isNotSerializable,
         $extends,
         $implements,
+        $traitUses,
         $consts,
         $properties,
         $methods,
         $enumCases,
+        $generateCNameTable,
         $cond,
         $minimumPhpVersionIdCompatibility,
         $isUndocumentable
@@ -5519,7 +5590,7 @@ function replacePredefinedConstants(string $targetDirectory, array $constMap, ar
     );
 
     foreach ($it as $file) {
-        $pathName = $file->getPathName();
+        $pathName = $file->getPathname();
         if (!preg_match('/(?:[\w\.]*constants[\w\._]*|tokens).xml$/i', basename($pathName))) {
             continue;
         }
@@ -5700,7 +5771,7 @@ function replaceClassSynopses(
     );
 
     foreach ($it as $file) {
-        $pathName = $file->getPathName();
+        $pathName = $file->getPathname();
         if (!preg_match('/\.xml$/i', $pathName)) {
             continue;
         }
@@ -5917,7 +5988,7 @@ function replaceMethodSynopses(
     );
 
     foreach ($it as $file) {
-        $pathName = $file->getPathName();
+        $pathName = $file->getPathname();
         if (!preg_match('/\.xml$/i', $pathName)) {
             continue;
         }

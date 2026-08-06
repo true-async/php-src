@@ -77,6 +77,7 @@ typedef struct {
 	php_curl_write    *write_header;
 	php_curl_read     *read;
 	zval               std_err;
+	zend_fcall_info_cache seek;
 	zend_fcall_info_cache progress;
 	zend_fcall_info_cache xferinfo;
 	zend_fcall_info_cache fnmatch;
@@ -167,15 +168,11 @@ void _php_setup_easy_copy_handlers(php_curl *ch, php_curl *source);
 /* Consumes `zv` */
 zend_long php_curl_get_long(zval *zv);
 
-static inline php_curl *curl_from_obj(zend_object *obj) {
-	return ZEND_CONTAINER_OF(obj, php_curl, std);
-}
+#define curl_from_obj(obj) ZEND_CONTAINER_OF(obj, php_curl, std)
 
 #define Z_CURL_P(zv) curl_from_obj(Z_OBJ_P(zv))
 
-static inline php_curlsh *curl_share_from_obj(zend_object *obj) {
-	return ZEND_CONTAINER_OF(obj, php_curlsh, std);
-}
+#define curl_share_from_obj(obj) ZEND_CONTAINER_OF(obj, php_curlsh, std)
 
 #define Z_CURL_SHARE_P(zv) curl_share_from_obj(Z_OBJ_P(zv))
 

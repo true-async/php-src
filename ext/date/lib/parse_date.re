@@ -32,16 +32,6 @@
 #include <assert.h>
 #include <limits.h>
 
-#if defined(_MSC_VER)
-# define strtoll(s, f, b) _atoi64(s)
-#elif !defined(HAVE_STRTOLL)
-# if defined(HAVE_ATOLL)
-#  define strtoll(s, f, b) atoll(s)
-# else
-#  define strtoll(s, f, b) strtol(s, f, b)
-# endif
-#endif
-
 #define EOI      257
 #define TIME     258
 #define DATE     259
@@ -555,7 +545,6 @@ static timelib_ull timelib_get_signed_nr(Scanner *s, const char **ptr, int max_l
 	int len = 0;
 
 	/* Skip over non-numeric chars */
-
 	while (((**ptr < '0') || (**ptr > '9')) && (**ptr != '+') && (**ptr != '-')) {
 		if (**ptr == '\0') {
 			add_error(s, TIMELIB_ERR_UNEXPECTED_DATA, "Found unexpected data");
@@ -568,6 +557,7 @@ static timelib_ull timelib_get_signed_nr(Scanner *s, const char **ptr, int max_l
 	str = timelib_calloc(1, max_length + 2);
 	str[0] = '+'; /* First position is the sign */
 	str_ptr = str + 1;
+
 
 	while ((**ptr == '+') || (**ptr == '-')) {
 		if (**ptr == '-') {
@@ -2020,7 +2010,7 @@ timelib_time *timelib_strtotime(const char *s, size_t len, timelib_error_contain
 	in.errors->error_messages = NULL;
 
 	if (len > 0) {
-		while (isspace((unsigned char)*s) && s < e) {
+		while (isspace((unsigned char)*s) && s <= e) {
 			s++;
 		}
 		while (isspace((unsigned char)*e) && e > s) {

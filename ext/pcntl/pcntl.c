@@ -153,6 +153,7 @@ typedef psetid_t cpu_set_t;
 #include "Zend/zend_max_execution_timer.h"
 
 #include "pcntl_arginfo.h"
+#include "pcntl_decl.h"
 static zend_class_entry *QosClass_ce;
 
 ZEND_DECLARE_MODULE_GLOBALS(pcntl)
@@ -755,13 +756,10 @@ PHP_FUNCTION(pcntl_exec)
 				zend_string_addref(key);
 			}
 
-			/* Length of element + equal sign + length of key + null */
-			*pair = safe_emalloc(ZSTR_LEN(element_str) + 1, sizeof(char), ZSTR_LEN(key) + 1);
-			/* Copy key=element + final null byte into buffer */
-			memcpy(*pair, ZSTR_VAL(key), ZSTR_LEN(key));
-			(*pair)[ZSTR_LEN(key)] = '=';
-			/* Copy null byte */
-			memcpy(*pair + ZSTR_LEN(key) + 1, ZSTR_VAL(element_str), ZSTR_LEN(element_str) + 1);
+			*pair = zend_cstr_concat3(
+				ZSTR_VAL(key), ZSTR_LEN(key),
+				"=", 1,
+				ZSTR_VAL(element_str), ZSTR_LEN(element_str));
 
 			/* Cleanup */
 			zend_string_release_ex(key, false);
@@ -1849,28 +1847,28 @@ static qos_class_t qos_enum_to_pthread(zend_enum_Pcntl_QosClass entry)
 
 static zend_object *qos_lval_to_zval(qos_class_t qos_class)
 {
-	const char *entryname;
+	int entry_id;
 	switch (qos_class)
 	{
 	case QOS_CLASS_USER_INTERACTIVE:
-		entryname = "UserInteractive";
+		entry_id = ZEND_ENUM_Pcntl_QosClass_UserInteractive;
 		break;
 	case QOS_CLASS_USER_INITIATED:
-		entryname = "UserInitiated";
+		entry_id = ZEND_ENUM_Pcntl_QosClass_UserInitiated;
 		break;
 	case QOS_CLASS_UTILITY:
-		entryname = "Utility";
+		entry_id = ZEND_ENUM_Pcntl_QosClass_Utility;
 		break;
 	case QOS_CLASS_BACKGROUND:
-		entryname = "Background";
+		entry_id = ZEND_ENUM_Pcntl_QosClass_Background;
 		break;
 	case QOS_CLASS_DEFAULT:
 	default:
-		entryname = "Default";
+		entry_id = ZEND_ENUM_Pcntl_QosClass_Default;
 		break;
 	}
 
-	return zend_enum_get_case_cstr(QosClass_ce, entryname);
+	return zend_enum_get_case_by_id(QosClass_ce, entry_id);
 }
 
 PHP_FUNCTION(pcntl_getqos_class)

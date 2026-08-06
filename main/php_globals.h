@@ -59,30 +59,31 @@ struct _php_core_globals {
 
 	uint8_t display_errors;
 	bool display_startup_errors;
+	bool error_include_args;
 	bool log_errors;
 	bool ignore_repeated_errors;
 	bool ignore_repeated_source;
 	bool report_memleaks;
 
-	char *output_handler;
+	zend_string *output_handler;
 
-	char *unserialize_callback_func;
+	zend_string *unserialize_callback_func;
 	zend_long serialize_precision;
 
 	zend_long memory_limit;
 	zend_long max_memory_limit;
 	zend_long max_input_time;
 
-	char *error_log;
+	zend_string *error_log;
 
-	char *doc_root;
+	zend_string *doc_root;
 	char *user_dir;
 	char *include_path;
 	char *open_basedir;
 	bool open_basedir_modified;
 	char *extension_dir;
 	char *php_binary;
-	char *sys_temp_dir;
+	zend_string *sys_temp_dir;
 
 	char *upload_tmp_dir;
 	zend_long upload_max_filesize;
@@ -135,7 +136,7 @@ struct _php_core_globals {
 	bool report_zend_debug;
 
 	int last_error_type;
-	int last_error_lineno;
+	uint32_t last_error_lineno;
 	zend_string *last_error_message;
 	zend_string *last_error_file;
 
@@ -157,12 +158,10 @@ struct _php_core_globals {
 	bool in_error_log;
 
 	bool allow_url_include;
-#ifdef PHP_WIN32
-	bool com_initialized;
-#endif
 	bool in_user_include;
 
 #ifdef PHP_WIN32
+	bool com_initialized;
 	bool windows_show_crt_warning;
 #endif
 

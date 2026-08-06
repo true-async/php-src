@@ -1494,6 +1494,9 @@ function EXTENSION(extname, file_list, shared, cflags, dllname, obj_dir)
 		ADD_FLAG("CFLAGS_PHP", "/D COMPILE_DL_" + EXT);
 	} else {
 		STDOUT.WriteLine("Enabling extension " + extname_for_printing);
+		/* Statically linked extensions share the engine's _tsrm_ls_cache symbol,
+		 * so in ZTS builds they can read the TSRMLS cache directly. */
+		cflags = "/DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 " + cflags;
 	}
 
 	MFO.WriteBlankLines(1);
@@ -3522,7 +3525,7 @@ function toolset_setup_common_ldflags()
 function toolset_setup_common_libs()
 {
 	// urlmon.lib ole32.lib oleaut32.lib uuid.lib gdi32.lib winspool.lib comdlg32.lib
-	DEFINE("LIBS", "kernel32.lib ole32.lib user32.lib advapi32.lib shell32.lib ws2_32.lib Dnsapi.lib psapi.lib bcrypt.lib Pathcch.lib");
+	DEFINE("LIBS", "kernel32.lib ole32.lib user32.lib advapi32.lib shell32.lib ws2_32.lib Dnsapi.lib psapi.lib bcrypt.lib Pathcch.lib Mswsock.lib");
 }
 
 function toolset_setup_build_mode()

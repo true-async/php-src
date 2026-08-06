@@ -218,7 +218,7 @@ static void php_snmp_error(zval *object, int type, const char *format, ...)
 		zend_throw_exception_ex(php_snmp_exception_ce, type, "%s", snmp_object->snmp_errstr);
 	} else {
 		va_start(args, format);
-		php_verror(NULL, "", E_WARNING, format, args);
+		php_verror(NULL, E_WARNING, format, args);
 		va_end(args);
 	}
 }
@@ -945,6 +945,7 @@ static bool snmp_session_init(php_snmp_session **session_p, int version, zend_st
 
 	if (strlen(session->peername) == 0) {
 		php_error_docref(NULL, E_WARNING, "Unknown failure while resolving '%s'", ZSTR_VAL(hostname));
+		php_network_freeaddresses(psal);
 		return false;
 	}
 	/* XXX FIXME

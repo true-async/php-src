@@ -35,6 +35,32 @@ namespace {
         public const DUMMY = 0;
     }
 
+    trait _ZendTestTraitForInternalClass
+    {
+        /** @var int */
+        public const ZEND_TRAIT_CONST = 123;
+
+        public int $traitProp = 456;
+
+        public function traitMethod(): int {}
+    }
+
+    trait _ZendTestTraitForInternalClass2
+    {
+        /** @var int */
+        public const ZEND_TRAIT_CONST2 = 321;
+
+        public static int $staticTraitProp = 999;
+
+        public function traitMethod2(): int {}
+    }
+
+    class _ZendTestClassWithTraits
+    {
+        use _ZendTestTraitForInternalClass;
+        use _ZendTestTraitForInternalClass2;
+    }
+
     /** @alias _ZendTestClassAlias */
     class _ZendTestClass implements _ZendTestInterface {
         public const mixed TYPED_CLASS_CONST1 = [];
@@ -56,6 +82,12 @@ namespace {
         /** @var mixed */
         public static $_StaticProp;
         public static int $staticIntProp = 123;
+
+        /* If there's a problem with escapes in quotes in generated headers,
+         * the generated header won't compile. (tests/gh22169.phpt) */
+        public static string $doubleQuoteEscaped = "BEGIN \n\r\t\v\e\f\\\$\"\101\x41\u{41} END";
+        public static string $singleQuoteEscaped = 'BEGIN \n\r\t\v\e\f\\\$\"\101\x41\u{41} END';
+        public static string $escapeInterpolated = "begin \$ \\$ end";
 
         public int $intProp = 123;
         public ?stdClass $classProp = null;

@@ -1089,9 +1089,23 @@ PHP_FUNCTION(key)
 }
 /* }}} */
 
-static int php_data_compare(const void *f, const void *s) /* {{{ */
+static zval *php_array_data_minmax(HashTable *array, bool max) /* {{{ */
 {
-	return zend_compare((zval*)f, (zval*)s);
+	zval *entry, *result = NULL;
+
+	ZEND_HASH_FOREACH_VAL(array, entry) {
+		if (!result) {
+			result = entry;
+			continue;
+		}
+
+		int cmp = zend_compare(result, entry);
+		if (max ? cmp < 0 : cmp > 0) {
+			result = entry;
+		}
+	} ZEND_HASH_FOREACH_END();
+
+	return result;
 }
 /* }}} */
 
@@ -1111,10 +1125,10 @@ PHP_FUNCTION(min)
 	/* mixed min ( array $values ) */
 	if (argc == 1) {
 		if (Z_TYPE(args[0]) != IS_ARRAY) {
-			zend_argument_type_error(1, "must be of type array, %s given", zend_zval_value_name(&args[0]));
+			zend_wrong_parameter_type_error(1, Z_EXPECTED_ARRAY, &args[0]);
 			RETURN_THROWS();
 		} else {
-			zval *result = zend_hash_minmax(Z_ARRVAL(args[0]), php_data_compare, 0);
+			zval *result = php_array_data_minmax(Z_ARRVAL(args[0]), false);
 			if (result) {
 				RETURN_COPY_DEREF(result);
 			} else {
@@ -1239,10 +1253,10 @@ PHP_FUNCTION(max)
 	/* mixed max ( array $values ) */
 	if (argc == 1) {
 		if (Z_TYPE(args[0]) != IS_ARRAY) {
-			zend_argument_type_error(1, "must be of type array, %s given", zend_zval_value_name(&args[0]));
+			zend_wrong_parameter_type_error(1, Z_EXPECTED_ARRAY, &args[0]);
 			RETURN_THROWS();
 		} else {
-			zval *result = zend_hash_minmax(Z_ARRVAL(args[0]), php_data_compare, 1);
+			zval *result = php_array_data_minmax(Z_ARRVAL(args[0]), true);
 			if (result) {
 				RETURN_COPY_DEREF(result);
 			} else {
@@ -2565,7 +2579,7 @@ static void php_compact_var(HashTable *eg_active_symbol_table, zval *return_valu
 				zend_hash_update(Z_ARRVAL_P(return_value), Z_STR_P(entry), &data);
 			}
 		} else {
-			php_error_docref_unchecked(NULL, E_WARNING, "Undefined variable $%S", Z_STR_P(entry));
+			php_error_docref(NULL, E_WARNING, "Undefined variable $%pS", Z_STR_P(entry));
 		}
 	} else if (Z_TYPE_P(entry) == IS_ARRAY) {
 		if (Z_REFCOUNTED_P(entry)) {
@@ -4113,7 +4127,7 @@ static zend_always_inline void php_array_replace_wrapper(INTERNAL_FUNCTION_PARAM
 		zval *arg = args + i;
 
 		if (Z_TYPE_P(arg) != IS_ARRAY) {
-			zend_argument_type_error(i + 1, "must be of type array, %s given", zend_zval_value_name(arg));
+			zend_wrong_parameter_type_error(i + 1, Z_EXPECTED_ARRAY, arg);
 			RETURN_THROWS();
 		}
 	}
@@ -5949,6 +5963,7 @@ PHP_FUNCTION(array_multisort)
 {
 	zval*			args;
 	zval**			arrays;
+	HashTable**		hashes;
 	Bucket**		indirect;
 	uint32_t		idx;
 	HashTable*		hash;
@@ -6070,11 +6085,17 @@ PHP_FUNCTION(array_multisort)
 	for (i = 0; i < array_size; i++) {
 		indirect[i] = indirects + (i * (num_arrays + 1));
 	}
+	hashes = safe_emalloc(num_arrays, sizeof(HashTable *), 0);
+	for (i = 0; i < num_arrays; i++) {
+		hashes[i] = Z_ARRVAL_P(arrays[i]);
+		GC_ADDREF(hashes[i]);
+		HT_ALLOW_COW_VIOLATION(hashes[i]);
+	}
 	for (i = 0; i < num_arrays; i++) {
 		k = 0;
-		if (HT_IS_PACKED(Z_ARRVAL_P(arrays[i]))) {
-			zval *zv = Z_ARRVAL_P(arrays[i])->arPacked;
-			for (idx = 0; idx < Z_ARRVAL_P(arrays[i])->nNumUsed; idx++, zv++) {
+		if (HT_IS_PACKED(hashes[i])) {
+			zval *zv = hashes[i]->arPacked;
+			for (idx = 0; idx < hashes[i]->nNumUsed; idx++, zv++) {
 				if (Z_TYPE_P(zv) == IS_UNDEF) continue;
 				ZVAL_COPY_VALUE(&indirect[k][i].val, zv);
 				indirect[k][i].h = idx;
@@ -6082,8 +6103,8 @@ PHP_FUNCTION(array_multisort)
 				k++;
 			}
 		} else {
-			Bucket *p = Z_ARRVAL_P(arrays[i])->arData;
-			for (idx = 0; idx < Z_ARRVAL_P(arrays[i])->nNumUsed; idx++, p++) {
+			Bucket *p = hashes[i]->arData;
+			for (idx = 0; idx < hashes[i]->nNumUsed; idx++, p++) {
 				if (Z_TYPE(p->val) == IS_UNDEF) continue;
 				indirect[k][i] = *p;
 				k++;
@@ -6103,7 +6124,7 @@ PHP_FUNCTION(array_multisort)
 
 	/* Restructure the arrays based on sorted indirect - this is mostly taken from zend_hash_sort() function. */
 	for (i = 0; i < num_arrays; i++) {
-		hash = Z_ARRVAL_P(arrays[i]);
+		hash = hashes[i];
 		hash->nNumUsed = array_size;
 		hash->nNextFreeElement = array_size;
 		hash->nInternalPointer = 0;
@@ -6132,6 +6153,14 @@ PHP_FUNCTION(array_multisort)
 	RETVAL_TRUE;
 
 clean_up:
+	for (i = 0; i < num_arrays; i++) {
+		if (UNEXPECTED(GC_DELREF(hashes[i]) == 0)) {
+			zend_array_destroy(hashes[i]);
+		} else {
+			gc_check_possible_root((zend_refcounted *)hashes[i]);
+		}
+	}
+	efree(hashes);
 	efree(indirects);
 	efree(indirect);
 	efree(func);
@@ -6721,7 +6750,7 @@ PHP_FUNCTION(array_map)
 
 	if (n_arrays == 1) {
 		if (Z_TYPE(arrays[0]) != IS_ARRAY) {
-			zend_argument_type_error(2, "must be of type array, %s given", zend_zval_value_name(&arrays[0]));
+			zend_wrong_parameter_type_error(2, Z_EXPECTED_ARRAY, &arrays[0]);
 			RETURN_THROWS();
 		}
 		const HashTable *input = Z_ARRVAL(arrays[0]);

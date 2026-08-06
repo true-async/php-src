@@ -127,7 +127,7 @@ bool dom_node_is_read_only(const xmlNode *node);
 bool dom_node_children_valid(const xmlNode *node);
 xmlNodePtr create_notation(xmlDtdPtr parent_dtd, const xmlChar *name, const xmlChar *ExternalID, const xmlChar *SystemID);
 void dom_free_notation(xmlEntityPtr entity);
-xmlNode *php_dom_libxml_hash_iter(xmlHashTable *ht, int index);
+xmlNode *php_dom_libxml_hash_iter(xmlHashTable *ht, zend_long index);
 zend_object_iterator *php_dom_get_iterator(zend_class_entry *ce, zval *object, int by_ref);
 void dom_set_doc_classmap(php_libxml_ref_obj *document, zend_class_entry *basece, zend_class_entry *ce);
 xmlNodePtr php_dom_create_fake_namespace_decl(xmlNodePtr nodep, xmlNsPtr original, zval *return_value, dom_object *parent_intern);
@@ -161,6 +161,12 @@ void dom_set_document_ref_pointers_attr(xmlAttrPtr attr, php_libxml_ref_obj *doc
 
 /* Prop getters by offset */
 zval *dom_get_prop_checked_offset(dom_object *obj, uint32_t offset, const char *name);
+/* Temporarily materialize namespace declarations as nsDef entries on the tree so
+ * that libxml's native validators/canonicalizers can resolve prefixed QNames that
+ * appear in element/attribute *content*. Modern DOM keeps declarations off the
+ * tree (node->nsDef == NULL), which xmlSearchNs() cannot follow. Internal only. */
+void dom_relink_ns_decls(HashTable *links, xmlNodePtr root);
+void dom_unlink_ns_decls(HashTable *links);
 zval *dom_element_class_list_zval(dom_object *obj);
 zval *dom_parent_node_children(dom_object *obj);
 

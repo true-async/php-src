@@ -304,6 +304,7 @@ PHP_MINIT_FUNCTION(basic) /* {{{ */
 	BASIC_MINIT_SUBMODULE(browscap)
 	BASIC_MINIT_SUBMODULE(standard_filters)
 	BASIC_MINIT_SUBMODULE(user_filters)
+	BASIC_MINIT_SUBMODULE(poll)
 	BASIC_MINIT_SUBMODULE(password)
 	BASIC_MINIT_SUBMODULE(image)
 
@@ -337,6 +338,7 @@ PHP_MINIT_FUNCTION(basic) /* {{{ */
 #endif
 	BASIC_MINIT_SUBMODULE(exec)
 
+	BASIC_MINIT_SUBMODULE(stream_errors)
 	BASIC_MINIT_SUBMODULE(user_streams)
 
 	php_register_url_stream_wrapper("php", &php_stream_php_wrapper);
@@ -1161,13 +1163,18 @@ static zend_long sleep_async(zend_long ms, zend_long nanoseconds)
 PHP_FUNCTION(sleep)
 {
 	zend_long num;
+#ifdef PHP_WIN32
+	const unsigned int max = UINT_MAX / 1000;
+#else
+	const unsigned int max = UINT_MAX;
+#endif
 
 	ZEND_PARSE_PARAMETERS_START(1, 1)
 		Z_PARAM_LONG(num)
 	ZEND_PARSE_PARAMETERS_END();
 
-	if (num < 0) {
-		zend_argument_value_error(1, "must be greater than or equal to 0");
+	if (num < 0 || (zend_ulong) num > max) {
+		zend_argument_value_error(1, "must be between 0 and %u", max);
 		RETURN_THROWS();
 	}
 
@@ -1191,8 +1198,8 @@ PHP_FUNCTION(usleep)
 		Z_PARAM_LONG(num)
 	ZEND_PARSE_PARAMETERS_END();
 
-	if (num < 0) {
-		zend_argument_value_error(1, "must be greater than or equal to 0");
+	if (num < 0 || (zend_ulong) num > UINT_MAX) {
+		zend_argument_value_error(1, "must be between 0 and %u", UINT_MAX);
 		RETURN_THROWS();
 	}
 
@@ -1324,7 +1331,7 @@ PHP_FUNCTION(get_current_user)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	RETURN_STRING(php_get_current_user());
+	RETURN_STR_COPY(php_get_current_user());
 }
 /* }}} */
 
@@ -1503,7 +1510,7 @@ PHP_FUNCTION(error_get_last)
 		ZVAL_STR_COPY(&tmp, PG(last_error_file));
 		zend_hash_update(Z_ARR_P(return_value), ZSTR_KNOWN(ZEND_STR_FILE), &tmp);
 
-		ZVAL_LONG(&tmp, PG(last_error_lineno));
+		ZVAL_LONG(&tmp, (zend_long)PG(last_error_lineno));
 		zend_hash_update(Z_ARR_P(return_value), ZSTR_KNOWN(ZEND_STR_LINE), &tmp);
 
 		if (!Z_ISUNDEF(EG(last_fatal_error_backtrace))) {

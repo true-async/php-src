@@ -47,6 +47,11 @@ static zend_object_handlers spl_handler_MultipleIterator;
 
 ZEND_TLS uint32_t spl_object_storage_get_hash_depth;
 
+void spl_object_storage_reset_get_hash_depth(void)
+{
+	spl_object_storage_get_hash_depth = 0;
+}
+
 typedef struct _spl_SplObjectStorage { /* {{{ */
 	HashTable         storage;
 	zend_long         index;
@@ -64,10 +69,7 @@ typedef struct _spl_SplObjectStorageElement {
 	zval inf;
 } spl_SplObjectStorageElement; /* }}} */
 
-static inline spl_SplObjectStorage *spl_object_storage_from_obj(zend_object *obj) /* {{{ */ {
-	return ZEND_CONTAINER_OF(obj, spl_SplObjectStorage, std);
-}
-/* }}} */
+#define spl_object_storage_from_obj(obj) ZEND_CONTAINER_OF(obj, spl_SplObjectStorage, std)
 
 #define Z_SPLOBJSTORAGE_P(zv)  spl_object_storage_from_obj(Z_OBJ_P((zv)))
 
@@ -97,7 +99,7 @@ static zend_result spl_object_storage_get_hash(zend_hash_key *key, spl_SplObject
 		ZVAL_OBJ(&param, obj);
 		ZVAL_UNDEF(&rv);
 		spl_object_storage_get_hash_depth++;
-		zend_call_method_with_1_params(&intern->std, intern->std.ce, &intern->fptr_get_hash, "getHash", &rv, &param);
+		zend_call_known_function(intern->fptr_get_hash, &intern->std, intern->std.ce, &rv, 1, &param, NULL);
 		spl_object_storage_get_hash_depth--;
 		if (UNEXPECTED(Z_ISUNDEF(rv))) {
 			/* An exception has occurred */
