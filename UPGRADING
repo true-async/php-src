@@ -200,7 +200,23 @@ PHP 8.6 UPGRADE NOTES
     SplFileObject::seek() past EOF now produces the same key() value as
     SplTempFileObject; the two previously returned different values.
 
+- SimpleXML:
+  . SimpleXMLElement::__construct() now raises a ValueError when the $data
+    argument contains NUL bytes, matching simplexml_load_file(). With
+    $dataIsURL set it previously truncated the path at the first NUL byte.
+    Without it the string went to libxml, which at default options rejects a
+    NUL on current versions but accepts the truncated document on older ones
+    and under LIBXML_RECOVER.
+
 - Standard:
+  . array_intersect() with at least two arrays now converts values to strings
+    while scanning its inputs instead of during sort comparisons. This can
+    change the number and order of conversion warnings and __toString() calls,
+    which conversion exception is reached, and the result for stateful
+    __toString() implementations. Argument types are validated before checking
+    for empty arrays or converting values, so an invalid later argument can
+    suppress conversion side effects from earlier arrays. Values are not
+    converted if any input array is empty.
   . Form feed (\f) is now added in the default trimmed characters of trim(),
     rtrim() and ltrim().
     RFC: https://wiki.php.net/rfc/trim_form_feed
@@ -305,6 +321,10 @@ PHP 8.6 UPGRADE NOTES
     offset and origin, and must return one of CURL_SEEKFUNC_OK,
     CURL_SEEKFUNC_FAIL or CURL_SEEKFUNC_CANTSEEK.
 
+- Date:
+  . Added a new Time\Duration class.
+    RFC: https://wiki.php.net/rfc/duration_class
+
 - Fileinfo:
   . finfo_file() now works with remote streams.
 
@@ -319,6 +339,9 @@ PHP 8.6 UPGRADE NOTES
     on official Windows builds using MPIR.
 
 - Intl:
+  . Added the static methods IntlDatePatternGenerator::getSkeleton() and
+    IntlDatePatternGenerator::getBaseSkeleton() to generate the unique skeleton
+    and base skeleton for a date/time pattern.
   . Added Locale::getDisplayKeyword() and Locale::getDisplayKeywordValue(),
     with the alias of locale_get_display_keyword() and
     locale_get_display_keyword_value() respectively.
@@ -418,12 +441,22 @@ PHP 8.6 UPGRADE NOTES
 ========================================
 
 - Core:
+  . Using "namespace" as a class constant name is deprecated.
   . Specifying a return type of array|null / ?array for __debugInfo() is now
     deprecated. Specify array instead.
   . Returning values from __construct() and __destruct() is now deprecated.
     RFC: https://wiki.php.net/rfc/deprecate-return-value-from-construct
   . Making __construct() and __destruct() a Generator is now deprecated.
     RFC: https://wiki.php.net/rfc/deprecate-return-value-from-construct
+  . Naming a function readonly is now deprecated.
+    RFC: https://wiki.php.net/rfc/deprecations_php_8_6#deprecate_the_possibility_to_name_a_function_readonly
+  . Passing a 3rd argument to define() is now deprecated.
+    RFC: https://wiki.php.net/rfc/deprecations_php_8_6#deprecate_define_with_case_insensitive_being_specified
+
+- BZ2
+  . Passing an object for the Bzip2 {de}compression stream filter is now
+    deprecated. Use get_object_vars() on the object instead.
+    RFC: https://wiki.php.net/rfc/deprecations_php_8_6#passing_objects_as_parameters_to_the_bzip2decompress_and_bzip2compress_stream_filters
 
 - GMP
   . The shift (<<, >>) and exponentiation (**) operators on GMP objects now
@@ -434,12 +467,69 @@ PHP 8.6 UPGRADE NOTES
   . Mbregex has been deprecated, because the underlying Oniguruma library
     is no longer maintained.
     RFC: https://wiki.php.net/rfc/eol-oniguruma
+  . Passing objects to mb_convert_variables() is now deprecated
+    RFC: https://wiki.php.net/rfc/deprecations_php_8_6#passing_objects_for_vars_parameter_of_mb_convert_variables
+
+- MySQLi:
+  . The mysqli_get_charset() function is now deprecated.
+    RFC: https://wiki.php.net/rfc/deprecations_php_8_6#deprecate_mysqli_get_charset
+
+- SPL:
+  . The spl_classes() function is now deprecated, use
+    ReflectionExtension::getClassNames() instead.
+    RFC: https://wiki.php.net/rfc/deprecations_php_8_6#deprecate_spl_classes
+  . The spl_object_hash() function is now deprecated, use spl_object_id()
+    instead.
+    RFC: https://wiki.php.net/rfc/deprecations_php_8_6#deprecate_spl_object_hash
+  . The following ArrayIterator methods are now deprecated:
+    * ArrayIterator::getFlags()
+    * ArrayIterator::setFlags()
+    * ArrayIterator::asort()
+    * ArrayIterator::ksort()
+    * ArrayIterator::uasort()
+    * ArrayIterator::uksort()
+    * ArrayIterator::natsort()
+    * ArrayIterator::natcasesort()
+    * ArrayIterator::unserialize()
+    * ArrayIterator::serialize()
+    RFC: https://wiki.php.net/rfc/deprecations_php_8_6#deprecate_arrayiterator_methods_that_inherit_arrayobject_implementation
 
 - Standard:
+  . metaphone() is deprecated.
+    Please use a userland phonetic matching library instead.
+    RFC: https://wiki.php.net/rfc/deprecations_php_8_6#deprecate_metaphone_function
   . Using more than 16 filters in a php://filter URL without configuring the
     "filter.max_filter_count" stream context option now emits an E_DEPRECATED
     warning. Use stream_filter_append() or configure this option explicitly.
     RFC: https://wiki.php.net/rfc/limit-maximum-number-of-filter-chains
+  . Passing an object to array_walk{_recursive} is now deprecated. Use
+    get_object_vars() on the object instead.
+    RFC: https://wiki.php.net/rfc/deprecations_php_8_6#passing_objects_for_array_parameter_of_array_walk_and_array_walk_recursive
+  . The is_double() function is now deprecated, use is_float() instead.
+    RFC: https://wiki.php.net/rfc/deprecations_php_8_6#deprecate_is_double
+  . The is_long() and is_integer() functions are now deprecated, use is_int()
+    instead.
+    RFC: https://wiki.php.net/rfc/deprecations_php_8_6#deprecate_is_integer
+    RFC: https://wiki.php.net/rfc/deprecations_php_8_6#deprecate_is_long
+  . The doubleval() function is now deprecated, use floatval() instead.
+    RFC: https://wiki.php.net/rfc/deprecations_php_8_6#deprecate_doubleval
+  . The strcoll() function is now deprecated, use Collator::compare() instead.
+    RFC: https://wiki.php.net/rfc/deprecations_php_8_6#deprecate_strcoll
+  . The SORT_LOCALE_STRING constant for the family of sort functions is now
+    deprecated, use one of the following functions instead:
+    * Collator::sort()
+    * Collator::asort()
+    * Collator::sort()
+    * Collator::sortWithSortKeys()
+    RFC: https://wiki.php.net/rfc/deprecations_php_8_6#deprecate_sort_locale_string_flag_for_sort_functions
+
+- Zlib
+  . Passing an object for the zlib deflate and inflate stream filter is now
+    deprecated. Use get_object_vars() on the object instead.
+    RFC: https://wiki.php.net/rfc/deprecations_php_8_6#passing_objects_as_parameters_to_the_zlibinflate_and_zlibdeflate_stream_filters
+  . Passing an object to the $option argument to deflate_init and inflate_init
+    is now deprecated. Use get_object_vars() on the object instead.
+    RFC: https://wiki.php.net/rfc/deprecations_php_8_6#passing_objects_for_options_parameter_of_deflate_init_and_inflate_init
 
 ========================================
 5. Changed Functions
@@ -498,6 +588,8 @@ PHP 8.6 UPGRADE NOTES
 - Intl:
   . grapheme_strrev()
     RFC: https://wiki.php.net/rfc/grapheme_strrev
+  . IntlDatePatternGenerator::getSkeleton()
+  . IntlDatePatternGenerator::getBaseSkeleton()
   . Locale::getDisplayKeyword() and Locale::getDisplayKeywordValue()
     RFC: https://wiki.php.net/rfc/getdisplaykeyword_and_getdisplaykeywordvalue
   . SpoofChecker::areBidiConfusable()
@@ -539,6 +631,12 @@ PHP 8.6 UPGRADE NOTES
 ========================================
 7. New Classes and Interfaces
 ========================================
+
+- Date:
+  . Time\Duration
+    RFC: https://wiki.php.net/rfc/duration_class
+  . Time\TimeException
+    RFC: https://wiki.php.net/rfc/duration_class
 
 - Intl:
   . IntlNumberRangeFormatter
@@ -694,6 +792,8 @@ PHP 8.6 UPGRADE NOTES
   . The TAILCALL VM is now enabled on Windows when compiling with Clang >= 19
     x86_64.
   . The performance of ZTS builds has been improved.
+  . Added stateless closure cache.
+    RFC: https://wiki.php.net/rfc/closure-optimizations#stateless_closure_caching
 
 - DOM:
   . Made splitText() faster and consume less memory.
@@ -715,6 +815,7 @@ PHP 8.6 UPGRADE NOTES
 
 - Standard:
   . Improved performance of array_fill_keys().
+  . Improved performance of array_intersect().
   . Improved performance of array_map() with multiple arrays passed.
   . Improved performance of array_sum() and array_product() for
     integer-only arrays.
