@@ -1239,22 +1239,102 @@ static int php_stdiop_stat(php_stream *stream, php_stream_statbuf *ssb)
 	return ret;
 }
 
-/* Thread pool flock support */
-typedef struct {
-	int fd;
-	int operation;
-	int result;
-	int error_code;
-} php_stdiop_flock_task_data_t;
+/* Pause between attempts at a contended lock, in milliseconds. It doubles up to the
+ * maximum and then starts again from the minimum instead of staying at the maximum: a
+ * waiter that only ever backs off keeps losing the lock to whoever asks next. Swoole polls
+ * its coroutine flock() on the same 1..100 ms sawtooth (src/coroutine/file_lock.cc). */
+#define PHP_STDIOP_FLOCK_RETRY_MIN_MS 1
+#define PHP_STDIOP_FLOCK_RETRY_MAX_MS 100
 
-static void php_stdiop_flock_task_run(zend_async_task_t *task)
+/* Acquire a file lock without holding a thread while the lock is busy. Runs on the calling
+ * coroutine and suspends it for as long as the lock is held elsewhere, so the scheduler
+ * must already be initialised.
+ *
+ * A blocking flock() cannot be handed to the libuv thread pool, because reads and writes
+ * of a regular file are uv_fs requests on that same pool: waiters that fill it leave the
+ * lock holder's own write with no thread to run on, so the lock is never released and
+ * every later file operation queues behind the full pool. The default pool has four
+ * threads, so five coroutines locking one file are enough to stop all file IO in the
+ * process (true-async/php-async#221).
+ *
+ * The wait is therefore a poll: a non-blocking attempt, a sleep on a timer, another
+ * attempt. The cost is latency, up to PHP_STDIOP_FLOCK_RETRY_MAX_MS between a release
+ * and the attempt that takes the lock; the order of waiters is not part of the cost,
+ * since flock() grants blocking waiters no order either.
+ *
+ * Returns 0 with the lock held and data->lock_flag set to operation. Returns -1 without
+ * the lock when an attempt fails for a reason other than contention (errno carries that
+ * failure), when the coroutine is cancelled, and when the stream is force-closed while
+ * asleep. After -1 the caller must touch neither stream nor data: a force-close may have
+ * freed both already.
+ */
+static int php_stdiop_flock_async(php_stream *stream, php_stdio_stream_data *data, int fd, int operation)
 {
-	php_stdiop_flock_task_data_t *flock_data = (php_stdiop_flock_task_data_t *) task->data;
-	flock_data->result = flock(flock_data->fd, flock_data->operation);
+	zend_coroutine_t *const coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+	zend_ulong delay_ms = PHP_STDIOP_FLOCK_RETRY_MIN_MS;
+	int result = -1;
+	int failed_errno = 0;
 
-	if (flock_data->result != 0) {
-		flock_data->error_code = errno;
+	/* Pin stream and data: another coroutine may force-close the resource while we sleep. */
+	data->ref_count++;
+
+	while (true) {
+		if (flock(fd, operation | LOCK_NB) == 0) {
+			data->lock_flag = operation;
+			result = 0;
+			break;
+		}
+
+		const int attempt_errno = errno;
+
+		/* Both spellings: POSIX allows them to differ, and the fcntl and Windows layers of
+		 * ext/standard/flock_compat.c report a busy lock as EWOULDBLOCK. */
+		if (!PHP_IS_TRANSIENT_ERROR(attempt_errno)) {
+			failed_errno = attempt_errno;
+			break;
+		}
+
+		ZEND_ASYNC_WAKER_NEW(coroutine);
+
+		zend_async_timer_event_t *timer = ZEND_ASYNC_NEW_TIMER_EVENT(delay_ms, false);
+
+		/* The timer is the only thing that would wake this coroutine: without one,
+		 * SUSPEND never returns. */
+		if (UNEXPECTED(timer == NULL)
+			|| UNEXPECTED(!zend_async_resume_when(coroutine, &timer->base, true,
+					zend_async_waker_callback_resolve, NULL))) {
+			zend_async_waker_clean(coroutine);
+			break;
+		}
+
+		if (UNEXPECTED(!ZEND_ASYNC_SUSPEND())) {
+			/* Cancelled while asleep: the lock was never taken, so there is nothing to release. */
+			zend_async_waker_clean(coroutine);
+			break;
+		}
+
+		zend_async_waker_clean(coroutine);
+
+		if (UNEXPECTED(stream->pending_free)) {
+			/* Force-closed while asleep: fd may be closed and reused by now, and another
+			 * attempt would lock whatever file it points at. */
+			break;
+		}
+
+		delay_ms = delay_ms >= PHP_STDIOP_FLOCK_RETRY_MAX_MS
+			? PHP_STDIOP_FLOCK_RETRY_MIN_MS
+			: MIN(delay_ms * 2, PHP_STDIOP_FLOCK_RETRY_MAX_MS);
 	}
+
+	if (UNEXPECTED(php_stdiop_unpin_after_suspend(stream, data))) {
+		return -1;
+	}
+
+	if (result != 0 && failed_errno != 0) {
+		errno = failed_errno;
+	}
+
+	return result;
 }
 
 static int php_stdiop_set_option(php_stream *stream, int option, int value, void *ptrparam)
@@ -1333,11 +1413,11 @@ static int php_stdiop_set_option(php_stream *stream, int option, int value, void
 				return 0;
 			}
 
-			/* Use thread pool for potentially blocking lock operations inside coroutines.
-			 * LOCK_UN (unlock) and LOCK_NB (non-blocking) never block, so skip the thread pool. */
+			/* LOCK_UN and LOCK_NB never wait, so they take the plain syscall below.
+			 * Anything that can wait goes to php_stdiop_flock_async(), which waits on
+			 * the coroutine instead of a pool thread. */
 			if (!(value & LOCK_NB) && (value & ~LOCK_NB) != LOCK_UN
-					&& !ZEND_ASYNC_IS_OFF && !ZEND_ASYNC_IS_SCHEDULER_CONTEXT
-					&& zend_async_thread_pool_is_enabled()) {
+					&& !ZEND_ASYNC_IS_OFF && !ZEND_ASYNC_IS_SCHEDULER_CONTEXT) {
 
 				ZEND_ASYNC_SCHEDULER_INIT();
 
@@ -1345,64 +1425,7 @@ static int php_stdiop_set_option(php_stream *stream, int option, int value, void
 					return -1;
 				}
 
-				/* Inline-tail so flock_data outlives caller on cancel —
-				 * worker keeps writing after AsyncCancellation unwinds the frame. */
-				zend_async_task_t *task = ZEND_ASYNC_NEW_TASK_EX(
-					php_stdiop_flock_task_run, NULL,
-					sizeof(php_stdiop_flock_task_data_t));
-				if (UNEXPECTED(task == NULL)) {
-					return -1;
-				}
-				php_stdiop_flock_task_data_t *flock_data =
-					(php_stdiop_flock_task_data_t *)
-						((char *)task + task->base.extra_offset);
-				flock_data->fd = fd;
-				flock_data->operation = value;
-				task->data = flock_data;
-
-				zend_coroutine_t *const coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
-				ZEND_ASYNC_WAKER_NEW(coroutine);
-
-				if (UNEXPECTED(!zend_async_resume_when(coroutine, &task->base, true,
-					zend_async_waker_callback_resolve, NULL))) {
-					ZEND_ASYNC_WAKER_DESTROY(coroutine);
-					return -1;
-				}
-
-				if (UNEXPECTED(!ZEND_ASYNC_QUEUE_TASK(task))) {
-					ZEND_ASYNC_WAKER_DESTROY(coroutine);
-					return -1;
-				}
-
-				/* Pin task across SUSPEND: waker cleanup disposes it before SUSPEND returns,
-				 * freeing the inline-tail flock_data we still need to read.
-				 * Pin stream/data too — another coroutine may force-close the resource. */
-				ZEND_ASYNC_EVENT_ADD_REF(&task->base);
-				data->ref_count++;
-
-				if (UNEXPECTED(!ZEND_ASYNC_SUSPEND())) {
-					ZEND_ASYNC_WAKER_DESTROY(coroutine);
-					ZEND_ASYNC_EVENT_RELEASE(&task->base);
-					php_stdiop_unpin_after_suspend(stream, data);
-					return -1;
-				}
-
-				const int flock_result = flock_data->result;
-				const int flock_errno = flock_data->error_code;
-				ZEND_ASYNC_EVENT_RELEASE(&task->base);
-
-				if (UNEXPECTED(php_stdiop_unpin_after_suspend(stream, data))) {
-					/* Stream force-closed while parked. */
-					return -1;
-				}
-
-				if (flock_result == 0) {
-					data->lock_flag = value;
-					return 0;
-				}
-
-				errno = flock_errno;
-				return -1;
+				return php_stdiop_flock_async(stream, data, fd, value);
 			}
 
 			if (!flock(fd, value)) {
