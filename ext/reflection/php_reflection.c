@@ -3375,7 +3375,21 @@ static void reflection_method_invoke(INTERNAL_FUNCTION_PARAMETERS, bool variadic
 	 * Else, we verify that the given object is an instance of the class.
 	 */
 	if (mptr->common.fn_flags & ZEND_ACC_STATIC) {
-		object = NULL;
+		if (object) {
+			zend_string *method_name = get_active_function_or_method_name();
+			zend_error(
+				E_DEPRECATED,
+				"Calling %pS() for static method %pS::%pS() does not need an object parameter",
+				method_name,
+				mptr->common.scope->name,
+				mptr->common.function_name
+			);
+			zend_string_release(method_name);
+			if (UNEXPECTED(EG(exception))) {
+				RETURN_THROWS();
+			}
+			object = NULL;
+		} 
 		obj_ce = mptr->common.scope;
 	} else {
 		if (!object) {
@@ -5919,6 +5933,15 @@ ZEND_METHOD(ReflectionProperty, setValue)
 			Z_PARAM_ZVAL(value)
 		ZEND_PARSE_PARAMETERS_END();
 
+		if (!instanceof_function(object->ce, intern->ce)) {
+			zend_string *method_name = get_active_function_or_method_name();
+			zend_error(E_DEPRECATED, "Calling %pS() with a given object that is not an instance of the class this property was declared in is deprecated", method_name);
+			zend_string_release(method_name);
+			if (UNEXPECTED(EG(exception))) {
+				RETURN_THROWS();
+			}
+		}
+
 		const zend_class_entry *old_scope = EG(fake_scope);
 		EG(fake_scope) = intern->ce;
 		object->handlers->write_property(object, ref->unmangled_name, value, ref->cache_slot);
@@ -6045,6 +6068,15 @@ ZEND_METHOD(ReflectionProperty, setRawValue)
 		Z_PARAM_OBJECT(object)
 		Z_PARAM_ZVAL(value)
 	} ZEND_PARSE_PARAMETERS_END();
+
+	if (!instanceof_function(Z_OBJCE_P(object), intern->ce)) {
+		zend_string *method_name = get_active_function_or_method_name();
+		zend_error(E_DEPRECATED, "Calling %pS() with a given object that is not an instance of the class this property was declared in is deprecated", method_name);
+		zend_string_release(method_name);
+		if (UNEXPECTED(EG(exception))) {
+			RETURN_THROWS();
+		}
+	}
 
 	zend_reflection_property_set_raw_value(ref->prop, ref->unmangled_name,
 			ref->cache_slot, intern->ce, Z_OBJ_P(object), value);
