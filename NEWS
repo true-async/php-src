@@ -1,12 +1,29 @@
 PHP                                                                        NEWS
 |||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
-?? ??? ????, PHP 8.6.0beta1
+?? ??? ????, PHP 8.6.0beta2
+
+- Core:
+  . Fixed bug GH-15375 (Nested "yield from" skips items after a valid() or
+    next() call on the inner generator). (iliaal)
+
+- PDO_PGSQL:
+  . Fixed several lazy fetch (PDO::ATTR_PREFETCH => 0) defects: an infinite
+    loop when cleaning up a fetch left in a COPY, a use-after-free when a
+    statement with emulated or disabled prepares is destroyed, a connection
+    left busy for the next fetch, and rows delivered from a result another
+    statement took over. (KentarouTakeda)
+
+- Readline:
+  . Fixed class constant completion in the interactive shell. (Weilin Du)
+
+13 Aug 2026, PHP 8.6.0beta1
 
 - Core:
   . Deprecated "namespace" as a class constant name. (NickSdot)
   . Changed run-tests.php to run in parallel by default, using up to 10
     automatically detected workers. Pass -j1 for sequential execution.
     (NickSdot)
+  . Allowed readonly properties to declare default values. (NickSdot)
   . Changed run-tests.php to run test subprocesses without a shell where
     possible. (NickSdot)
   . Fixed GH-23083 (SEGV build_trace_args in zend_exceptions.c with
@@ -178,8 +195,6 @@ PHP                                                                        NEWS
   . Implemented partial function application RFC. (Arnaud)
   . Fixed bug GH-22263 (reset typed property default on every unserialize
     failure path). (David Carlier)
-  . Fixed bug GH-18985 (Wrong line numbers for match with constant arms).
-    (ilutov)
   . Fixed bug GH-18847 (SEGV in zend_fetch_debug_backtrace() when the memory
     limit is reached while the tracing JIT enters a call frame). (Arnaud,
     iliaal)
