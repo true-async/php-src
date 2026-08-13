@@ -1264,9 +1264,10 @@ static int php_stdiop_stat(php_stream *stream, php_stream_statbuf *ssb)
  *
  * Returns 0 with the lock held and data->lock_flag set to operation. Returns -1 without
  * the lock when an attempt fails for a reason other than contention (errno carries that
- * failure), when the coroutine is cancelled, and when the stream is force-closed while
- * asleep. After -1 the caller must touch neither stream nor data: a force-close may have
- * freed both already.
+ * failure), when the retry timer cannot be created or registered (exception set), when
+ * the coroutine is cancelled, and when the stream is force-closed while asleep. After -1
+ * the caller must touch neither stream nor data: a force-close may have freed both
+ * already.
  */
 static int php_stdiop_flock_async(php_stream *stream, php_stdio_stream_data *data, int fd, int operation)
 {
@@ -1415,7 +1416,9 @@ static int php_stdiop_set_option(php_stream *stream, int option, int value, void
 
 			/* LOCK_UN and LOCK_NB never wait, so they take the plain syscall below.
 			 * Anything that can wait goes to php_stdiop_flock_async(), which waits on
-			 * the coroutine instead of a pool thread. */
+			 * the coroutine instead of a pool thread. With async off or in scheduler
+			 * context suspension is impossible, and a lock that waits blocks the
+			 * whole thread. */
 			if (!(value & LOCK_NB) && (value & ~LOCK_NB) != LOCK_UN
 					&& !ZEND_ASYNC_IS_OFF && !ZEND_ASYNC_IS_SCHEDULER_CONTEXT) {
 
