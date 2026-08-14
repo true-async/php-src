@@ -818,6 +818,12 @@ static zend_object *zend_weakref_transfer_obj(
 {
 	(void) default_fn;
 
+	if (kind == ZEND_OBJECT_TRANSFER_RELEASE) {
+		/* The transit wrapper owns nothing of its own: the referent slot and the
+		 * class name are freed by the generic release walk. */
+		return NULL;
+	}
+
 	if (kind == ZEND_OBJECT_TRANSFER) {
 		zend_weakref *wr = zend_weakref_from(object);
 		zend_object *referent = wr->referent;
@@ -874,6 +880,12 @@ static zend_object *zend_weakmap_transfer_obj(
 	zend_object_transfer_kind_t kind, zend_object_transfer_default_fn default_fn)
 {
 	(void) default_fn;
+
+	if (kind == ZEND_OBJECT_TRANSFER_RELEASE) {
+		/* The transit wrapper owns nothing of its own: the key/value slots and
+		 * the class name are freed by the generic release walk. */
+		return NULL;
+	}
 
 	if (kind == ZEND_OBJECT_TRANSFER) {
 		zend_weakmap *wm = zend_weakmap_from(object);

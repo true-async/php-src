@@ -185,6 +185,12 @@ typedef zend_object* (*zend_object_clone_obj_with_t)(zend_object *object, const 
 typedef enum {
 	ZEND_OBJECT_TRANSFER,  /* emalloc → pemalloc (send to another thread) */
 	ZEND_OBJECT_LOAD,      /* pemalloc → emalloc (receive in target thread) */
+	/* The transit shell is being freed: release what TRANSFER acquired into it.
+	 * The handler frees its own C state and returns NULL; it must not call
+	 * default_fn, and `ctx` may be NULL because a release runs outside a
+	 * request. Without this kind, anything a handler stores in the shell is
+	 * unreachable — free_obj never runs for a shell. */
+	ZEND_OBJECT_TRANSFER_RELEASE,
 } zend_object_transfer_kind_t;
 
 typedef zend_object* (*zend_object_transfer_default_fn)(
