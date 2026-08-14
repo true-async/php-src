@@ -37,6 +37,9 @@ ZEND_API double zend_hex_strtod(const char *str, const char **endptr);
 ZEND_API double zend_oct_strtod(const char *str, const char **endptr);
 ZEND_API double zend_bin_strtod(const char *str, const char **endptr);
 ZEND_API int zend_shutdown_strtod(void);
+/* Releases what one thread pooled. Called for every thread's state, not only the
+ * one zend_shutdown_strtod() reaches. */
+ZEND_API void zend_strtod_state_dtor(zend_strtod_state *state);
 END_EXTERN_C()
 
 /* double limits */

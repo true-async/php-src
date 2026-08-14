@@ -545,8 +545,8 @@ Bigint {
  static Bigint *freelist[Kmax+1];
 #endif
 
-static void destroy_freelist(void);
-static void free_p5s(void);
+static void destroy_freelist(zend_strtod_state *state);
+static void free_p5s(zend_strtod_state *state);
 
 #ifdef MULTIPLE_THREADS
 static MUTEX_T dtoa_mutex;
@@ -555,10 +555,20 @@ static MUTEX_T pow5mult_mutex;
 
 ZEND_API int zend_shutdown_strtod(void) /* {{{ */
 {
-	destroy_freelist();
-	free_p5s();
+	zend_strtod_state_dtor(&EG(strtod_state));
 
 	return 1;
+}
+/* }}} */
+
+/* Frees the Bigints one thread pooled. Bfree recycles rather than releasing, so
+ * every thread that formats or parses a double keeps a handful for its life. The
+ * state travels as an argument because TSRM runs a thread's storage dtor from
+ * whichever thread performs the shutdown, and EG() there is somebody else's. */
+ZEND_API void zend_strtod_state_dtor(zend_strtod_state *state) /* {{{ */
+{
+	destroy_freelist(state);
+	free_p5s(state);
 }
 /* }}} */
 
@@ -4605,33 +4615,38 @@ ZEND_API char *zend_gcvt(double value, int ndigit, char dec_point, char exponent
 	return (buf);
 }
 
-static void destroy_freelist(void)
+/* The two pools are reached through a thread's own state from here on, so the
+ * EG() shorthands above must not swallow the field names. */
+#undef freelist
+#undef p5s
+
+static void destroy_freelist(zend_strtod_state *state)
 {
 	int i;
 	Bigint *tmp;
 
 	ACQUIRE_DTOA_LOCK(0)
 	for (i = 0; i <= Kmax; i++) {
-		Bigint **listp = &freelist[i];
+		Bigint **listp = &state->freelist[i];
 		while ((tmp = *listp) != NULL) {
 			*listp = tmp->next;
 			FREE(tmp);
 		}
-		freelist[i] = NULL;
+		state->freelist[i] = NULL;
 	}
 	FREE_DTOA_LOCK(0)
 }
 
-static void free_p5s(void)
+static void free_p5s(zend_strtod_state *state)
 {
 	Bigint **listp, *tmp;
 
 	ACQUIRE_DTOA_LOCK(1)
-	listp = &p5s;
+	listp = &state->p5s;
 	while ((tmp = *listp) != NULL) {
 		*listp = tmp->next;
 		FREE(tmp);
 	}
-	p5s = NULL;
+	state->p5s = NULL;
 	FREE_DTOA_LOCK(1)
 }

@@ -876,6 +876,11 @@ static void executor_globals_dtor(zend_executor_globals *executor_globals) /* {{
 		zend_hash_destroy(executor_globals->zend_constants);
 		free(executor_globals->zend_constants);
 	}
+
+	/* Every thread pools its own Bigints, and zend_shutdown_strtod() reaches only
+	 * the main thread's: without this a thread that ever formatted or parsed a
+	 * double leaves them behind when its storage goes. */
+	zend_strtod_state_dtor(&executor_globals->strtod_state);
 }
 /* }}} */
 
