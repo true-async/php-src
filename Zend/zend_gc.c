@@ -719,7 +719,10 @@ static void gc_adjust_threshold(int count)
  * zend_gc_coroutine() from the count that run reports. */
 static void gc_adjust_threshold_or_defer(int count)
 {
-	if (gc_collect_is_deferred()) {
+	/* A coroutine owes the run, so `count` is that hand-off's 0 rather than a measurement.
+	 * No coroutine means the collection either ran inline or could not be spawned at all, and
+	 * in both cases the count in hand is the honest one. */
+	if (gc_collect_is_deferred() && GC_G(gc_coroutine) != NULL) {
 		GC_G(adjust_threshold) = true;
 		return;
 	}
@@ -2247,7 +2250,6 @@ static zend_always_inline void start_gc_in_coroutine(void)
 	}
 
 	if (UNEXPECTED(new_gc_coroutine() == NULL)) {
-		GC_G(adjust_threshold) = false;
 		return;
 	}
 }
