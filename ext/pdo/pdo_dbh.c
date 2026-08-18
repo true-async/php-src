@@ -33,8 +33,29 @@
 #include "zend_observer.h"
 #include "zend_extensions.h"
 #include "pdo_pool.h"
+#include "Zend/zend_async_API.h"
 
 static bool pdo_dbh_attribute_set(pdo_dbh_t *dbh, zend_long attr, zval *value, uint32_t value_arg_num);
+
+/* A driver error raised while the coroutine is being cancelled describes the
+ * cancellation, not a database fault: the socket was torn down under it. The
+ * cancellation stays on top and the driver error is attached to it, so
+ * catch (AsyncCancellation) keeps working and the detail is not lost. */
+static bool pdo_keep_pending_cancellation(zend_object *driver_exception)
+{
+	if (EXPECTED(EG(exception) == NULL)) {
+		return false;
+	}
+
+	const zend_class_entry *cancellation_ce = ZEND_ASYNC_GET_EXCEPTION_CE(ZEND_ASYNC_EXCEPTION_CANCELLATION);
+
+	if (cancellation_ce == NULL || !instanceof_function(EG(exception)->ce, cancellation_ce)) {
+		return false;
+	}
+
+	zend_exception_set_previous(EG(exception), driver_exception);
+	return true;
+}
 
 void pdo_throw_exception(unsigned int driver_errcode, char *driver_errmsg, pdo_error_type *pdo_error)
 {
@@ -59,6 +80,11 @@ void pdo_throw_exception(unsigned int driver_errcode, char *driver_errmsg, pdo_e
 		);
 		zend_string_release_ex(pdo_exception_message, false);
 		zval_ptr_dtor(&error_info);
+
+		if (pdo_keep_pending_cancellation(Z_OBJ(pdo_exception))) {
+			return;
+		}
+
 		zend_throw_exception_object(&pdo_exception);
 }
 
