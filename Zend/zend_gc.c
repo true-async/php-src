@@ -295,7 +295,7 @@ typedef struct _zend_gc_globals {
 	uint32_t dtor_end;
 	zend_fiber *dtor_fiber;
 	bool dtor_fiber_running;
-	bool adjust_threshold; /* the collection deferred to the GC coroutine came from a full root buffer */
+	bool adjust_threshold; /* a full root buffer asked for a collection that has not run yet */
 	zend_async_scope_t *gc_scope; /* async scope where GC was started */
 	zend_async_scope_t *dtor_scope; /* async scope running destructors */
 	zend_coroutine_t *gc_coroutine; /* coroutine where GC was started */
@@ -543,11 +543,11 @@ static void gc_globals_ctor_ex(zend_gc_globals *gc_globals)
 	gc_globals->dtor_end = 0;
 	gc_globals->dtor_fiber = NULL;
 	gc_globals->dtor_fiber_running = false;
+	gc_globals->adjust_threshold = false;
 
 	gc_globals->gc_scope = NULL;
 	gc_globals->dtor_scope = NULL;
 	gc_globals->gc_coroutine = NULL;
-	gc_globals->adjust_threshold = false;
 	gc_globals->microtask = NULL;
 
 #if GC_BENCH
@@ -674,6 +674,12 @@ static void gc_grow_root_buffer(void)
 	GC_G(buf_size) = new_size;
 }
 
+/* A collection requested now goes to the GC coroutine instead of running inline. */
+static zend_always_inline bool gc_collect_is_deferred(void)
+{
+	return ZEND_ASYNC_IS_ACTIVE && ZEND_ASYNC_CURRENT_COROUTINE != GC_G(gc_coroutine);
+}
+
 /* Adjust the GC activation threshold given the number of nodes collected by the last run */
 static void gc_adjust_threshold(int count)
 {
@@ -705,10 +711,20 @@ static void gc_adjust_threshold(int count)
 	}
 }
 
-/* A collection requested now goes to the GC coroutine instead of running inline. */
-static zend_always_inline bool gc_collect_is_deferred(void)
+/* Adjust the threshold, or record that it is owed when the run has not happened yet.
+ *
+ * A deferred collection is handed to the GC coroutine and reports 0 collected nodes to its
+ * caller. Zero reads as "collected almost nothing", so adjusting on it would step the threshold
+ * up after every full root buffer and never step it back. The record is replayed by
+ * zend_gc_coroutine() from the count that run reports. */
+static void gc_adjust_threshold_or_defer(int count)
 {
-	return ZEND_ASYNC_IS_ACTIVE && ZEND_ASYNC_CURRENT_COROUTINE != GC_G(gc_coroutine);
+	if (gc_collect_is_deferred()) {
+		GC_G(adjust_threshold) = true;
+		return;
+	}
+
+	gc_adjust_threshold(count);
 }
 
 /* Perform a GC run and then add a node as a possible root. */
@@ -721,32 +737,13 @@ static zend_never_inline void ZEND_FASTCALL gc_possible_root_when_full(zend_refc
 	ZEND_ASSERT(GC_INFO(ref) == 0);
 
 	if (GC_G(gc_enabled) && !GC_G(gc_active)) {
-		const bool deferred = gc_collect_is_deferred();
-
-		if (deferred) {
-			/* The run goes to the GC coroutine and this caller is told 0 nodes were collected.
-			 * Adjusting on that 0 raises the threshold by a full step after every full root
-			 * buffer, so the coroutine adjusts instead, from the count it really collected. */
-			GC_G(adjust_threshold) = true;
-		}
-
-		/* A GC coroutine already spawned covers this buffer too, and a second request would
-		 * return at once - a call made for every root buffered until that coroutine runs. */
-		if (!deferred || GC_G(gc_coroutine) == NULL) {
-			GC_ADDREF(ref);
-
-			if (deferred) {
-				gc_collect_cycles();
-			} else {
-				gc_adjust_threshold(gc_collect_cycles());
-			}
-
-			if (UNEXPECTED(GC_DELREF(ref) == 0)) {
-				rc_dtor_func(ref);
-				return;
-			} else if (UNEXPECTED(GC_INFO(ref))) {
-				return;
-			}
+		GC_ADDREF(ref);
+		gc_adjust_threshold_or_defer(gc_collect_cycles());
+		if (UNEXPECTED(GC_DELREF(ref) == 0)) {
+			rc_dtor_func(ref);
+			return;
+		} else if (UNEXPECTED(GC_INFO(ref))) {
+			return;
 		}
 	}
 
@@ -2197,13 +2194,17 @@ static void zend_gc_coroutine(void)
 {
 	GC_TRACE("GC coroutine started");
 
+	const uint32_t runs = GC_G(gc_runs);
 	const int count = zend_gc_collect_cycles();
 
-	/* One run answers every root buffer that filled while it was pending, so one adjustment
-	 * covers them all. */
+	/* One run answers every root buffer that filled while it was pending. A run that found the
+	 * buffer already drained examined nothing, and its 0 measures nothing either. */
 	if (GC_G(adjust_threshold)) {
 		GC_G(adjust_threshold) = false;
-		gc_adjust_threshold(count);
+
+		if (GC_G(gc_runs) != runs) {
+			gc_adjust_threshold(count);
+		}
 	}
 
 	GC_G(gc_coroutine) = NULL;
@@ -2213,16 +2214,6 @@ static void zend_gc_coroutine(void)
 static zend_string* zend_gc_coroutine_info(zend_async_event_t *event)
 {
 	return zend_coroutine_gen_info((zend_coroutine_t *) event, "zend_gc_coroutine");
-}
-
-/* A GC coroutine cancelled before it starts never reaches zend_gc_coroutine(), so the state
- * it would have cleared is cleared here instead. */
-static void gc_coroutine_dispose(zend_coroutine_t *coroutine)
-{
-	if (coroutine == GC_G(gc_coroutine)) {
-		GC_G(gc_coroutine) = NULL;
-		GC_G(adjust_threshold) = false;
-	}
 }
 
 static zend_always_inline zend_coroutine_t* new_gc_coroutine(void)
@@ -2237,7 +2228,6 @@ static zend_always_inline zend_coroutine_t* new_gc_coroutine(void)
 
 	coroutine->internal_entry = zend_gc_coroutine;
 	coroutine->event.info = zend_gc_coroutine_info;
-	coroutine->extended_dispose = gc_coroutine_dispose;
 
 	return coroutine;
 }
@@ -2257,6 +2247,7 @@ static zend_always_inline void start_gc_in_coroutine(void)
 	}
 
 	if (UNEXPECTED(new_gc_coroutine() == NULL)) {
+		GC_G(adjust_threshold) = false;
 		return;
 	}
 }
