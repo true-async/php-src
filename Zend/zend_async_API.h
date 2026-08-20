@@ -609,6 +609,13 @@ typedef zend_async_io_req_t *(*zend_async_io_write_t)(zend_async_io_t *io, const
  * entry per the mode's contract). */
 #define ZEND_ASYNC_IO_WRITEV_ZSTR  0u
 #define ZEND_ASYNC_IO_WRITEV_IOV   1u
+/* The mode is the low bit of the flag word; the bits above it carry behaviour. */
+#define ZEND_ASYNC_IO_WRITEV_MODE_MASK 1u
+/* Await this write. Buffer ownership stays the mode's; only the completion
+ * differs — the request survives it and io->event is notified with the request
+ * as the result and no exception, so siblings on the handle stay asleep. Status
+ * is on req->transferred / req->exception; the caller disposes once. */
+#define ZEND_ASYNC_IO_WRITEV_AWAIT (1u << 1)
 typedef zend_async_io_req_t *(*zend_async_io_writev_t)(zend_async_io_t *io,
 		const void *bufs, unsigned nbufs, uint32_t flags,
 		zend_async_io_write_free_cb_t free_cb, void *user_data);
@@ -2930,6 +2937,13 @@ END_EXTERN_C()
 #define ZEND_ASYNC_IO_WRITEV(io, bufs, nbufs) \
 	zend_async_io_writev_fn((io), (const void *)(bufs), (nbufs), \
 			ZEND_ASYNC_IO_WRITEV_ZSTR, NULL, NULL)
+/* Vectored write the caller awaits. `bufs` is a zend_string **; the reactor
+ * takes one reference per slot, so the buffers outlive a caller cancelled while
+ * parked. NULL means nothing was submitted — references already released,
+ * unless nbufs was 0. */
+#define ZEND_ASYNC_IO_WRITEV_AWAITED(io, bufs, nbufs) \
+	zend_async_io_writev_fn((io), (const void *)(bufs), (nbufs), \
+			ZEND_ASYNC_IO_WRITEV_ZSTR | ZEND_ASYNC_IO_WRITEV_AWAIT, NULL, NULL)
 /* Fire-and-forget vectored write — plain-iovec mode. `iov` is an array
  * of (base, len) zend_async_buf_t pointing into caller memory; reactor
  * calls free_cb(user_data, io) once on completion or submit failure.
