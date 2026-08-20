@@ -23,7 +23,7 @@
 
 #define ZEND_ASYNC_API "TrueAsync ABI v0.24.0"
 #define ZEND_ASYNC_API_VERSION_MAJOR 0
-#define ZEND_ASYNC_API_VERSION_MINOR 24
+#define ZEND_ASYNC_API_VERSION_MINOR 25
 #define ZEND_ASYNC_API_VERSION_PATCH 0
 
 #define ZEND_ASYNC_API_VERSION_NUMBER \
@@ -611,10 +611,14 @@ typedef zend_async_io_req_t *(*zend_async_io_write_t)(zend_async_io_t *io, const
 #define ZEND_ASYNC_IO_WRITEV_IOV   1u
 /* The mode is the low bit of the flag word; the bits above it carry behaviour. */
 #define ZEND_ASYNC_IO_WRITEV_MODE_MASK 1u
-/* Await this write. Buffer ownership stays the mode's; only the completion
- * differs — the request survives it and io->event is notified with the request
- * as the result and no exception, so siblings on the handle stay asleep. Status
- * is on req->transferred / req->exception; the caller disposes once. */
+/* Await this write. ZSTR mode only. The request survives its completion and
+ * io->event is notified with the request as the result and no exception, so
+ * siblings on the handle stay asleep; status is on req->transferred /
+ * req->exception, and the caller disposes once.
+ *
+ * An awaiter must treat a handle-level notification (result NULL, exception
+ * set) as its wake too: a closing handle broadcasts one and the request is
+ * never completed in that case. Available from API version 0.25. */
 #define ZEND_ASYNC_IO_WRITEV_AWAIT (1u << 1)
 typedef zend_async_io_req_t *(*zend_async_io_writev_t)(zend_async_io_t *io,
 		const void *bufs, unsigned nbufs, uint32_t flags,
