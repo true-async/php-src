@@ -21,7 +21,7 @@
 #include "zend_globals.h"
 #include "zend_stream.h"
 
-#define ZEND_ASYNC_API "TrueAsync ABI v0.24.0"
+#define ZEND_ASYNC_API "TrueAsync ABI v0.25.0"
 #define ZEND_ASYNC_API_VERSION_MAJOR 0
 #define ZEND_ASYNC_API_VERSION_MINOR 25
 #define ZEND_ASYNC_API_VERSION_PATCH 0
@@ -595,7 +595,7 @@ typedef zend_async_io_req_t *(*zend_async_io_write_t)(zend_async_io_t *io, const
  *   `bufs` is `zend_string * const *`. Each entry is an OWNED ref; the
  *   reactor calls zend_string_release() on each on completion. free_cb /
  *   user_data are ignored. Caller bumps refcount before passing if it
- *   needs to keep its own reference.
+ *   needs to keep its own reference. At most 65535 entries per call.
  *
  * ZEND_ASYNC_IO_WRITEV_IOV:
  *   `bufs` is `const zend_async_buf_t *` — array of (base, len) descriptors
@@ -606,7 +606,8 @@ typedef zend_async_io_req_t *(*zend_async_io_write_t)(zend_async_io_t *io, const
  *
  * Buffer ordering on the wire matches array order. Returns NULL on submit
  * failure (in which case the reactor has already released / freed every
- * entry per the mode's contract). */
+ * entry per the mode's contract). nbufs == 0 is the one NULL without an
+ * exception: nothing submitted, nothing consumed, free_cb run once in IOV. */
 #define ZEND_ASYNC_IO_WRITEV_ZSTR  0u
 #define ZEND_ASYNC_IO_WRITEV_IOV   1u
 /* The mode is the low bit of the flag word; the bits above it carry behaviour. */
@@ -618,7 +619,10 @@ typedef zend_async_io_req_t *(*zend_async_io_write_t)(zend_async_io_t *io, const
  *
  * An awaiter must treat a handle-level notification (result NULL, exception
  * set) as its wake too: a closing handle broadcasts one and the request is
- * never completed in that case. Available from API version 0.25. */
+ * never completed in that case.
+ *
+ * Disposal is safe after the handle is gone: the completion drops the request's
+ * link to it before handing it over. Available from API version 0.25. */
 #define ZEND_ASYNC_IO_WRITEV_AWAIT (1u << 1)
 typedef zend_async_io_req_t *(*zend_async_io_writev_t)(zend_async_io_t *io,
 		const void *bufs, unsigned nbufs, uint32_t flags,
