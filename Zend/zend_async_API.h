@@ -21,9 +21,9 @@
 #include "zend_globals.h"
 #include "zend_stream.h"
 
-#define ZEND_ASYNC_API "TrueAsync ABI v0.25.0"
+#define ZEND_ASYNC_API "TrueAsync ABI v0.26.0"
 #define ZEND_ASYNC_API_VERSION_MAJOR 0
-#define ZEND_ASYNC_API_VERSION_MINOR 25
+#define ZEND_ASYNC_API_VERSION_MINOR 26
 #define ZEND_ASYNC_API_VERSION_PATCH 0
 
 #define ZEND_ASYNC_API_VERSION_NUMBER \
@@ -122,6 +122,12 @@ typedef enum {
 #define ZEND_ASYNC_IO_APPEND      (1 << 4)
 #define ZEND_ASYNC_IO_PRESERVE_FD (1 << 5)
 #define ZEND_ASYNC_IO_OWNS_FD     (1 << 6) /* reactor owns crt_fd and must close it on dispose */
+/* A write on this handle completed with an error. The reactor sets it and
+ * never clears it, which is the only report a consumer gets for a write it did
+ * not await: the completion of such a write carries no status. It says
+ * nothing about the read side — a peer that shut its write half down keeps
+ * reading. */
+#define ZEND_ASYNC_IO_WRITE_FAILED (1 << 7)
 
 typedef struct _zend_async_io_s zend_async_io_t;
 typedef struct _zend_async_io_req_s zend_async_io_req_t;
