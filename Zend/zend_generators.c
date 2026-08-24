@@ -777,10 +777,12 @@ try_again:
 		return;
 	}
 
-	if (UNEXPECTED((delegator->flags & ZEND_GENERATOR_DO_INIT) != 0 && !Z_ISUNDEF(generator->value))) {
-		/* We must not advance Generator if we yield from a Generator being currently run */
-		orig_generator->flags &= ~ZEND_GENERATOR_DO_INIT;
-		return;
+	if (UNEXPECTED((delegator->flags & ZEND_GENERATOR_DO_INIT) != 0)) {
+		delegator->flags &= ~ZEND_GENERATOR_DO_INIT;
+		if (UNEXPECTED(!Z_ISUNDEF(generator->value))) {
+			/* We must not advance an already initialized delegate on first resumption */
+			return;
+		}
 	}
 
 	if (EG(active_fiber) || (ZEND_ASYNC_CURRENT_COROUTINE && ZEND_COROUTINE_IS_FIBER(ZEND_ASYNC_CURRENT_COROUTINE))) {
@@ -820,7 +822,7 @@ try_again:
 			EG(current_execute_data) = original_execute_data;
 			EG(jit_trace_num) = original_jit_trace_num;
 
-			orig_generator->flags &= ~(ZEND_GENERATOR_DO_INIT | ZEND_GENERATOR_IN_FIBER);
+			orig_generator->flags &= ~ZEND_GENERATOR_IN_FIBER;
 			generator->flags &= ~(ZEND_GENERATOR_CURRENTLY_RUNNING | ZEND_GENERATOR_IN_FIBER);
 			return;
 		}
@@ -883,7 +885,6 @@ try_again:
 		} else {
 			generator = zend_generator_get_current(orig_generator);
 			zend_generator_throw_exception(generator, NULL);
-			orig_generator->flags &= ~ZEND_GENERATOR_DO_INIT;
 			delegator = orig_generator;
 			goto try_again;
 		}
@@ -901,7 +902,7 @@ try_again:
 		goto try_again;
 	}
 
-	orig_generator->flags &= ~(ZEND_GENERATOR_DO_INIT | ZEND_GENERATOR_IN_FIBER);
+	orig_generator->flags &= ~ZEND_GENERATOR_IN_FIBER;
 }
 /* }}} */
 
