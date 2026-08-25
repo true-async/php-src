@@ -120,6 +120,12 @@ typedef enum {
 #define ZEND_ASYNC_IO_CLOSED      (1 << 2)
 #define ZEND_ASYNC_IO_EOF         (1 << 3)
 #define ZEND_ASYNC_IO_APPEND      (1 << 4)
+/* Keep the descriptor when the io is disposed. It reaches only a descriptor the
+ * reactor closes on its own account — a file, or a copy the reactor made — so a
+ * descriptor a stream handle adopts is outside it: the backend owns such a
+ * handle and closes what it adopted, this flag or not. A caller that must keep
+ * a socket alive past the io therefore cannot; it hands the socket over, or
+ * hands over a copy of its own and lives with two file descriptions. */
 #define ZEND_ASYNC_IO_PRESERVE_FD (1 << 5)
 #define ZEND_ASYNC_IO_OWNS_FD     (1 << 6) /* reactor owns crt_fd and must close it on dispose */
 /* A write on this handle completed with an error. The reactor sets it and
