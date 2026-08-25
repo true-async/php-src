@@ -245,6 +245,22 @@ static ssize_t php_sockop_read(php_stream *stream, char *buf, size_t count)
 }
 
 
+#ifdef PHP_WIN32
+/* Whether the socket is in the listening state. Returns false when the state
+ * cannot be read, which keeps the caller on its existing path. */
+static bool php_sockop_is_listening(php_socket_t socket)
+{
+	int accepting = 0;
+	socklen_t accepting_len = sizeof(accepting);
+
+	if (getsockopt(socket, SOL_SOCKET, SO_ACCEPTCONN, (char *) &accepting, &accepting_len) != 0) {
+		return false;
+	}
+
+	return accepting != 0;
+}
+#endif
+
 static int php_sockop_close(php_stream *stream, int close_handle)
 {
 	php_netstream_data_t *sock = (php_netstream_data_t*)stream->abstract;
@@ -264,22 +280,31 @@ static int php_sockop_close(php_stream *stream, int close_handle)
 #endif
 		if (sock->socket != SOCK_ERR) {
 #ifdef PHP_WIN32
-			/* prevent more data from coming in */
-			shutdown(sock->socket, SHUT_RD);
+			/* A listening socket carries no peer data to flush, and the await
+			 * below would wait for a writability that never arrives. Worse,
+			 * the poll event it creates hands the descriptor to the event loop,
+			 * so the real closesocket() lands a loop turn later and the port
+			 * stays bound — long enough for the next bind() to be refused. */
+			const bool is_listening = php_sockop_is_listening(sock->socket);
 
-			/* try to make sure that the OS sends all data before we close the connection.
-			 * Essentially, we are waiting for the socket to become writeable, which means
-			 * that all pending data has been sent.
-			 * We use a small timeout which should encourage the OS to send the data,
-			 * but at the same time avoid hanging indefinitely.
-			 * */
-			if (ZEND_ASYNC_IS_ACTIVE && !sock->is_sync) {
-				struct timeval tv = {0, 500000}; // 500ms
-				network_async_await_stream_socket(sock, POLLOUT, &tv);
-			} else {
-				do {
-					n = php_pollfd_for_ms(sock->socket, POLLOUT, 500);
-				} while (n == -1 && php_socket_errno() == EINTR);
+			if (!is_listening) {
+				/* prevent more data from coming in */
+				shutdown(sock->socket, SHUT_RD);
+
+				/* try to make sure that the OS sends all data before we close the connection.
+				 * Essentially, we are waiting for the socket to become writeable, which means
+				 * that all pending data has been sent.
+				 * We use a small timeout which should encourage the OS to send the data,
+				 * but at the same time avoid hanging indefinitely.
+				 * */
+				if (ZEND_ASYNC_IS_ACTIVE && !sock->is_sync) {
+					struct timeval tv = {0, 500000}; // 500ms
+					network_async_await_stream_socket(sock, POLLOUT, &tv);
+				} else {
+					do {
+						n = php_pollfd_for_ms(sock->socket, POLLOUT, 500);
+					} while (n == -1 && php_socket_errno() == EINTR);
+				}
 			}
 #endif
 
