@@ -427,6 +427,15 @@ fprintf(stderr, "stream_free: %s:%p[%s] preserve_handle=%d release_cast=%d remov
 			stream->readbuf = NULL;
 		}
 
+		/* Nothing would notify the waiters again; closing tells each of them,
+		 * once it runs, that the stream is gone. */
+		if (stream->buffer_lock != NULL) {
+			zend_async_event_t *lock = stream->buffer_lock;
+			stream->buffer_lock = NULL;
+			ZEND_ASYNC_CALLBACKS_NOTIFY_AND_CLOSE(lock, NULL, NULL);
+			ZEND_ASYNC_EVENT_RELEASE(lock);
+		}
+
 		if (stream->is_persistent && (close_options & PHP_STREAM_FREE_PERSISTENT)) {
 			/* we don't work with *stream but need its value for comparison */
 			zend_hash_apply_with_argument(&EG(persistent_list), _php_stream_free_persistent, stream);
@@ -455,7 +464,193 @@ fprintf(stderr, "stream_free: %s:%p[%s] preserve_handle=%d release_cast=%d remov
 
 /* {{{ generic stream operations */
 
-PHPAPI zend_result php_stream_fill_read_buffer(php_stream *stream, size_t size)
+/* {{{ Buffer lock */
+
+typedef struct {
+	zend_async_event_t base;
+	php_stream *stream;
+	zend_coroutine_t *owner;
+	/* The buffered API re-enters itself: a seek emulated through reads, a
+	 * userspace wrapper reading its own stream. */
+	uint32_t depth;
+} php_stream_buffer_lock_t;
+
+
+static void stream_buffer_unlock(php_stream *stream);
+
+static bool stream_buffer_event_add_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
+{
+	return zend_async_callbacks_push(event, callback);
+}
+
+/* zend_async_callbacks_remove() fills the hole with the last element, which
+ * would run this queue as a stack. */
+static bool stream_buffer_event_del_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
+{
+	zend_async_callbacks_vector_t *vector = &event->callbacks;
+
+	for (uint32_t i = 0; i < vector->length; ++i) {
+		if (vector->data[i] != callback) {
+			continue;
+		}
+
+		if (vector->current_iterator != NULL && *vector->current_iterator > i) {
+			(*vector->current_iterator)--;
+		}
+
+		vector->length--;
+
+		if (i < vector->length) {
+			memmove(&vector->data[i], &vector->data[i + 1],
+					(vector->length - i) * sizeof(zend_async_event_callback_t *));
+		}
+
+		callback->dispose(callback, event);
+
+		return true;
+	}
+
+	return false;
+}
+
+static bool stream_buffer_event_start(zend_async_event_t *event)
+{
+	return true;
+}
+
+static bool stream_buffer_event_stop(zend_async_event_t *event)
+{
+	return true;
+}
+
+static bool stream_buffer_event_dispose(zend_async_event_t *event)
+{
+	zend_async_callbacks_free(event);
+	efree(event);
+
+	return true;
+}
+
+/* Ownership passes inside the wakeup, so a coroutine arriving meanwhile
+ * queues behind instead of overtaking. */
+static void stream_buffer_lock_grant(zend_async_event_t *event, zend_async_event_callback_t *callback,
+		void *result, zend_object *exception)
+{
+	if (!ZEND_ASYNC_EVENT_IS_CLOSED(event)) {
+		php_stream_buffer_lock_t *lock = (php_stream_buffer_lock_t *) event;
+
+		lock->owner = ((zend_coroutine_event_callback_t *) callback)->coroutine;
+		lock->depth = 1;
+	}
+
+	zend_async_waker_callback_resolve(event, callback, result, exception);
+}
+
+static php_stream_buffer_lock_t *stream_buffer_lock_create(php_stream *stream)
+{
+	php_stream_buffer_lock_t *lock = ecalloc(1, sizeof(php_stream_buffer_lock_t));
+
+	lock->stream = stream;
+	lock->base.ref_count = 1;
+	lock->base.add_callback = stream_buffer_event_add_callback;
+	lock->base.del_callback = stream_buffer_event_del_callback;
+	lock->base.start = stream_buffer_event_start;
+	lock->base.stop = stream_buffer_event_stop;
+	lock->base.dispose = stream_buffer_event_dispose;
+
+	/* A queued waiter is not IO: it must not count as live work for deadlock
+	 * detection. */
+	ZEND_ASYNC_EVENT_SET_HIDDEN(&lock->base);
+
+	stream->buffer_lock = &lock->base;
+
+	return lock;
+}
+
+/* false: the lock is NOT held, and the caller must fail its operation. */
+static bool stream_buffer_lock(php_stream *stream)
+{
+	if (ZEND_ASYNC_IS_OFF || ZEND_ASYNC_IS_SCHEDULER_CONTEXT) {
+		return true;
+	}
+
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+
+	if (coroutine == NULL) {
+		return true;
+	}
+
+	php_stream_buffer_lock_t *lock = (php_stream_buffer_lock_t *) stream->buffer_lock;
+
+	if (lock == NULL) {
+		lock = stream_buffer_lock_create(stream);
+	} else if (lock->owner == coroutine) {
+		lock->depth++;
+		return true;
+	}
+
+	while (lock->owner != NULL) {
+		ZEND_ASYNC_WAKER_NEW(coroutine);
+		zend_async_resume_when(coroutine, &lock->base, false, stream_buffer_lock_grant, NULL);
+
+		const bool resumed = ZEND_ASYNC_SUSPEND();
+		/* Our subscription holds a reference, so the event is readable even
+		 * when the stream is already gone. */
+		const bool closed = ZEND_ASYNC_EVENT_IS_CLOSED(&lock->base);
+
+		zend_async_waker_clean(coroutine);
+
+		if (closed) {
+			return false;
+		}
+
+		if (!resumed || UNEXPECTED(EG(exception) != NULL)) {
+			/* The lock may already be ours, and nobody else would release it. */
+			if (lock->owner == coroutine) {
+				stream_buffer_unlock(stream);
+			}
+
+			return false;
+		}
+
+		if (lock->owner == coroutine) {
+			return true;
+		}
+	}
+
+	lock->owner = coroutine;
+	lock->depth = 1;
+
+	return true;
+}
+
+static void stream_buffer_unlock(php_stream *stream)
+{
+	php_stream_buffer_lock_t *lock = (php_stream_buffer_lock_t *) stream->buffer_lock;
+
+	if (lock == NULL || lock->owner != ZEND_ASYNC_CURRENT_COROUTINE) {
+		return;
+	}
+
+	if (--lock->depth > 0) {
+		return;
+	}
+
+	lock->owner = NULL;
+
+	/* Wake the head only: notifying the event would wake every waiter, and all
+	 * but one would go back to sleep. The vector does not move here — a waiter
+	 * leaves it from its own coroutine. */
+	if (lock->base.callbacks.length > 0) {
+		zend_async_event_callback_t *callback = lock->base.callbacks.data[0];
+
+		callback->callback(&lock->base, callback, NULL, NULL);
+	}
+}
+
+/* }}} */
+
+static zend_result stream_fill_read_buffer_locked(php_stream *stream, size_t size)
 {
 	/* allocate/fill the buffer */
 
@@ -605,6 +800,13 @@ PHPAPI zend_result php_stream_fill_read_buffer(php_stream *stream, size_t size)
 						stream->is_persistent);
 			}
 
+			/* The length below is unsigned: a writepos past the end of the
+			 * buffer wraps it around zero. */
+			if (UNEXPECTED((size_t) stream->writepos > stream->readbuflen)) {
+				stream->fatal_error = 1;
+				return FAILURE;
+			}
+
 			justread = stream->ops->read(stream, (char*)stream->readbuf + stream->writepos,
 					stream->readbuflen - stream->writepos
 					);
@@ -629,7 +831,20 @@ out_is_eof:
 	return retval;
 }
 
-PHPAPI ssize_t php_stream_read(php_stream *stream, char *buf, size_t size)
+PHPAPI zend_result php_stream_fill_read_buffer(php_stream *stream, size_t size)
+{
+	if (UNEXPECTED(!stream_buffer_lock(stream))) {
+		return FAILURE;
+	}
+
+	const zend_result result = stream_fill_read_buffer_locked(stream, size);
+
+	stream_buffer_unlock(stream);
+
+	return result;
+}
+
+static ssize_t stream_read_locked(php_stream *stream, char *buf, size_t size)
 {
 	ssize_t toread = 0, didread = 0;
 
@@ -670,7 +885,7 @@ PHPAPI ssize_t php_stream_read(php_stream *stream, char *buf, size_t size)
 				break;
 			}
 		} else {
-			if (php_stream_fill_read_buffer(stream, size) != SUCCESS) {
+			if (stream_fill_read_buffer_locked(stream, size) != SUCCESS) {
 				if (didread == 0) {
 					return -1;
 				}
@@ -709,6 +924,19 @@ PHPAPI ssize_t php_stream_read(php_stream *stream, char *buf, size_t size)
 		stream->position += didread;
 		stream->has_buffered_data = 0;
 	}
+
+	return didread;
+}
+
+PHPAPI ssize_t php_stream_read(php_stream *stream, char *buf, size_t size)
+{
+	if (UNEXPECTED(!stream_buffer_lock(stream))) {
+		return -1;
+	}
+
+	const ssize_t didread = stream_read_locked(stream, buf, size);
+
+	stream_buffer_unlock(stream);
 
 	return didread;
 }
@@ -844,7 +1072,7 @@ PHPAPI const char *php_stream_locate_eol(php_stream *stream, zend_string *buf)
 /* If buf == NULL, the buffer will be allocated automatically and will be of an
  * appropriate length to hold the line, regardless of the line length, memory
  * permitting */
-PHPAPI char *php_stream_get_line(php_stream *stream, char *buf, size_t maxlen,
+static char *stream_get_line_locked(php_stream *stream, char *buf, size_t maxlen,
 		size_t *returned_len)
 {
 	size_t avail = 0;
@@ -963,6 +1191,22 @@ PHPAPI char *php_stream_get_line(php_stream *stream, char *buf, size_t maxlen,
 	return bufstart;
 }
 
+PHPAPI char *php_stream_get_line(php_stream *stream, char *buf, size_t maxlen, size_t *returned_len)
+{
+	if (UNEXPECTED(!stream_buffer_lock(stream))) {
+		if (returned_len != NULL) {
+			*returned_len = 0;
+		}
+		return NULL;
+	}
+
+	char *result = stream_get_line_locked(stream, buf, maxlen, returned_len);
+
+	stream_buffer_unlock(stream);
+
+	return result;
+}
+
 #define STREAM_BUFFERED_AMOUNT(stream) \
 	((size_t)(((stream)->writepos) - (stream)->readpos))
 
@@ -991,7 +1235,7 @@ static const char *_php_stream_search_delim(
 	}
 }
 
-PHPAPI zend_string *php_stream_get_record(php_stream *stream, size_t maxlen, const char *delim, size_t delim_len)
+static zend_string *stream_get_record_locked(php_stream *stream, size_t maxlen, const char *delim, size_t delim_len)
 {
 	zend_string	*ret_buf;				/* returned buffer */
 	const char *found_delim = NULL;
@@ -1079,6 +1323,19 @@ PHPAPI zend_string *php_stream_get_record(php_stream *stream, size_t maxlen, con
 	}
 	ZSTR_VAL(ret_buf)[ZSTR_LEN(ret_buf)] = '\0';
 	return ret_buf;
+}
+
+PHPAPI zend_string *php_stream_get_record(php_stream *stream, size_t maxlen, const char *delim, size_t delim_len)
+{
+	if (UNEXPECTED(!stream_buffer_lock(stream))) {
+		return NULL;
+	}
+
+	zend_string *result = stream_get_record_locked(stream, maxlen, delim, delim_len);
+
+	stream_buffer_unlock(stream);
+
+	return result;
 }
 
 /* Writes a buffer directly to a stream, using multiple of the chunk size */
@@ -1244,11 +1501,17 @@ PHPAPI ssize_t php_stream_write(php_stream *stream, const char *buf, size_t coun
 		return (ssize_t) -1;
 	}
 
+	if (UNEXPECTED(!stream_buffer_lock(stream))) {
+		return (ssize_t) -1;
+	}
+
 	if (stream->writefilters.head) {
 		bytes = php_stream_write_filtered(stream, buf, count, PSFS_FLAG_NORMAL);
 	} else {
 		bytes = php_stream_write_buffer(stream, buf, count);
 	}
+
+	stream_buffer_unlock(stream);
 
 	if (bytes) {
 		stream->flags |= PHP_STREAM_FLAG_WAS_WRITTEN;
@@ -1339,7 +1602,7 @@ static bool php_stream_has_notifier(php_stream *stream)
 	return context && context->notifier;
 }
 
-PHPAPI int php_stream_seek(php_stream *stream, zend_off_t offset, int whence)
+static int stream_seek_locked(php_stream *stream, zend_off_t offset, int whence)
 {
 	if (stream->fclose_stdiocast == PHP_STREAM_FCLOSE_FOPENCOOKIE) {
 		/* flush can call seek internally so we need to prevent an infinite loop */
@@ -1444,6 +1707,19 @@ PHPAPI int php_stream_seek(php_stream *stream, zend_off_t offset, int whence)
 			"Stream does not support seeking");
 
 	return -1;
+}
+
+PHPAPI int php_stream_seek(php_stream *stream, zend_off_t offset, int whence)
+{
+	if (UNEXPECTED(!stream_buffer_lock(stream))) {
+		return -1;
+	}
+
+	const int result = stream_seek_locked(stream, offset, whence);
+
+	stream_buffer_unlock(stream);
+
+	return result;
 }
 
 PHPAPI int php_stream_set_option(php_stream *stream, int option, int value, void *ptrparam)

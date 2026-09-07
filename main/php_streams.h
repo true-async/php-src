@@ -244,6 +244,10 @@ struct _php_stream  {
 	/* how much data to read when filling buffer */
 	size_t chunk_size;
 
+	/* Async: serialises access to the buffer fields above. Owner, depth and
+	 * waiters live in the event; see stream_buffer_lock() in streams.c. */
+	struct _zend_async_event_s *buffer_lock;
+
 #if ZEND_DEBUG
 	const char *open_filename;
 	uint32_t open_lineno;
