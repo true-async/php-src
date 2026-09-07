@@ -468,7 +468,6 @@ fprintf(stderr, "stream_free: %s:%p[%s] preserve_handle=%d release_cast=%d remov
 
 typedef struct {
 	zend_async_event_t base;
-	php_stream *stream;
 	zend_coroutine_t *owner;
 	/* The buffered API re-enters itself: a seek emulated through reads, a
 	 * userspace wrapper reading its own stream. */
@@ -476,7 +475,12 @@ typedef struct {
 } php_stream_buffer_lock_t;
 
 
-static void stream_buffer_unlock(php_stream *stream);
+static void stream_buffer_unlock(php_stream_buffer_lock_t *lock);
+
+static bool stream_buffer_lock_closed(php_stream_buffer_lock_t *lock)
+{
+	return lock != NULL && ZEND_ASYNC_EVENT_IS_CLOSED(&lock->base);
+}
 
 static bool stream_buffer_event_add_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
 {
@@ -550,7 +554,6 @@ static php_stream_buffer_lock_t *stream_buffer_lock_create(php_stream *stream)
 {
 	php_stream_buffer_lock_t *lock = ecalloc(1, sizeof(php_stream_buffer_lock_t));
 
-	lock->stream = stream;
 	lock->base.ref_count = 1;
 	lock->base.add_callback = stream_buffer_event_add_callback;
 	lock->base.del_callback = stream_buffer_event_del_callback;
@@ -568,8 +571,9 @@ static php_stream_buffer_lock_t *stream_buffer_lock_create(php_stream *stream)
 }
 
 /* false: the lock is NOT held, and the caller must fail its operation. */
-static bool stream_buffer_lock(php_stream *stream)
+static bool stream_buffer_lock(php_stream *stream, php_stream_buffer_lock_t **held)
 {
+	*held = NULL;
 	if (ZEND_ASYNC_IS_OFF || ZEND_ASYNC_IS_SCHEDULER_CONTEXT) {
 		return true;
 	}
@@ -584,8 +588,14 @@ static bool stream_buffer_lock(php_stream *stream)
 
 	if (lock == NULL) {
 		lock = stream_buffer_lock_create(stream);
-	} else if (lock->owner == coroutine) {
+	}
+
+	/* Keep the event alive independently of the stream, including for the
+	 * owner: ops->read/write may return after fclose() freed the stream. */
+	ZEND_ASYNC_EVENT_ADD_REF(&lock->base);
+	if (lock->owner == coroutine) {
 		lock->depth++;
+		*held = lock;
 		return true;
 	}
 
@@ -601,39 +611,39 @@ static bool stream_buffer_lock(php_stream *stream)
 		zend_async_waker_clean(coroutine);
 
 		if (closed) {
+			ZEND_ASYNC_EVENT_RELEASE(&lock->base);
 			return false;
 		}
 
 		if (!resumed || UNEXPECTED(EG(exception) != NULL)) {
 			/* The lock may already be ours, and nobody else would release it. */
-			if (lock->owner == coroutine) {
-				stream_buffer_unlock(stream);
-			}
+			stream_buffer_unlock(lock);
 
 			return false;
 		}
 
 		if (lock->owner == coroutine) {
+			*held = lock;
 			return true;
 		}
 	}
 
 	lock->owner = coroutine;
 	lock->depth = 1;
+	*held = lock;
 
 	return true;
 }
 
-static void stream_buffer_unlock(php_stream *stream)
+static void stream_buffer_unlock(php_stream_buffer_lock_t *lock)
 {
-	php_stream_buffer_lock_t *lock = (php_stream_buffer_lock_t *) stream->buffer_lock;
-
-	if (lock == NULL || lock->owner != ZEND_ASYNC_CURRENT_COROUTINE) {
+	if (lock == NULL) {
 		return;
 	}
 
-	if (--lock->depth > 0) {
-		return;
+	if (stream_buffer_lock_closed(lock) || lock->owner != ZEND_ASYNC_CURRENT_COROUTINE
+			|| --lock->depth > 0) {
+		goto release;
 	}
 
 	lock->owner = NULL;
@@ -646,11 +656,14 @@ static void stream_buffer_unlock(php_stream *stream)
 
 		callback->callback(&lock->base, callback, NULL, NULL);
 	}
+
+release:
+	ZEND_ASYNC_EVENT_RELEASE(&lock->base);
 }
 
 /* }}} */
 
-static zend_result stream_fill_read_buffer_locked(php_stream *stream, size_t size)
+static zend_result stream_fill_read_buffer_locked(php_stream *stream, size_t size, php_stream_buffer_lock_t *lock)
 {
 	/* allocate/fill the buffer */
 
@@ -675,6 +688,10 @@ static zend_result stream_fill_read_buffer_locked(php_stream *stream, size_t siz
 
 			/* read a chunk into a bucket */
 			justread = stream->ops->read(stream, chunk_buf, stream->chunk_size);
+			if (stream_buffer_lock_closed(lock)) {
+				efree(chunk_buf);
+				return FAILURE;
+			}
 			if (justread < 0 && stream->writepos == stream->readpos) {
 				efree(chunk_buf);
 				retval = FAILURE;
@@ -833,18 +850,19 @@ out_is_eof:
 
 PHPAPI zend_result php_stream_fill_read_buffer(php_stream *stream, size_t size)
 {
-	if (UNEXPECTED(!stream_buffer_lock(stream))) {
+	php_stream_buffer_lock_t *lock;
+	if (UNEXPECTED(!stream_buffer_lock(stream, &lock))) {
 		return FAILURE;
 	}
 
-	const zend_result result = stream_fill_read_buffer_locked(stream, size);
+	const zend_result result = stream_fill_read_buffer_locked(stream, size, lock);
 
-	stream_buffer_unlock(stream);
+	stream_buffer_unlock(lock);
 
 	return result;
 }
 
-static ssize_t stream_read_locked(php_stream *stream, char *buf, size_t size)
+static ssize_t stream_read_locked(php_stream *stream, char *buf, size_t size, php_stream_buffer_lock_t *lock)
 {
 	ssize_t toread = 0, didread = 0;
 
@@ -876,6 +894,9 @@ static ssize_t stream_read_locked(php_stream *stream, char *buf, size_t size)
 
 		if (!stream->readfilters.head && ((stream->flags & PHP_STREAM_FLAG_NO_BUFFER) || stream->chunk_size == 1)) {
 			toread = stream->ops->read(stream, buf, size);
+			if (stream_buffer_lock_closed(lock)) {
+				return didread ? didread : -1;
+			}
 			if (toread < 0) {
 				/* Report an error if the read failed and we did not read any data
 				 * before that. Otherwise return the data we did read. */
@@ -885,7 +906,10 @@ static ssize_t stream_read_locked(php_stream *stream, char *buf, size_t size)
 				break;
 			}
 		} else {
-			if (stream_fill_read_buffer_locked(stream, size) != SUCCESS) {
+			if (stream_fill_read_buffer_locked(stream, size, lock) != SUCCESS) {
+				if (stream_buffer_lock_closed(lock)) {
+					return didread ? didread : -1;
+				}
 				if (didread == 0) {
 					return -1;
 				}
@@ -930,13 +954,14 @@ static ssize_t stream_read_locked(php_stream *stream, char *buf, size_t size)
 
 PHPAPI ssize_t php_stream_read(php_stream *stream, char *buf, size_t size)
 {
-	if (UNEXPECTED(!stream_buffer_lock(stream))) {
+	php_stream_buffer_lock_t *lock;
+	if (UNEXPECTED(!stream_buffer_lock(stream, &lock))) {
 		return -1;
 	}
 
-	const ssize_t didread = stream_read_locked(stream, buf, size);
+	const ssize_t didread = stream_read_locked(stream, buf, size, lock);
 
-	stream_buffer_unlock(stream);
+	stream_buffer_unlock(lock);
 
 	return didread;
 }
@@ -1073,7 +1098,7 @@ PHPAPI const char *php_stream_locate_eol(php_stream *stream, zend_string *buf)
  * appropriate length to hold the line, regardless of the line length, memory
  * permitting */
 static char *stream_get_line_locked(php_stream *stream, char *buf, size_t maxlen,
-		size_t *returned_len)
+		size_t *returned_len, php_stream_buffer_lock_t *lock)
 {
 	size_t avail = 0;
 	size_t current_buf_size = 0;
@@ -1163,7 +1188,8 @@ static char *stream_get_line_locked(php_stream *stream, char *buf, size_t maxlen
 				}
 			}
 
-			if (php_stream_fill_read_buffer(stream, toread) == FAILURE && stream->fatal_error) {
+			zend_result result = php_stream_fill_read_buffer(stream, toread);
+			if (stream_buffer_lock_closed(lock) || (result == FAILURE && stream->fatal_error)) {
 				if (grow_mode) {
 					efree(bufstart);
 				}
@@ -1193,16 +1219,17 @@ static char *stream_get_line_locked(php_stream *stream, char *buf, size_t maxlen
 
 PHPAPI char *php_stream_get_line(php_stream *stream, char *buf, size_t maxlen, size_t *returned_len)
 {
-	if (UNEXPECTED(!stream_buffer_lock(stream))) {
+	php_stream_buffer_lock_t *lock;
+	if (UNEXPECTED(!stream_buffer_lock(stream, &lock))) {
 		if (returned_len != NULL) {
 			*returned_len = 0;
 		}
 		return NULL;
 	}
 
-	char *result = stream_get_line_locked(stream, buf, maxlen, returned_len);
+	char *result = stream_get_line_locked(stream, buf, maxlen, returned_len, lock);
 
-	stream_buffer_unlock(stream);
+	stream_buffer_unlock(lock);
 
 	return result;
 }
@@ -1235,7 +1262,8 @@ static const char *_php_stream_search_delim(
 	}
 }
 
-static zend_string *stream_get_record_locked(php_stream *stream, size_t maxlen, const char *delim, size_t delim_len)
+static zend_string *stream_get_record_locked(php_stream *stream, size_t maxlen, const char *delim, size_t delim_len,
+		php_stream_buffer_lock_t *lock)
 {
 	zend_string	*ret_buf;				/* returned buffer */
 	const char *found_delim = NULL;
@@ -1260,7 +1288,8 @@ static zend_string *stream_get_record_locked(php_stream *stream, size_t maxlen, 
 
 		to_read_now = MIN(maxlen - buffered_len, stream->chunk_size);
 
-		if (php_stream_fill_read_buffer(stream, buffered_len + to_read_now) == FAILURE && stream->fatal_error) {
+		zend_result result = php_stream_fill_read_buffer(stream, buffered_len + to_read_now);
+		if (stream_buffer_lock_closed(lock) || (result == FAILURE && stream->fatal_error)) {
 			return NULL;
 		}
 
@@ -1327,19 +1356,21 @@ static zend_string *stream_get_record_locked(php_stream *stream, size_t maxlen, 
 
 PHPAPI zend_string *php_stream_get_record(php_stream *stream, size_t maxlen, const char *delim, size_t delim_len)
 {
-	if (UNEXPECTED(!stream_buffer_lock(stream))) {
+	php_stream_buffer_lock_t *lock;
+	if (UNEXPECTED(!stream_buffer_lock(stream, &lock))) {
 		return NULL;
 	}
 
-	zend_string *result = stream_get_record_locked(stream, maxlen, delim, delim_len);
+	zend_string *result = stream_get_record_locked(stream, maxlen, delim, delim_len, lock);
 
-	stream_buffer_unlock(stream);
+	stream_buffer_unlock(lock);
 
 	return result;
 }
 
 /* Writes a buffer directly to a stream, using multiple of the chunk size */
-static ssize_t php_stream_write_buffer(php_stream *stream, const char *buf, size_t count)
+static ssize_t php_stream_write_buffer(php_stream *stream, const char *buf, size_t count,
+		php_stream_buffer_lock_t *lock)
 {
 	ssize_t didwrite = 0;
 	ssize_t retval;
@@ -1364,6 +1395,13 @@ static ssize_t php_stream_write_buffer(php_stream *stream, const char *buf, size
 
 	while (count > 0) {
 		ssize_t justwrote = stream->ops->write(stream, buf, MIN(chunk_size, count));
+
+		if (UNEXPECTED(stream_buffer_lock_closed(lock))) {
+			/* Another coroutine closed the stream while this write was parked:
+			 * ops->write freed it, so neither eof nor position exist any more. */
+			return didwrite;
+		}
+
 		if (justwrote <= 0) {
 			/* If we already successfully wrote some bytes and a write error occurred
 			 * later, report the successfully written bytes. */
@@ -1395,7 +1433,8 @@ out:
  * This may trigger a real write to the stream.
  * Returns the number of bytes consumed from buf by the first filter in the chain.
  * */
-static ssize_t php_stream_write_filtered(php_stream *stream, const char *buf, size_t count, int flags)
+static ssize_t php_stream_write_filtered(php_stream *stream, const char *buf, size_t count, int flags,
+		php_stream_buffer_lock_t *lock)
 {
 	size_t consumed = 0;
 	php_stream_bucket *bucket;
@@ -1432,7 +1471,9 @@ static ssize_t php_stream_write_filtered(php_stream *stream, const char *buf, si
 			 * underlying stream */
 			while (brig_inp->head) {
 				bucket = brig_inp->head;
-				if (php_stream_write_buffer(stream, bucket->buf, bucket->buflen) < 0) {
+				if (stream_buffer_lock_closed(lock)) {
+					consumed = (ssize_t) -1;
+				} else if (php_stream_write_buffer(stream, bucket->buf, bucket->buflen, lock) < 0) {
 					consumed = (ssize_t) -1;
 				}
 
@@ -1471,7 +1512,7 @@ static int php_stream_flush_ex(php_stream *stream, bool closing)
 	int ret = 0;
 
 	if (stream->writefilters.head && stream->ops->write) {
-		php_stream_write_filtered(stream, NULL, 0, closing ? PSFS_FLAG_FLUSH_CLOSE : PSFS_FLAG_FLUSH_INC );
+		php_stream_write_filtered(stream, NULL, 0, closing ? PSFS_FLAG_FLUSH_CLOSE : PSFS_FLAG_FLUSH_INC, NULL);
 	}
 
 	stream->flags &= ~PHP_STREAM_FLAG_WAS_WRITTEN;
@@ -1501,21 +1542,21 @@ PHPAPI ssize_t php_stream_write(php_stream *stream, const char *buf, size_t coun
 		return (ssize_t) -1;
 	}
 
-	if (UNEXPECTED(!stream_buffer_lock(stream))) {
+	php_stream_buffer_lock_t *lock;
+	if (UNEXPECTED(!stream_buffer_lock(stream, &lock))) {
 		return (ssize_t) -1;
 	}
 
 	if (stream->writefilters.head) {
-		bytes = php_stream_write_filtered(stream, buf, count, PSFS_FLAG_NORMAL);
+		bytes = php_stream_write_filtered(stream, buf, count, PSFS_FLAG_NORMAL, lock);
 	} else {
-		bytes = php_stream_write_buffer(stream, buf, count);
+		bytes = php_stream_write_buffer(stream, buf, count, lock);
 	}
 
-	stream_buffer_unlock(stream);
-
-	if (bytes) {
+	if (bytes && !stream_buffer_lock_closed(lock)) {
 		stream->flags |= PHP_STREAM_FLAG_WAS_WRITTEN;
 	}
+	stream_buffer_unlock(lock);
 
 	return bytes;
 }
@@ -1711,13 +1752,14 @@ static int stream_seek_locked(php_stream *stream, zend_off_t offset, int whence)
 
 PHPAPI int php_stream_seek(php_stream *stream, zend_off_t offset, int whence)
 {
-	if (UNEXPECTED(!stream_buffer_lock(stream))) {
+	php_stream_buffer_lock_t *lock;
+	if (UNEXPECTED(!stream_buffer_lock(stream, &lock))) {
 		return -1;
 	}
 
 	const int result = stream_seek_locked(stream, offset, whence);
 
-	stream_buffer_unlock(stream);
+	stream_buffer_unlock(lock);
 
 	return result;
 }
