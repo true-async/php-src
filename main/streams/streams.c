@@ -86,6 +86,15 @@ fprintf(stderr, "forget_persistent: %s:%p\n", stream->ops->label, stream);
 		stream->ctx = NULL;
 	}
 
+	/* The lock and its callback vector come from the request allocator, while
+	 * the stream itself outlives the request. No coroutine is left to hold it
+	 * here, so drop it and let the next request build its own. */
+	if (stream->buffer_lock != NULL) {
+		zend_async_event_t *lock = stream->buffer_lock;
+		stream->buffer_lock = NULL;
+		lock->dispose(lock);
+	}
+
 	return 0;
 }
 
@@ -263,7 +272,8 @@ static int _php_stream_free_persistent(zval *zv, void *pStream)
 	return le->ptr == pStream;
 }
 
-static int php_stream_flush_ex(php_stream *stream, bool closing);
+typedef struct _php_stream_buffer_lock php_stream_buffer_lock_t;
+static int php_stream_flush_ex(php_stream *stream, bool closing, php_stream_buffer_lock_t *lock);
 
 PHPAPI int php_stream_free(php_stream *stream, int close_options) /* {{{ */
 {
@@ -351,7 +361,7 @@ fprintf(stderr, "stream_free: %s:%p[%s] preserve_handle=%d release_cast=%d remov
 
 	if (stream->flags & PHP_STREAM_FLAG_WAS_WRITTEN || stream->writefilters.head) {
 		/* make sure everything is saved */
-		php_stream_flush_ex(stream, true);
+		php_stream_flush_ex(stream, true, NULL);
 	}
 
 	/* If not called from the resource dtor, remove the stream from the resource list. */
@@ -466,13 +476,13 @@ fprintf(stderr, "stream_free: %s:%p[%s] preserve_handle=%d release_cast=%d remov
 
 /* {{{ Buffer lock */
 
-typedef struct {
+struct _php_stream_buffer_lock {
 	zend_async_event_t base;
 	zend_coroutine_t *owner;
 	/* The buffered API re-enters itself: a seek emulated through reads, a
 	 * userspace wrapper reading its own stream. */
 	uint32_t depth;
-} php_stream_buffer_lock_t;
+};
 
 
 static void stream_buffer_unlock(php_stream_buffer_lock_t *lock);
@@ -1507,12 +1517,16 @@ static ssize_t php_stream_write_filtered(php_stream *stream, const char *buf, si
 	return consumed;
 }
 
-static int php_stream_flush_ex(php_stream *stream, bool closing)
+static int php_stream_flush_ex(php_stream *stream, bool closing, php_stream_buffer_lock_t *lock)
 {
 	int ret = 0;
 
 	if (stream->writefilters.head && stream->ops->write) {
-		php_stream_write_filtered(stream, NULL, 0, closing ? PSFS_FLAG_FLUSH_CLOSE : PSFS_FLAG_FLUSH_INC, NULL);
+		php_stream_write_filtered(stream, NULL, 0, closing ? PSFS_FLAG_FLUSH_CLOSE : PSFS_FLAG_FLUSH_INC, lock);
+
+		if (UNEXPECTED(stream_buffer_lock_closed(lock))) {
+			return -1;
+		}
 	}
 
 	stream->flags &= ~PHP_STREAM_FLAG_WAS_WRITTEN;
@@ -1525,7 +1539,17 @@ static int php_stream_flush_ex(php_stream *stream, bool closing)
 }
 
 PHPAPI int php_stream_flush(php_stream *stream) {
-	return php_stream_flush_ex(stream, false);
+	php_stream_buffer_lock_t *lock;
+
+	if (UNEXPECTED(!stream_buffer_lock(stream, &lock))) {
+		return -1;
+	}
+
+	const int ret = php_stream_flush_ex(stream, false, lock);
+
+	stream_buffer_unlock(lock);
+
+	return ret;
 }
 
 PHPAPI ssize_t php_stream_write(php_stream *stream, const char *buf, size_t count)
@@ -1643,7 +1667,7 @@ static bool php_stream_has_notifier(php_stream *stream)
 	return context && context->notifier;
 }
 
-static int stream_seek_locked(php_stream *stream, zend_off_t offset, int whence)
+static int stream_seek_locked(php_stream *stream, zend_off_t offset, int whence, php_stream_buffer_lock_t *lock)
 {
 	if (stream->fclose_stdiocast == PHP_STREAM_FCLOSE_FOPENCOOKIE) {
 		/* flush can call seek internally so we need to prevent an infinite loop */
@@ -1659,6 +1683,11 @@ static int stream_seek_locked(php_stream *stream, zend_off_t offset, int whence)
 
 	if (stream->writefilters.head) {
 		php_stream_flush(stream);
+
+		if (UNEXPECTED(stream_buffer_lock_closed(lock))) {
+			return -1;
+		}
+
 		if (!php_stream_are_filters_seekable(stream->writefilters.head, is_start_seeking,
 				PHP_STREAM_FILTER_WRITE)) {
 			return -1;
@@ -1757,7 +1786,7 @@ PHPAPI int php_stream_seek(php_stream *stream, zend_off_t offset, int whence)
 		return -1;
 	}
 
-	const int result = stream_seek_locked(stream, offset, whence);
+	const int result = stream_seek_locked(stream, offset, whence, lock);
 
 	stream_buffer_unlock(lock);
 
