@@ -1,5 +1,7 @@
 /* This is a generated file, edit zend_builtin_functions.stub.php instead.
- * Stub hash: 9b22c9fffdcfa9f19f34906736be1cad65388bdb */
+ * Stub hash: dc54d75885b44b0e4f2a2a02b1b82823d32d10e2 */
+
+#include "zend_attributes.h"
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_clone, 0, 1, IS_OBJECT, 0)
 	ZEND_ARG_TYPE_INFO(0, object, IS_OBJECT, 0)
@@ -323,7 +325,7 @@ static const zend_function_entry ext_functions[] = {
 	ZEND_FE(clone, arginfo_clone)
 	ZEND_FE(exit, arginfo_exit)
 	ZEND_RAW_FENTRY("die", zif_exit, arginfo_die, 0, NULL, NULL)
-	ZEND_FE(zend_version, arginfo_zend_version)
+	ZEND_RAW_FENTRY("zend_version", zif_zend_version, arginfo_zend_version, ZEND_ACC_COMPILE_TIME_EVAL, NULL, NULL)
 #if (PHP_VERSION_ID >= 80600)
 	ZEND_RAW_FENTRY("func_num_args", zif_func_num_args, arginfo_func_num_args, ZEND_FENTRY_FLAGS(0, ZEND_ACC2_FORBID_DYN_CALLS), NULL, NULL)
 #elif (PHP_VERSION_ID >= 80400)

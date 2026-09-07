@@ -1,6 +1,8 @@
 /* This is a generated file, edit pdo_dbh.stub.php instead.
  * Stub hash: 96874f55febea4b7713b65f5a1a4eaf9d14ba571 */
 
+#include "zend_attributes.h"
+
 ZEND_BEGIN_ARG_INFO_EX(arginfo_class_PDO___construct, 0, 0, 1)
 	ZEND_ARG_TYPE_INFO(0, dsn, IS_STRING, 0)
 	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, username, IS_STRING, 1, "null")

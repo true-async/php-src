@@ -51,6 +51,7 @@ typedef struct {
 	HashTable       *lob_streams;
 	zend_fcall_info_cache *notice_callback;
 	bool		default_fetching_laziness;
+	zend_long	default_chunk_size;
 	pdo_pgsql_stmt  *running_stmt;
 	pdo_pool_stmt_cache_t *stmt_cache; /* per-physical-conn prepared-stmt LRU cache; NULL if disabled */
 } pdo_pgsql_db_handle;
@@ -71,7 +72,9 @@ struct pdo_pgsql_stmt {
 	int *param_formats;
 	Oid *param_types;
 	int                     current_row;
+	zend_long chunk_size;
 	bool is_prepared;
+	bool is_cursor_declared;
 	bool is_unbuffered;
 	bool is_running_unbuffered;
 	bool from_cache; /* true: stmt_name refers to a cache-owned server-side prepared stmt; do not DEALLOCATE on dtor */
@@ -99,6 +102,7 @@ extern const struct pdo_stmt_methods pgsql_stmt_methods;
 enum {
 	PDO_PGSQL_ATTR_DISABLE_PREPARES = PDO_ATTR_DRIVER_SPECIFIC,
 	PDO_PGSQL_ATTR_RESULT_MEMORY_SIZE,
+	PDO_PGSQL_ATTR_CHUNK_SIZE,
 };
 
 struct pdo_pgsql_lob_self {
