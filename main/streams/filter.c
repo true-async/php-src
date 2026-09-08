@@ -372,7 +372,10 @@ PHPAPI zend_result php_stream_filter_append_ex(php_stream_filter_chain *chain, p
 	 * filter, and the caller keeps a filter it can still free. The wind itself
 	 * reallocates readbuf and resets the positions a parked reader credits its
 	 * bytes to, which is what the lock is for. */
-	if (UNEXPECTED(!php_stream_buffer_lock_acquire(stream, &lock))) {
+	const uint8_t side = chain == &stream->readfilters
+			? PHP_STREAM_BUFFER_SIDE_READ : PHP_STREAM_BUFFER_SIDE_WRITE;
+
+	if (UNEXPECTED(!php_stream_buffer_lock_acquire(stream, side, &lock))) {
 		return FAILURE;
 	}
 
@@ -499,9 +502,12 @@ PHPAPI zend_result php_stream_filter_flush(php_stream_filter *filter, bool finis
 
 	php_stream_buffer_lock_t *lock;
 
-	/* The flush writes into the read buffer and out through ops->write, both of
-	 * which belong to whoever holds the lock. */
-	if (UNEXPECTED(!php_stream_buffer_lock_acquire(stream, &lock))) {
+	/* The read chain flushes into the read buffer, the write chain out through
+	 * ops->write: each belongs to its own side. */
+	const uint8_t side = chain == &stream->readfilters
+			? PHP_STREAM_BUFFER_SIDE_READ : PHP_STREAM_BUFFER_SIDE_WRITE;
+
+	if (UNEXPECTED(!php_stream_buffer_lock_acquire(stream, side, &lock))) {
 		return FAILURE;
 	}
 
