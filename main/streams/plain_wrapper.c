@@ -221,6 +221,12 @@ static zend_always_inline bool php_stdiop_unpin_after_suspend(php_stream *stream
 			data->async_io = NULL;
 		}
 		bool is_persistent = stream->is_persistent;
+		/* php_stream_free left the read buffer to us: the IO held it until
+		 * the request that named it completed. */
+		if (stream->readbuf != NULL) {
+			pefree(stream->readbuf, is_persistent);
+			stream->readbuf = NULL;
+		}
 		pefree(data, is_persistent);
 		pefree(stream, is_persistent);
 	}
@@ -921,9 +927,23 @@ static int php_stdiop_close(php_stream *stream, int close_handle)
 		/* Clear on_detach before dispose — data is about to be freed. */
 		data->async_io->on_detach = NULL;
 		const bool is_stream = ZEND_ASYNC_IO_IS_STREAM(data->async_io->type);
+		/* Nothing here names the descriptor after this close, and only the
+		 * reactor knows whether a thread-pool worker still does. Hand it over:
+		 * the reactor closes it at once, or after the last request that names
+		 * it completes. A FILE* keeps its own close (fclose below), so the
+		 * handover would be a second owner of one number. */
+		const bool fd_handed_over = close_handle && data->file == NULL && data->fd >= 0
+				&& data->async_io->type == ZEND_ASYNC_IO_TYPE_FILE
+				&& !(data->async_io->state & ZEND_ASYNC_IO_CLOSED);
+		if (fd_handed_over) {
+			data->async_io->state |= ZEND_ASYNC_IO_OWNS_FD;
+		}
 		/* Logical close always synchronous — NOTIFY's parked reqs with
 		 * req->io_closed and unblocks libuv-side I/O. */
 		ZEND_ASYNC_IO_CLOSE(data->async_io);
+		if (fd_handed_over) {
+			data->fd = -1;
+		}
 		if (data->ref_count == 0) {
 			data->async_io->event.dispose(&data->async_io->event);
 			data->async_io = NULL;
@@ -1052,11 +1072,33 @@ static int php_stdiop_sync(php_stream *stream, bool dataonly)
 
 		if (!req->completed) {
 			zend_coroutine_t *const coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
-			ZEND_ASYNC_WAKER_NEW(coroutine);
-			zend_async_resume_when(coroutine, &data->async_io->event, false,
-					zend_async_waker_callback_resolve, NULL);
-			ZEND_ASYNC_SUSPEND();
-			ZEND_ASYNC_WAKER_DESTROY(coroutine);
+			/* Pin stream/data against a close from another coroutine, and keep
+			 * suspending until THIS request is the one that finished: the io
+			 * event is shared, so any other completion wakes us, and the
+			 * result of an unfinished fsync reads as success. */
+			data->ref_count++;
+			do {
+				ZEND_ASYNC_WAKER_NEW(coroutine);
+				zend_async_resume_when(coroutine, &data->async_io->event, false,
+						zend_async_waker_callback_resolve, NULL);
+				ZEND_ASYNC_SUSPEND();
+				zend_async_waker_clean(coroutine);
+			} while (!req->completed && EG(exception) == NULL);
+
+			if (UNEXPECTED(stream->pending_free)) {
+				if (EG(exception)) {
+					zend_clear_exception();
+				}
+				req->dispose(req);
+				php_stdiop_unpin_after_suspend(stream, data);
+				return -1;
+			}
+			php_stdiop_unpin_after_suspend(stream, data);
+
+			if (UNEXPECTED(!req->completed)) {
+				req->dispose(req);
+				return -1;
+			}
 		}
 
 		const int result = (int) req->result;
