@@ -195,12 +195,31 @@ PHPAPI zend_result php_stream_cast(php_stream *stream, int castas, void **ret, i
 
 	/* synchronize our buffer (if possible) */
 	if (ret && castas != PHP_STREAM_AS_FD_FOR_SELECT && castas != PHP_STREAM_AS_FD_FOR_COPY) {
+		php_stream_buffer_lock_t *lock;
+
+		/* The seek moves the descriptor a parked reader is about to credit its
+		 * bytes against, and the reset drops the bytes it has not taken yet. */
+		if (UNEXPECTED(!php_stream_buffer_lock_acquire(stream, &lock))) {
+			return FAILURE;
+		}
+
 		php_stream_flush(stream);
-		if (stream->ops->seek && (stream->flags & PHP_STREAM_FLAG_NO_SEEK) == 0) {
+
+		if (!php_stream_buffer_lock_is_closed(lock) && stream->ops->seek
+				&& (stream->flags & PHP_STREAM_FLAG_NO_SEEK) == 0) {
 			zend_off_t dummy;
 
 			stream->ops->seek(stream, stream->position, SEEK_SET, &dummy);
-			stream->readpos = stream->writepos = 0;
+			if (!php_stream_buffer_lock_is_closed(lock)) {
+				stream->readpos = stream->writepos = 0;
+			}
+		}
+
+		const bool closed = php_stream_buffer_lock_is_closed(lock);
+		php_stream_buffer_lock_release(lock);
+
+		if (UNEXPECTED(closed)) {
+			return FAILURE;
 		}
 	}
 

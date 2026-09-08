@@ -266,8 +266,23 @@ struct _php_stream  {
 #define PHP_STREAM_FCLOSE_FDOPEN	1
 #define PHP_STREAM_FCLOSE_FOPENCOOKIE 2
 
-/* allocate a new stream for a particular ops */
 BEGIN_EXTERN_C()
+
+/* Async: serialises the buffered stream API - the read buffer, the position and
+ * the filter chain - across coroutines; unrelated to php_stream_lock(), which is
+ * the advisory file lock. acquire() returns false when the caller
+ * must abandon its operation without touching the stream; on true it stores a
+ * lock that release() must be given back, NULL included: a caller outside a
+ * coroutine has nothing to serialise. The lock is recursive for its owner and
+ * holds a reference of its own, so is_closed() still answers after a call that
+ * parked, including one that returned to a stream fclose() has freed. */
+typedef struct _php_stream_buffer_lock php_stream_buffer_lock_t;
+PHPAPI bool php_stream_buffer_lock_acquire(php_stream *stream, php_stream_buffer_lock_t **held);
+PHPAPI void php_stream_buffer_lock_release(php_stream_buffer_lock_t *lock);
+/* True once the stream behind the lock has been closed and freed. */
+PHPAPI bool php_stream_buffer_lock_is_closed(php_stream_buffer_lock_t *lock);
+
+/* allocate a new stream for a particular ops */
 PHPAPI php_stream *_php_stream_alloc(const php_stream_ops *ops, void *abstract,
 		const char *persistent_id, const char *mode STREAMS_DC);
 END_EXTERN_C()

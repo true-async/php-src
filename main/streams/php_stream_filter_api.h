@@ -138,6 +138,10 @@ BEGIN_EXTERN_C()
 PHPAPI void php_stream_filter_prepend(php_stream_filter_chain *chain, php_stream_filter *filter);
 PHPAPI void php_stream_filter_prepend_ex(php_stream_filter_chain *chain, php_stream_filter *filter);
 PHPAPI void php_stream_filter_append(php_stream_filter_chain *chain, php_stream_filter *filter);
+/* Appends the filter to the chain and winds any buffered data through it.
+ * On FAILURE the filter may or may not have reached the chain: filter->chain is
+ * the chain when it did, and NULL when the stream was closed before the append
+ * started. A caller that unlinks the filter must test it. */
 PHPAPI zend_result php_stream_filter_append_ex(php_stream_filter_chain *chain, php_stream_filter *filter);
 PHPAPI zend_result php_stream_filter_flush(php_stream_filter *filter, bool finish);
 PHPAPI php_stream_filter *php_stream_filter_remove(php_stream_filter *filter, bool call_dtor);

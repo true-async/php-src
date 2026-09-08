@@ -272,7 +272,6 @@ static int _php_stream_free_persistent(zval *zv, void *pStream)
 	return le->ptr == pStream;
 }
 
-typedef struct _php_stream_buffer_lock php_stream_buffer_lock_t;
 static int php_stream_flush_ex(php_stream *stream, bool closing, php_stream_buffer_lock_t *lock);
 
 PHPAPI int php_stream_free(php_stream *stream, int close_options) /* {{{ */
@@ -671,6 +670,47 @@ release:
 	ZEND_ASYNC_EVENT_RELEASE(&lock->base);
 }
 
+/* Two streams are locked in address order, so that two copies running in
+ * opposite directions cannot each hold what the other waits for. */
+static bool stream_buffer_lock_pair(php_stream *first, php_stream *second,
+		php_stream_buffer_lock_t **first_lock, php_stream_buffer_lock_t **second_lock)
+{
+	php_stream *lower = first < second ? first : second;
+	php_stream *upper = first < second ? second : first;
+	php_stream_buffer_lock_t *lower_lock, *upper_lock;
+
+	if (UNEXPECTED(!stream_buffer_lock(lower, &lower_lock))) {
+		return false;
+	}
+
+	if (UNEXPECTED(!stream_buffer_lock(upper, &upper_lock))) {
+		stream_buffer_unlock(lower_lock);
+		return false;
+	}
+
+	*first_lock = first < second ? lower_lock : upper_lock;
+	*second_lock = first < second ? upper_lock : lower_lock;
+
+	return true;
+}
+
+/* Contract in php_streams.h. The filter chain and the cast live in other files
+ * and reach the lock through these. */
+PHPAPI bool php_stream_buffer_lock_acquire(php_stream *stream, php_stream_buffer_lock_t **held)
+{
+	return stream_buffer_lock(stream, held);
+}
+
+PHPAPI void php_stream_buffer_lock_release(php_stream_buffer_lock_t *lock)
+{
+	stream_buffer_unlock(lock);
+}
+
+PHPAPI bool php_stream_buffer_lock_is_closed(php_stream_buffer_lock_t *lock)
+{
+	return stream_buffer_lock_closed(lock);
+}
+
 /* }}} */
 
 static zend_result stream_fill_read_buffer_locked(php_stream *stream, size_t size, php_stream_buffer_lock_t *lock)
@@ -720,6 +760,13 @@ static zend_result stream_fill_read_buffer_locked(php_stream *stream, size_t siz
 			/* wind the handle... */
 			for (filter = stream->readfilters.head; filter; filter = filter->next) {
 				status = filter->fops->filter(stream, filter, brig_inp, brig_outp, NULL, flags);
+
+				if (UNEXPECTED(stream_buffer_lock_closed(lock))) {
+					/* A userspace filter suspended, and the close freed the
+					 * chain this loop walks. */
+					status = PSFS_ERR_FATAL;
+					break;
+				}
 
 				if (status != PSFS_PASS_ON) {
 					break;
@@ -1392,6 +1439,10 @@ static ssize_t php_stream_write_buffer(php_stream *stream, const char *buf, size
 		stream->readpos = stream->writepos = 0;
 
 		stream->ops->seek(stream, stream->position, SEEK_SET, &stream->position);
+
+		if (UNEXPECTED(stream_buffer_lock_closed(lock))) {
+			return -1;
+		}
 	}
 
 	bool old_eof = stream->eof;
@@ -1462,6 +1513,13 @@ static ssize_t php_stream_write_filtered(php_stream *stream, const char *buf, si
 		 * the first filter in the chain */
 		status = filter->fops->filter(stream, filter, brig_inp, brig_outp,
 				filter == stream->writefilters.head ? &consumed : NULL, flags);
+
+		if (UNEXPECTED(stream_buffer_lock_closed(lock))) {
+			/* A userspace filter suspended, and the close freed the chain this
+			 * loop walks. */
+			status = PSFS_ERR_FATAL;
+			break;
+		}
 
 		if (status != PSFS_PASS_ON) {
 			break;
@@ -1763,7 +1821,8 @@ static int stream_seek_locked(php_stream *stream, zend_off_t offset, int whence,
 		char tmp[1024];
 		ssize_t didread;
 		while (offset > 0) {
-			if ((didread = php_stream_read(stream, tmp, MIN(offset, sizeof(tmp)))) <= 0) {
+			if ((didread = php_stream_read(stream, tmp, MIN(offset, sizeof(tmp)))) <= 0
+					|| UNEXPECTED(stream_buffer_lock_closed(lock))) {
 				return -1;
 			}
 			offset -= didread;
@@ -1846,6 +1905,11 @@ PHPAPI ssize_t _php_stream_passthru(php_stream * stream STREAMS_DC)
 	size_t bcount = 0;
 	char buf[8192];
 	ssize_t b;
+	php_stream_buffer_lock_t *lock;
+
+	if (UNEXPECTED(!stream_buffer_lock(stream, &lock))) {
+		return -1;
+	}
 
 	if (php_stream_mmap_possible(stream)) {
 		char *p;
@@ -1859,18 +1923,37 @@ PHPAPI ssize_t _php_stream_passthru(php_stream * stream STREAMS_DC)
 				if (0 < (b = PHPWRITE(p + bcount, MIN(mapped - bcount, INT_MAX)))) {
 					bcount += b;
 				}
+				/* The output write suspends, and the mapping is gone with the
+				 * stream a close freed meanwhile. */
+				if (UNEXPECTED(stream_buffer_lock_closed(lock))) {
+					break;
+				}
 			} while (b > 0 && mapped > bcount);
 
-			php_stream_mmap_unmap_ex(stream, mapped);
+			if (!stream_buffer_lock_closed(lock)) {
+				php_stream_mmap_unmap_ex(stream, mapped);
+			}
+
+			stream_buffer_unlock(lock);
 
 			return bcount;
 		}
 	}
 
 	while ((b = php_stream_read(stream, buf, sizeof(buf))) > 0) {
+		if (UNEXPECTED(stream_buffer_lock_closed(lock))) {
+			break;
+		}
 		PHPWRITE(buf, b);
 		bcount += b;
+		/* The output write suspends as well, so the next read would go to a
+		 * stream that is no longer there. */
+		if (UNEXPECTED(stream_buffer_lock_closed(lock))) {
+			break;
+		}
 	}
+
+	stream_buffer_unlock(lock);
 
 	if (b < 0 && bcount == 0) {
 		return b;
@@ -1896,12 +1979,20 @@ PHPAPI zend_string *_php_stream_copy_to_mem(php_stream *src, size_t maxlen, bool
 		maxlen = 0;
 	}
 
+	php_stream_buffer_lock_t *lock;
+
+	/* php_stream_read() reports what it delivered before parking, so without
+	 * the lock held across the loop the next round reads a freed stream. */
+	if (UNEXPECTED(!stream_buffer_lock(src, &lock))) {
+		return NULL;
+	}
+
 	if (maxlen > 0 && maxlen < 4 * CHUNK_SIZE) {
 		result = zend_string_alloc(maxlen, persistent);
 		ptr = ZSTR_VAL(result);
 		while ((len < maxlen) && !php_stream_eof(src)) {
 			ret = php_stream_read(src, ptr, maxlen - len);
-			if (ret <= 0) {
+			if (ret <= 0 || stream_buffer_lock_closed(lock)) {
 				// TODO: Propagate error?
 				break;
 			}
@@ -1920,6 +2011,7 @@ PHPAPI zend_string *_php_stream_copy_to_mem(php_stream *src, size_t maxlen, bool
 			zend_string_free(result);
 			result = NULL;
 		}
+		stream_buffer_unlock(lock);
 		return result;
 	}
 
@@ -1944,6 +2036,9 @@ PHPAPI zend_string *_php_stream_copy_to_mem(php_stream *src, size_t maxlen, bool
 	const int min_room = CHUNK_SIZE / 4;
 	// TODO: Propagate error?
 	while ((ret = php_stream_read(src, ptr, buflen - len)) > 0) {
+		if (UNEXPECTED(stream_buffer_lock_closed(lock))) {
+			break;
+		}
 		len += ret;
 		if (len + min_room >= buflen) {
 			if (maxlen == len) {
@@ -1968,6 +2063,8 @@ PHPAPI zend_string *_php_stream_copy_to_mem(php_stream *src, size_t maxlen, bool
 		result = NULL;
 	}
 
+	stream_buffer_unlock(lock);
+
 	return result;
 }
 
@@ -1976,9 +2073,16 @@ static zend_result php_stream_copy_fallback(php_stream *src, php_stream *dest, s
 {
 	char buf[CHUNK_SIZE];
 	size_t haveread = 0;
+	php_stream_buffer_lock_t *src_lock, *dest_lock;
 
 	if (maxlen == PHP_STREAM_COPY_ALL) {
 		maxlen = 0;
+	}
+
+	/* Either handle can be closed while the other side of the copy is parked. */
+	if (UNEXPECTED(!stream_buffer_lock_pair(src, dest, &src_lock, &dest_lock))) {
+		*len = 0;
+		return FAILURE;
 	}
 
 	while (1) {
@@ -1991,9 +2095,12 @@ static zend_result php_stream_copy_fallback(php_stream *src, php_stream *dest, s
 		}
 
 		didread = php_stream_read(src, buf, readchunk);
-		if (didread <= 0) {
+		const bool src_closed = stream_buffer_lock_closed(src_lock);
+		if (didread <= 0 || src_closed) {
 			*len = haveread;
-			return didread < 0 ? FAILURE : SUCCESS;
+			stream_buffer_unlock(dest_lock);
+			stream_buffer_unlock(src_lock);
+			return didread < 0 || src_closed ? FAILURE : SUCCESS;
 		}
 
 		size_t towrite = didread;
@@ -2002,8 +2109,10 @@ static zend_result php_stream_copy_fallback(php_stream *src, php_stream *dest, s
 
 		while (towrite) {
 			ssize_t didwrite = php_stream_write(dest, writeptr, towrite);
-			if (didwrite <= 0) {
+			if (didwrite <= 0 || stream_buffer_lock_closed(dest_lock)) {
 				*len = haveread - towrite;
+				stream_buffer_unlock(dest_lock);
+				stream_buffer_unlock(src_lock);
 				return FAILURE;
 			}
 
@@ -2015,6 +2124,9 @@ static zend_result php_stream_copy_fallback(php_stream *src, php_stream *dest, s
 			break;
 		}
 	}
+
+	stream_buffer_unlock(dest_lock);
+	stream_buffer_unlock(src_lock);
 
 	*len = haveread;
 	return SUCCESS;
@@ -2031,6 +2143,15 @@ PHPAPI zend_result _php_stream_copy_to_stream_ex(php_stream *src, php_stream *de
 	if (maxlen == 0) {
 		*len = 0;
 		return SUCCESS;
+	}
+
+	php_stream_buffer_lock_t *src_lock, *dest_lock;
+
+	/* php_io_copy() below writes the positions of both handles back after it
+	 * returns, so it is held against a close the same way the fallback is. */
+	if (UNEXPECTED(!stream_buffer_lock_pair(src, dest, &src_lock, &dest_lock))) {
+		*len = 0;
+		return FAILURE;
 	}
 
 	/* Try optimized fd-level copy if both streams support it and their read buffers
@@ -2057,6 +2178,13 @@ PHPAPI zend_result _php_stream_copy_to_stream_ex(php_stream *src, php_stream *de
 			size_t copied = 0;
 			zend_result result = php_io_copy(&src_copy_fd, &dest_copy_fd, io_maxlen, &copied);
 
+			if (UNEXPECTED(stream_buffer_lock_closed(src_lock) || stream_buffer_lock_closed(dest_lock))) {
+				stream_buffer_unlock(dest_lock);
+				stream_buffer_unlock(src_lock);
+				*len = copied;
+				return FAILURE;
+			}
+
 			src->position += copied;
 			dest->position += copied;
 
@@ -2065,12 +2193,22 @@ PHPAPI zend_result _php_stream_copy_to_stream_ex(php_stream *src, php_stream *de
 			php_stream_set_option(dest, PHP_STREAM_OPTION_ALIGN_POSITION, 0, &dest->position);
 
 			*len = copied;
+			stream_buffer_unlock(dest_lock);
+			stream_buffer_unlock(src_lock);
 			return result;
 		}
 	}
 
 fallback:
-	return php_stream_copy_fallback(src, dest, maxlen, len);
+	;
+	/* The fallback takes the same two locks again: they are recursive for their
+	 * owner. */
+	const zend_result fallback_result = php_stream_copy_fallback(src, dest, maxlen, len);
+
+	stream_buffer_unlock(dest_lock);
+	stream_buffer_unlock(src_lock);
+
+	return fallback_result;
 }
 
 /* Returns the number of bytes moved.
