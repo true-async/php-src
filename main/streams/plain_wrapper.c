@@ -927,8 +927,10 @@ static int php_stdiop_close(php_stream *stream, int close_handle)
 		data->async_io->on_detach = NULL;
 		const bool is_stream = ZEND_ASYNC_IO_IS_STREAM(data->async_io->type);
 		/* Only the reactor knows whether a worker still names the fd, so it
-		 * closes it. A FILE* has its own close below: one owner each. */
-		const bool fd_handed_over = close_handle && data->file == NULL && data->fd >= 0
+		 * closes it. php_stdiop_cast gives the FILE* a dup of its own, and the
+		 * handover holds only while the two numbers stay apart. */
+		const bool fd_handed_over = close_handle && data->fd >= 0
+				&& (data->file == NULL || fileno(data->file) != data->fd)
 				&& data->async_io->type == ZEND_ASYNC_IO_TYPE_FILE
 				&& !(data->async_io->state & ZEND_ASYNC_IO_CLOSED);
 		if (fd_handed_over) {
@@ -1053,8 +1055,10 @@ static int php_stdiop_sync(php_stream *stream, bool dataonly)
 	php_stdio_stream_data *data = (php_stdio_stream_data*)stream->abstract;
 
 	/* Async IO path: flush via async reactor, avoid fdopen() which creates
-	 * a FILE* that conflicts with reactor's fd ownership. */
-	if (data->async_io != NULL) {
+	 * a FILE* that conflicts with reactor's fd ownership. It needs a coroutine
+	 * to park in: ZEND_ASYNC_WAKER_NEW bails out fatally without one. */
+	if (data->async_io != NULL && !ZEND_ASYNC_IS_OFF && !ZEND_ASYNC_IS_SCHEDULER_CONTEXT
+			&& ZEND_ASYNC_CURRENT_COROUTINE != NULL) {
 		/* fsync/fdatasync is only meaningful for regular files */
 		if (data->async_io->type == ZEND_ASYNC_IO_TYPE_PIPE
 				|| data->async_io->type == ZEND_ASYNC_IO_TYPE_TTY) {
