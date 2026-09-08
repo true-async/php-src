@@ -467,9 +467,8 @@ fprintf(stderr, "stream_free: %s:%p[%s] preserve_handle=%d release_cast=%d remov
 			pefree(stream->error_list, stream->is_persistent);
 		}
 
-		/* A coroutine parked inside ops->read handed this buffer to the IO,
-		 * where a thread-pool worker may still be writing into it. The free
-		 * goes with the stream, to the last unpin. */
+		/* A worker may still write into the buffer a parked read gave the
+		 * IO, so the free goes with the stream, to the last unpin. */
 		if (stream->readbuf && !stream->pending_free) {
 			pefree(stream->readbuf, stream->is_persistent);
 			stream->readbuf = NULL;
