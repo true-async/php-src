@@ -1448,13 +1448,33 @@ PHP_FUNCTION(stream_filter_remove)
 		RETURN_THROWS();
 	}
 
-	if (php_stream_filter_flush(filter, 1) == FAILURE) {
+	php_stream *stream = filter->chain != NULL ? filter->chain->stream : NULL;
+	php_stream_buffer_lock_t *lock = NULL;
+
+	/* Held across both steps: between the flush and the removal the filter must
+	 * not be reached by another coroutine, and the flush itself suspends. */
+	if (stream != NULL && UNEXPECTED(!php_stream_buffer_lock_acquire(stream, &lock))) {
+		php_error_docref(NULL, E_WARNING, "Unable to flush filter, not removing");
+		RETURN_FALSE;
+	}
+
+	/* The acquire suspends, and another coroutine removing the same filter
+	 * frees it in that window: the resource says whether it is still there. */
+	if (Z_RES_P(zfilter)->type != php_file_le_stream_filter() || Z_RES_P(zfilter)->ptr != filter) {
+		php_stream_buffer_lock_release(lock);
+		php_error_docref(NULL, E_WARNING, "Filter has already been removed");
+		RETURN_FALSE;
+	}
+
+	if (php_stream_filter_flush(filter, 1) == FAILURE || php_stream_buffer_lock_is_closed(lock)) {
+		php_stream_buffer_lock_release(lock);
 		php_error_docref(NULL, E_WARNING, "Unable to flush filter, not removing");
 		RETURN_FALSE;
 	}
 
 	zend_list_close(Z_RES_P(zfilter));
 	php_stream_filter_remove(filter, 1);
+	php_stream_buffer_lock_release(lock);
 	RETURN_TRUE;
 }
 /* }}} */
