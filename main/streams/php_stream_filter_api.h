@@ -144,6 +144,12 @@ PHPAPI void php_stream_filter_append(php_stream_filter_chain *chain, php_stream_
  * started. A caller that unlinks the filter must test it. */
 PHPAPI zend_result php_stream_filter_append_ex(php_stream_filter_chain *chain, php_stream_filter *filter);
 PHPAPI zend_result php_stream_filter_flush(php_stream_filter *filter, bool finish);
+/* Unlinks the filter from its chain, and frees it when call_dtor is set. The
+ * caller owns the filter, and must not be inside a walk of the same chain. On a
+ * stream shared between coroutines it also holds the buffer lock across the
+ * removal and whatever reached the filter before it - except php_stream_free(),
+ * which closes the lock event instead, so that the coroutines parked on the
+ * stream abandon the chain rather than queue behind the close. */
 PHPAPI php_stream_filter *php_stream_filter_remove(php_stream_filter *filter, bool call_dtor);
 PHPAPI void php_stream_filter_free(php_stream_filter *filter);
 PHPAPI php_stream_filter *_php_stream_filter_alloc(const php_stream_filter_ops *fops,

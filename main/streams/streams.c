@@ -723,13 +723,17 @@ static zend_result stream_fill_read_buffer_locked(php_stream *stream, size_t siz
 	bool old_eof = stream->eof;
 
 	if (stream->readfilters.head) {
-		size_t to_read_now = MIN(size, stream->chunk_size);
+		/* The read below is bounded by what chunk_buf holds, so the size is
+		 * taken once: stream_set_chunk_size() from another coroutine moves
+		 * stream->chunk_size while this loop is parked. */
+		const size_t chunk_size = stream->chunk_size;
+		size_t to_read_now = MIN(size, chunk_size);
 		char *chunk_buf;
 		php_stream_bucket_brigade brig_in = { NULL, NULL }, brig_out = { NULL, NULL };
 		php_stream_bucket_brigade *brig_inp = &brig_in, *brig_outp = &brig_out, *brig_swap;
 
 		/* allocate a buffer for reading chunks */
-		chunk_buf = emalloc(stream->chunk_size);
+		chunk_buf = emalloc(chunk_size);
 
 		while (!stream->eof && (stream->writepos - stream->readpos < (zend_off_t)to_read_now)) {
 			ssize_t justread = 0;
@@ -739,7 +743,7 @@ static zend_result stream_fill_read_buffer_locked(php_stream *stream, size_t siz
 			php_stream_filter *filter;
 
 			/* read a chunk into a bucket */
-			justread = stream->ops->read(stream, chunk_buf, stream->chunk_size);
+			justread = stream->ops->read(stream, chunk_buf, chunk_size);
 			if (stream_buffer_lock_closed(lock)) {
 				efree(chunk_buf);
 				return FAILURE;
@@ -2142,7 +2146,7 @@ static zend_result php_stream_copy_fallback(php_stream *src, php_stream *dest, s
 
 		while (towrite) {
 			ssize_t didwrite = php_stream_write(dest, writeptr, towrite);
-			if (didwrite <= 0 || stream_buffer_lock_closed(dest_lock)) {
+			if (didwrite <= 0) {
 				*len = haveread - towrite;
 				stream_buffer_unlock(dest_lock);
 				stream_buffer_unlock(src_lock);
@@ -2151,6 +2155,15 @@ static zend_result php_stream_copy_fallback(php_stream *src, php_stream *dest, s
 
 			towrite -= didwrite;
 			writeptr += didwrite;
+
+			/* Either handle can be closed while the write is parked; what
+			 * reached the destination is counted first. */
+			if (UNEXPECTED(stream_buffer_lock_closed(dest_lock) || stream_buffer_lock_closed(src_lock))) {
+				*len = haveread - towrite;
+				stream_buffer_unlock(dest_lock);
+				stream_buffer_unlock(src_lock);
+				return FAILURE;
+			}
 		}
 
 		if (maxlen && maxlen == haveread) {
