@@ -64,6 +64,36 @@ PHPAPI HashTable *php_stream_get_url_stream_wrappers_hash_global(void)
 	return &url_stream_wrappers_hash;
 }
 
+/* A stream carries two independent states: the read buffer and the write path.
+ * A socket is read and written at the same time, so one lock over the handle
+ * would make the reader's park block the writer that has to feed the peer. */
+typedef enum {
+	STREAM_SIDE_WRITE = PHP_STREAM_BUFFER_SIDE_WRITE,
+	STREAM_SIDE_READ = PHP_STREAM_BUFFER_SIDE_READ,
+} stream_buffer_side;
+
+struct _php_stream_buffer_lock {
+	zend_async_event_t base;
+	zend_coroutine_t *owner;
+	/* The buffered API re-enters itself: a seek emulated through reads, a
+	 * userspace wrapper reading its own stream. */
+	uint32_t depth;
+	uint8_t rank;
+};
+
+/* php_stream.buffer_lock addresses the write side, which is the first member;
+ * the read side is reached through it, and the block outlives whichever side is
+ * released last. */
+typedef struct {
+	php_stream_buffer_lock_t sides[2];
+	uint8_t live;
+} php_stream_buffer_block_t;
+
+static php_stream_buffer_block_t *stream_buffer_block_of(const php_stream_buffer_lock_t *side)
+{
+	return (php_stream_buffer_block_t *) ((char *) side - side->rank * sizeof(php_stream_buffer_lock_t));
+}
+
 static int forget_persistent_resource_id_numbers(zval *el)
 {
 	php_stream *stream;
@@ -90,9 +120,11 @@ fprintf(stderr, "forget_persistent: %s:%p\n", stream->ops->label, stream);
 	 * the stream itself outlives the request. No coroutine is left to hold it
 	 * here, so drop it and let the next request build its own. */
 	if (stream->buffer_lock != NULL) {
-		zend_async_event_t *lock = stream->buffer_lock;
+		php_stream_buffer_block_t *block = stream_buffer_block_of((php_stream_buffer_lock_t *) stream->buffer_lock);
 		stream->buffer_lock = NULL;
-		lock->dispose(lock);
+		zend_async_callbacks_free(&block->sides[0].base);
+		zend_async_callbacks_free(&block->sides[1].base);
+		efree(block);
 	}
 
 	return 0;
@@ -273,7 +305,7 @@ static int _php_stream_free_persistent(zval *zv, void *pStream)
 }
 
 static int php_stream_flush_ex(php_stream *stream, bool closing, php_stream_buffer_lock_t *lock);
-static bool stream_buffer_lock(php_stream *stream, php_stream_buffer_lock_t **held);
+static bool stream_buffer_lock(php_stream *stream, stream_buffer_side side, php_stream_buffer_lock_t **held);
 static void stream_buffer_unlock(php_stream_buffer_lock_t *lock);
 
 PHPAPI int php_stream_free(php_stream *stream, int close_options) /* {{{ */
@@ -443,10 +475,17 @@ fprintf(stderr, "stream_free: %s:%p[%s] preserve_handle=%d release_cast=%d remov
 		/* Nothing would notify the waiters again; closing tells each of them,
 		 * once it runs, that the stream is gone. */
 		if (stream->buffer_lock != NULL) {
-			zend_async_event_t *lock = stream->buffer_lock;
+			php_stream_buffer_block_t *block = stream_buffer_block_of((php_stream_buffer_lock_t *) stream->buffer_lock);
 			stream->buffer_lock = NULL;
-			ZEND_ASYNC_CALLBACKS_NOTIFY_AND_CLOSE(lock, NULL, NULL);
-			ZEND_ASYNC_EVENT_RELEASE(lock);
+
+			/* Both sides, in one sequence that cannot suspend: a coroutine
+			 * holding either of them learns the stream is gone. */
+			for (uint8_t rank = 0; rank < 2; rank++) {
+				zend_async_event_t *side = &block->sides[rank].base;
+
+				ZEND_ASYNC_CALLBACKS_NOTIFY_AND_CLOSE(side, NULL, NULL);
+				ZEND_ASYNC_EVENT_RELEASE(side);
+			}
 		}
 
 		if (stream->is_persistent && (close_options & PHP_STREAM_FREE_PERSISTENT)) {
@@ -478,15 +517,6 @@ fprintf(stderr, "stream_free: %s:%p[%s] preserve_handle=%d release_cast=%d remov
 /* {{{ generic stream operations */
 
 /* {{{ Buffer lock */
-
-struct _php_stream_buffer_lock {
-	zend_async_event_t base;
-	zend_coroutine_t *owner;
-	/* The buffered API re-enters itself: a seek emulated through reads, a
-	 * userspace wrapper reading its own stream. */
-	uint32_t depth;
-};
-
 
 static bool stream_buffer_lock_closed(php_stream_buffer_lock_t *lock)
 {
@@ -540,8 +570,14 @@ static bool stream_buffer_event_stop(zend_async_event_t *event)
 
 static bool stream_buffer_event_dispose(zend_async_event_t *event)
 {
+	php_stream_buffer_lock_t *side = (php_stream_buffer_lock_t *) event;
+	php_stream_buffer_block_t *block = stream_buffer_block_of(side);
+
 	zend_async_callbacks_free(event);
-	efree(event);
+
+	if (--block->live == 0) {
+		efree(block);
+	}
 
 	return true;
 }
@@ -561,29 +597,42 @@ static void stream_buffer_lock_grant(zend_async_event_t *event, zend_async_event
 	zend_async_waker_callback_resolve(event, callback, result, exception);
 }
 
-static php_stream_buffer_lock_t *stream_buffer_lock_create(php_stream *stream)
+static php_stream_buffer_block_t *stream_buffer_block_create(php_stream *stream)
 {
-	php_stream_buffer_lock_t *lock = ecalloc(1, sizeof(php_stream_buffer_lock_t));
+	/* stream->buffer_lock is the address of the write side, so the block must
+	 * start with it. */
+	ZEND_STATIC_ASSERT(STREAM_SIDE_WRITE == 0, "the write side is the first member of the block");
 
-	lock->base.ref_count = 1;
-	lock->base.add_callback = stream_buffer_event_add_callback;
-	lock->base.del_callback = stream_buffer_event_del_callback;
-	lock->base.start = stream_buffer_event_start;
-	lock->base.stop = stream_buffer_event_stop;
-	lock->base.dispose = stream_buffer_event_dispose;
+	php_stream_buffer_block_t *block = ecalloc(1, sizeof(php_stream_buffer_block_t));
 
-	/* A queued waiter is not IO: it must not count as live work for deadlock
-	 * detection. */
-	ZEND_ASYNC_EVENT_SET_HIDDEN(&lock->base);
+	block->live = 2;
 
-	stream->buffer_lock = &lock->base;
+	for (uint8_t rank = 0; rank < 2; rank++) {
+		php_stream_buffer_lock_t *side = &block->sides[rank];
 
-	return lock;
+		side->rank = rank;
+		side->base.ref_count = 1;
+		side->base.add_callback = stream_buffer_event_add_callback;
+		side->base.del_callback = stream_buffer_event_del_callback;
+		side->base.start = stream_buffer_event_start;
+		side->base.stop = stream_buffer_event_stop;
+		side->base.dispose = stream_buffer_event_dispose;
+
+		/* A queued waiter is not IO: it must not count as live work for
+		 * deadlock detection. */
+		ZEND_ASYNC_EVENT_SET_HIDDEN(&side->base);
+	}
+
+	stream->buffer_lock = &block->sides[STREAM_SIDE_WRITE].base;
+
+	return block;
 }
 
-/* false: the lock is NOT held, and the caller must fail its operation. */
-static bool stream_buffer_lock(php_stream *stream, php_stream_buffer_lock_t **held)
+/* false: the side is NOT held, and the caller must fail its operation. */
+static bool stream_buffer_lock(php_stream *stream, stream_buffer_side side, php_stream_buffer_lock_t **held)
 {
+	ZEND_ASSERT(side == STREAM_SIDE_WRITE || side == STREAM_SIDE_READ);
+
 	*held = NULL;
 	if (ZEND_ASYNC_IS_OFF || ZEND_ASYNC_IS_SCHEDULER_CONTEXT) {
 		return true;
@@ -595,11 +644,10 @@ static bool stream_buffer_lock(php_stream *stream, php_stream_buffer_lock_t **he
 		return true;
 	}
 
-	php_stream_buffer_lock_t *lock = (php_stream_buffer_lock_t *) stream->buffer_lock;
-
-	if (lock == NULL) {
-		lock = stream_buffer_lock_create(stream);
-	}
+	php_stream_buffer_block_t *block = stream->buffer_lock != NULL
+			? stream_buffer_block_of((php_stream_buffer_lock_t *) stream->buffer_lock)
+			: stream_buffer_block_create(stream);
+	php_stream_buffer_lock_t *lock = &block->sides[side];
 
 	/* Keep the event alive independently of the stream, including for the
 	 * owner: ops->read/write may return after fclose() freed the stream. */
@@ -672,35 +720,73 @@ release:
 	ZEND_ASYNC_EVENT_RELEASE(&lock->base);
 }
 
-/* Two streams are locked in address order, so that two copies running in
- * opposite directions cannot each hold what the other waits for. */
-static bool stream_buffer_lock_pair(php_stream *first, php_stream *second,
-		php_stream_buffer_lock_t **first_lock, php_stream_buffer_lock_t **second_lock)
+/* A stdio file is read and written through one descriptor offset - the reactor
+ * submits both with offset -1 - so a write there excludes reads for its whole
+ * loop. A pipe, a tty and a socket have no offset to share, and holding their
+ * read side would put the writer behind the reader that only the writer can
+ * release. */
+static bool stream_write_needs_read_side(const php_stream *stream)
 {
-	php_stream *lower = first < second ? first : second;
-	php_stream *upper = first < second ? second : first;
-	php_stream_buffer_lock_t *lower_lock, *upper_lock;
+	return php_stream_is(stream, PHP_STREAM_IS_STDIO) && stream->ops->seek != NULL
+			&& (stream->flags & PHP_STREAM_FLAG_NO_SEEK) == 0;
+}
 
-	if (UNEXPECTED(!stream_buffer_lock(lower, &lower_lock))) {
-		return false;
+/* Sides are taken in one order: by stream address, and within a stream the
+ * write side before the read side. A copy takes the destination's read side
+ * here when the write path is going to ask for it, so that the ask is
+ * recursive and never queues against a copy running the other way. */
+typedef struct {
+	php_stream_buffer_lock_t *src_read;
+	php_stream_buffer_lock_t *dest_write;
+	php_stream_buffer_lock_t *dest_read;
+} stream_copy_locks_t;
+
+static void stream_buffer_unlock_copy(stream_copy_locks_t *locks)
+{
+	stream_buffer_unlock(locks->dest_read);
+	stream_buffer_unlock(locks->dest_write);
+	stream_buffer_unlock(locks->src_read);
+	locks->dest_read = locks->dest_write = locks->src_read = NULL;
+}
+
+static bool stream_buffer_lock_copy(php_stream *src, php_stream *dest, stream_copy_locks_t *locks)
+{
+	php_stream *first = src <= dest ? src : dest;
+	php_stream *second = src <= dest ? dest : src;
+	const bool dest_read = stream_write_needs_read_side(dest);
+
+	locks->src_read = locks->dest_write = locks->dest_read = NULL;
+
+	for (int step = 0; step < 4; step++) {
+		php_stream *stream = step < 2 ? first : second;
+		const stream_buffer_side side = (step & 1) ? STREAM_SIDE_READ : STREAM_SIDE_WRITE;
+		php_stream_buffer_lock_t **out;
+
+		if (side == STREAM_SIDE_WRITE) {
+			if (stream != dest || locks->dest_write != NULL) {
+				continue;
+			}
+			out = &locks->dest_write;
+		} else if (stream == src && locks->src_read == NULL) {
+			out = &locks->src_read;
+		} else if (stream == dest && dest_read && locks->dest_read == NULL) {
+			out = &locks->dest_read;
+		} else {
+			continue;
+		}
+
+		if (UNEXPECTED(!stream_buffer_lock(stream, side, out))) {
+			stream_buffer_unlock_copy(locks);
+			return false;
+		}
 	}
-
-	if (UNEXPECTED(!stream_buffer_lock(upper, &upper_lock))) {
-		stream_buffer_unlock(lower_lock);
-		return false;
-	}
-
-	*first_lock = first < second ? lower_lock : upper_lock;
-	*second_lock = first < second ? upper_lock : lower_lock;
 
 	return true;
 }
 
-/* Contract in php_streams.h. The filter chain and the cast live in other files
- * and reach the lock through these. */
-PHPAPI bool php_stream_buffer_lock_acquire(php_stream *stream, php_stream_buffer_lock_t **held)
+PHPAPI bool php_stream_buffer_lock_acquire(php_stream *stream, uint8_t side, php_stream_buffer_lock_t **held)
 {
-	return stream_buffer_lock(stream, held);
+	return stream_buffer_lock(stream, (stream_buffer_side) side, held);
 }
 
 PHPAPI void php_stream_buffer_lock_release(php_stream_buffer_lock_t *lock)
@@ -922,7 +1008,7 @@ out_is_eof:
 PHPAPI zend_result php_stream_fill_read_buffer(php_stream *stream, size_t size)
 {
 	php_stream_buffer_lock_t *lock;
-	if (UNEXPECTED(!stream_buffer_lock(stream, &lock))) {
+	if (UNEXPECTED(!stream_buffer_lock(stream, STREAM_SIDE_READ, &lock))) {
 		return FAILURE;
 	}
 
@@ -1026,7 +1112,7 @@ static ssize_t stream_read_locked(php_stream *stream, char *buf, size_t size, ph
 PHPAPI ssize_t php_stream_read(php_stream *stream, char *buf, size_t size)
 {
 	php_stream_buffer_lock_t *lock;
-	if (UNEXPECTED(!stream_buffer_lock(stream, &lock))) {
+	if (UNEXPECTED(!stream_buffer_lock(stream, STREAM_SIDE_READ, &lock))) {
 		return -1;
 	}
 
@@ -1291,7 +1377,7 @@ static char *stream_get_line_locked(php_stream *stream, char *buf, size_t maxlen
 PHPAPI char *php_stream_get_line(php_stream *stream, char *buf, size_t maxlen, size_t *returned_len)
 {
 	php_stream_buffer_lock_t *lock;
-	if (UNEXPECTED(!stream_buffer_lock(stream, &lock))) {
+	if (UNEXPECTED(!stream_buffer_lock(stream, STREAM_SIDE_READ, &lock))) {
 		if (returned_len != NULL) {
 			*returned_len = 0;
 		}
@@ -1428,7 +1514,7 @@ static zend_string *stream_get_record_locked(php_stream *stream, size_t maxlen, 
 PHPAPI zend_string *php_stream_get_record(php_stream *stream, size_t maxlen, const char *delim, size_t delim_len)
 {
 	php_stream_buffer_lock_t *lock;
-	if (UNEXPECTED(!stream_buffer_lock(stream, &lock))) {
+	if (UNEXPECTED(!stream_buffer_lock(stream, STREAM_SIDE_READ, &lock))) {
 		return NULL;
 	}
 
@@ -1445,17 +1531,38 @@ static ssize_t php_stream_write_buffer(php_stream *stream, const char *buf, size
 {
 	ssize_t didwrite = 0;
 	ssize_t retval;
+	php_stream_buffer_lock_t *read_lock = NULL;
+
+	/* The close flushes with no lock of its own and must interrupt the
+	 * coroutines parked on this stream rather than queue behind them, so it
+	 * takes no side here either. */
+	const bool holds_read_side = lock != NULL && stream_write_needs_read_side(stream);
+
+	if (holds_read_side && UNEXPECTED(!stream_buffer_lock(stream, STREAM_SIDE_READ, &read_lock))) {
+		return -1;
+	}
 
 	/* if we have a seekable stream we need to ensure that data is written at the
 	 * current stream->position. This means invalidating the read buffer and then
 	 * performing a low-level seek */
 	if (stream->ops->seek && (stream->flags & PHP_STREAM_FLAG_NO_SEEK) == 0 && stream->readpos != stream->writepos) {
+		if (!holds_read_side && lock != NULL
+				&& UNEXPECTED(!stream_buffer_lock(stream, STREAM_SIDE_READ, &read_lock))) {
+			return -1;
+		}
+
 		stream->readpos = stream->writepos = 0;
 
 		stream->ops->seek(stream, stream->position, SEEK_SET, &stream->position);
 
 		if (UNEXPECTED(stream_buffer_lock_closed(lock))) {
+			stream_buffer_unlock(read_lock);
 			return -1;
+		}
+
+		if (!holds_read_side) {
+			stream_buffer_unlock(read_lock);
+			read_lock = NULL;
 		}
 	}
 
@@ -1474,6 +1581,7 @@ static ssize_t php_stream_write_buffer(php_stream *stream, const char *buf, size
 		if (UNEXPECTED(stream_buffer_lock_closed(lock))) {
 			/* Another coroutine closed the stream while this write was parked:
 			 * ops->write freed it, so neither eof nor position exist any more. */
+			stream_buffer_unlock(read_lock);
 			return didwrite;
 		}
 
@@ -1500,6 +1608,9 @@ out:
 	if (old_eof != stream->eof) {
 		php_stream_notify_completed(PHP_STREAM_CONTEXT(stream));
 	}
+
+	stream_buffer_unlock(read_lock);
+
 	return retval;
 }
 
@@ -1613,7 +1724,7 @@ static int php_stream_flush_ex(php_stream *stream, bool closing, php_stream_buff
 PHPAPI int php_stream_flush(php_stream *stream) {
 	php_stream_buffer_lock_t *lock;
 
-	if (UNEXPECTED(!stream_buffer_lock(stream, &lock))) {
+	if (UNEXPECTED(!stream_buffer_lock(stream, STREAM_SIDE_WRITE, &lock))) {
 		return -1;
 	}
 
@@ -1639,7 +1750,7 @@ PHPAPI ssize_t php_stream_write(php_stream *stream, const char *buf, size_t coun
 	}
 
 	php_stream_buffer_lock_t *lock;
-	if (UNEXPECTED(!stream_buffer_lock(stream, &lock))) {
+	if (UNEXPECTED(!stream_buffer_lock(stream, STREAM_SIDE_WRITE, &lock))) {
 		return (ssize_t) -1;
 	}
 
@@ -1869,14 +1980,23 @@ static int stream_seek_locked(php_stream *stream, zend_off_t offset, int whence,
 
 PHPAPI int php_stream_seek(php_stream *stream, zend_off_t offset, int whence)
 {
-	php_stream_buffer_lock_t *lock;
-	if (UNEXPECTED(!stream_buffer_lock(stream, &lock))) {
+	php_stream_buffer_lock_t *write_lock, *lock;
+
+	/* Write first, then read: the flush inside the seek belongs to the write
+	 * side, and the seek then drops the read buffer. */
+	if (UNEXPECTED(!stream_buffer_lock(stream, STREAM_SIDE_WRITE, &write_lock))) {
+		return -1;
+	}
+
+	if (UNEXPECTED(!stream_buffer_lock(stream, STREAM_SIDE_READ, &lock))) {
+		stream_buffer_unlock(write_lock);
 		return -1;
 	}
 
 	const int result = stream_seek_locked(stream, offset, whence, lock);
 
 	stream_buffer_unlock(lock);
+	stream_buffer_unlock(write_lock);
 
 	return result;
 }
@@ -1936,7 +2056,7 @@ PHPAPI ssize_t _php_stream_passthru(php_stream * stream STREAMS_DC)
 	ssize_t b;
 	php_stream_buffer_lock_t *lock;
 
-	if (UNEXPECTED(!stream_buffer_lock(stream, &lock))) {
+	if (UNEXPECTED(!stream_buffer_lock(stream, STREAM_SIDE_READ, &lock))) {
 		return -1;
 	}
 
@@ -2013,7 +2133,7 @@ PHPAPI zend_string *_php_stream_copy_to_mem(php_stream *src, size_t maxlen, bool
 
 	/* php_stream_read() reports what it delivered before parking, so without
 	 * the lock held across the loop the next round reads a freed stream. */
-	if (UNEXPECTED(!stream_buffer_lock(src, &lock))) {
+	if (UNEXPECTED(!stream_buffer_lock(src, STREAM_SIDE_READ, &lock))) {
 		return NULL;
 	}
 
@@ -2110,17 +2230,20 @@ static zend_result php_stream_copy_fallback(php_stream *src, php_stream *dest, s
 {
 	char buf[CHUNK_SIZE];
 	size_t haveread = 0;
-	php_stream_buffer_lock_t *src_lock, *dest_lock;
+	stream_copy_locks_t locks;
 
 	if (maxlen == PHP_STREAM_COPY_ALL) {
 		maxlen = 0;
 	}
 
 	/* Either handle can be closed while the other side of the copy is parked. */
-	if (UNEXPECTED(!stream_buffer_lock_pair(src, dest, &src_lock, &dest_lock))) {
+	if (UNEXPECTED(!stream_buffer_lock_copy(src, dest, &locks))) {
 		*len = 0;
 		return FAILURE;
 	}
+
+	php_stream_buffer_lock_t *src_lock = locks.src_read;
+	php_stream_buffer_lock_t *dest_lock = locks.dest_write;
 
 	while (1) {
 		size_t readchunk = sizeof(buf);
@@ -2135,8 +2258,7 @@ static zend_result php_stream_copy_fallback(php_stream *src, php_stream *dest, s
 		const bool src_closed = stream_buffer_lock_closed(src_lock);
 		if (didread <= 0 || src_closed) {
 			*len = haveread;
-			stream_buffer_unlock(dest_lock);
-			stream_buffer_unlock(src_lock);
+			stream_buffer_unlock_copy(&locks);
 			return didread < 0 || src_closed ? FAILURE : SUCCESS;
 		}
 
@@ -2148,8 +2270,7 @@ static zend_result php_stream_copy_fallback(php_stream *src, php_stream *dest, s
 			ssize_t didwrite = php_stream_write(dest, writeptr, towrite);
 			if (didwrite <= 0) {
 				*len = haveread - towrite;
-				stream_buffer_unlock(dest_lock);
-				stream_buffer_unlock(src_lock);
+				stream_buffer_unlock_copy(&locks);
 				return FAILURE;
 			}
 
@@ -2160,8 +2281,7 @@ static zend_result php_stream_copy_fallback(php_stream *src, php_stream *dest, s
 			 * reached the destination is counted first. */
 			if (UNEXPECTED(stream_buffer_lock_closed(dest_lock) || stream_buffer_lock_closed(src_lock))) {
 				*len = haveread - towrite;
-				stream_buffer_unlock(dest_lock);
-				stream_buffer_unlock(src_lock);
+				stream_buffer_unlock_copy(&locks);
 				return FAILURE;
 			}
 		}
@@ -2171,8 +2291,7 @@ static zend_result php_stream_copy_fallback(php_stream *src, php_stream *dest, s
 		}
 	}
 
-	stream_buffer_unlock(dest_lock);
-	stream_buffer_unlock(src_lock);
+	stream_buffer_unlock_copy(&locks);
 
 	*len = haveread;
 	return SUCCESS;
@@ -2191,14 +2310,17 @@ PHPAPI zend_result _php_stream_copy_to_stream_ex(php_stream *src, php_stream *de
 		return SUCCESS;
 	}
 
-	php_stream_buffer_lock_t *src_lock, *dest_lock;
+	stream_copy_locks_t locks;
 
 	/* php_io_copy() below writes the positions of both handles back after it
 	 * returns, so it is held against a close the same way the fallback is. */
-	if (UNEXPECTED(!stream_buffer_lock_pair(src, dest, &src_lock, &dest_lock))) {
+	if (UNEXPECTED(!stream_buffer_lock_copy(src, dest, &locks))) {
 		*len = 0;
 		return FAILURE;
 	}
+
+	php_stream_buffer_lock_t *src_lock = locks.src_read;
+	php_stream_buffer_lock_t *dest_lock = locks.dest_write;
 
 	/* Try optimized fd-level copy if both streams support it and their read buffers
 	 * are empty, so the fd offsets match the logical stream positions */
@@ -2225,8 +2347,7 @@ PHPAPI zend_result _php_stream_copy_to_stream_ex(php_stream *src, php_stream *de
 			zend_result result = php_io_copy(&src_copy_fd, &dest_copy_fd, io_maxlen, &copied);
 
 			if (UNEXPECTED(stream_buffer_lock_closed(src_lock) || stream_buffer_lock_closed(dest_lock))) {
-				stream_buffer_unlock(dest_lock);
-				stream_buffer_unlock(src_lock);
+				stream_buffer_unlock_copy(&locks);
 				*len = copied;
 				return FAILURE;
 			}
@@ -2239,8 +2360,7 @@ PHPAPI zend_result _php_stream_copy_to_stream_ex(php_stream *src, php_stream *de
 			php_stream_set_option(dest, PHP_STREAM_OPTION_ALIGN_POSITION, 0, &dest->position);
 
 			*len = copied;
-			stream_buffer_unlock(dest_lock);
-			stream_buffer_unlock(src_lock);
+			stream_buffer_unlock_copy(&locks);
 			return result;
 		}
 	}
@@ -2251,8 +2371,7 @@ fallback:
 	 * owner. */
 	const zend_result fallback_result = php_stream_copy_fallback(src, dest, maxlen, len);
 
-	stream_buffer_unlock(dest_lock);
-	stream_buffer_unlock(src_lock);
+	stream_buffer_unlock_copy(&locks);
 
 	return fallback_result;
 }

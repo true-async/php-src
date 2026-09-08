@@ -1453,9 +1453,14 @@ PHP_FUNCTION(stream_filter_remove)
 
 	/* Held across both steps: between the flush and the removal the filter must
 	 * not be reached by another coroutine, and the flush itself suspends. */
-	if (stream != NULL && UNEXPECTED(!php_stream_buffer_lock_acquire(stream, &lock))) {
-		php_error_docref(NULL, E_WARNING, "Unable to flush filter, not removing");
-		RETURN_FALSE;
+	if (stream != NULL) {
+		const uint8_t side = filter->chain == &stream->readfilters
+				? PHP_STREAM_BUFFER_SIDE_READ : PHP_STREAM_BUFFER_SIDE_WRITE;
+
+		if (UNEXPECTED(!php_stream_buffer_lock_acquire(stream, side, &lock))) {
+			php_error_docref(NULL, E_WARNING, "Unable to flush filter, not removing");
+			RETURN_FALSE;
+		}
 	}
 
 	/* The acquire suspends, and another coroutine removing the same filter

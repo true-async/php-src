@@ -244,8 +244,10 @@ struct _php_stream  {
 	/* how much data to read when filling buffer */
 	size_t chunk_size;
 
-	/* Async: serialises access to the buffer fields above. Owner, depth and
-	 * waiters live in the event; see stream_buffer_lock() in streams.c. */
+	/* Async: the write side of the pair that serialises this stream; the read
+	 * side, the owner, the depth and the waiters are reached through it. Owned
+	 * by streams.c - see stream_buffer_lock() there - and released by nobody
+	 * else. */
 	struct _zend_async_event_s *buffer_lock;
 
 #if ZEND_DEBUG
@@ -270,14 +272,19 @@ BEGIN_EXTERN_C()
 
 /* Async: serialises the buffered stream API - the read buffer, the position and
  * the filter chain - across coroutines; unrelated to php_stream_lock(), which is
- * the advisory file lock. acquire() returns false when the caller
- * must abandon its operation without touching the stream; on true it stores a
+ * the advisory file lock. A stream carries two independent sides: the read
+ * buffer and the write path, named by PHP_STREAM_BUFFER_SIDE_READ and
+ * PHP_STREAM_BUFFER_SIDE_WRITE, so that a reader parked on a socket does not
+ * hold up the writer that has to feed the peer. acquire() returns false when
+ * the caller must abandon its operation without touching the stream; on true it stores a
  * lock that release() must be given back, NULL included: a caller outside a
  * coroutine has nothing to serialise. The lock is recursive for its owner and
  * holds a reference of its own, so is_closed() still answers after a call that
  * parked, including one that returned to a stream fclose() has freed. */
 typedef struct _php_stream_buffer_lock php_stream_buffer_lock_t;
-PHPAPI bool php_stream_buffer_lock_acquire(php_stream *stream, php_stream_buffer_lock_t **held);
+#define PHP_STREAM_BUFFER_SIDE_WRITE 0
+#define PHP_STREAM_BUFFER_SIDE_READ  1
+PHPAPI bool php_stream_buffer_lock_acquire(php_stream *stream, uint8_t side, php_stream_buffer_lock_t **held);
 PHPAPI void php_stream_buffer_lock_release(php_stream_buffer_lock_t *lock);
 /* True once the stream behind the lock has been closed and freed. */
 PHPAPI bool php_stream_buffer_lock_is_closed(php_stream_buffer_lock_t *lock);
