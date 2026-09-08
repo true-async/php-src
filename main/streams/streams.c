@@ -1697,16 +1697,25 @@ static bool php_stream_are_filters_seekable(php_stream_filter *filter, bool is_s
 }
 
 static zend_result php_stream_filters_seek(php_stream *stream, php_stream_filter *filter,
-		bool is_start_seeking, zend_off_t offset, int whence, int chain_type)
+		bool is_start_seeking, zend_off_t offset, int whence, int chain_type,
+		php_stream_buffer_lock_t *lock)
 {
 	while (filter) {
 		php_stream_filter_seekable_t seekable = (chain_type == PHP_STREAM_FILTER_READ) ?
 				filter->read_seekable : filter->write_seekable;
-		if (((seekable == PSFS_SEEKABLE_START && is_start_seeking) ||
-				seekable == PSFS_SEEKABLE_CHECK) &&
-				filter->fops->seek(stream, filter, offset, whence) == FAILURE) {
-			php_error_docref(NULL, E_WARNING, "Stream filter seeking for %s failed", filter->fops->label);
-			return FAILURE;
+		if ((seekable == PSFS_SEEKABLE_START && is_start_seeking) || seekable == PSFS_SEEKABLE_CHECK) {
+			const zend_result result = filter->fops->seek(stream, filter, offset, whence);
+
+			/* A userspace filter suspends inside seek(), and the close frees
+			 * every filter of the chain this loop walks. */
+			if (UNEXPECTED(stream_buffer_lock_closed(lock))) {
+				return FAILURE;
+			}
+
+			if (result == FAILURE) {
+				php_error_docref(NULL, E_WARNING, "Stream filter seeking for %s failed", filter->fops->label);
+				return FAILURE;
+			}
 		}
 		filter = filter->next;
 	}
@@ -1714,14 +1723,14 @@ static zend_result php_stream_filters_seek(php_stream *stream, php_stream_filter
 }
 
 static zend_result php_stream_filters_seek_all(php_stream *stream, bool is_start_seeking,
-		zend_off_t offset, int whence)
+		zend_off_t offset, int whence, php_stream_buffer_lock_t *lock)
 {
 	if (php_stream_filters_seek(stream, stream->writefilters.head, is_start_seeking,
-			offset, whence, PHP_STREAM_FILTER_WRITE) == FAILURE) {
+			offset, whence, PHP_STREAM_FILTER_WRITE, lock) == FAILURE) {
 		return FAILURE;
 	}
 	if (php_stream_filters_seek(stream, stream->readfilters.head, is_start_seeking,
-			offset, whence, PHP_STREAM_FILTER_READ) == FAILURE) {
+			offset, whence, PHP_STREAM_FILTER_READ, lock) == FAILURE) {
 		return FAILURE;
 	}
 
@@ -1775,7 +1784,7 @@ static int stream_seek_locked(php_stream *stream, zend_off_t offset, int whence,
 					stream->position += offset;
 					stream->eof = 0;
 					stream->fatal_error = 0;
-					return php_stream_filters_seek_all(stream, is_start_seeking, offset, whence) == SUCCESS ? 0 : -1;
+					return php_stream_filters_seek_all(stream, is_start_seeking, offset, whence, lock) == SUCCESS ? 0 : -1;
 				}
 				break;
 			case SEEK_SET:
@@ -1785,7 +1794,7 @@ static int stream_seek_locked(php_stream *stream, zend_off_t offset, int whence,
 					stream->position = offset;
 					stream->eof = 0;
 					stream->fatal_error = 0;
-					return php_stream_filters_seek_all(stream, is_start_seeking, offset, whence) == SUCCESS ? 0 : -1;
+					return php_stream_filters_seek_all(stream, is_start_seeking, offset, whence, lock) == SUCCESS ? 0 : -1;
 				}
 				break;
 		}
@@ -1811,6 +1820,12 @@ static int stream_seek_locked(php_stream *stream, zend_off_t offset, int whence,
 		}
 		ret = stream->ops->seek(stream, offset, whence, &stream->position);
 
+		/* A userspace wrapper suspends inside seek(), and every field written
+		 * below belongs to a stream a close may have freed. */
+		if (UNEXPECTED(stream_buffer_lock_closed(lock))) {
+			return -1;
+		}
+
 		if (((stream->flags & PHP_STREAM_FLAG_NO_SEEK) == 0) || ret == 0) {
 			if (ret == 0) {
 				stream->eof = 0;
@@ -1820,7 +1835,7 @@ static int stream_seek_locked(php_stream *stream, zend_off_t offset, int whence,
 			/* invalidate the buffer contents */
 			stream->readpos = stream->writepos = 0;
 
-			return php_stream_filters_seek_all(stream, is_start_seeking, offset, whence) == SUCCESS ? ret : -1;
+			return php_stream_filters_seek_all(stream, is_start_seeking, offset, whence, lock) == SUCCESS ? ret : -1;
 		}
 		/* else the stream has decided that it can't support seeking after all;
 		 * fall through to attempt emulation */
