@@ -58,6 +58,63 @@
 #define FIN_CLOSE   0x2
 #define FIN_ABORT   0x4
 
+static bool pgsql_result_status_ok(ExecStatusType status)
+{
+	switch (status) {
+		case PGRES_COMMAND_OK:
+		case PGRES_TUPLES_OK:
+		case PGRES_SINGLE_TUPLE:
+#ifdef HAVE_PG_SET_CHUNKED_ROWS_SIZE
+		case PGRES_TUPLES_CHUNK:
+#endif
+			return true;
+		default:
+			return false;
+	}
+}
+
+#ifndef HAVE_PQCLOSEPORTAL
+static bool pdo_pgsql_try_cmd(const char *cmd, const char *ok_sqlstate, pdo_pgsql_db_handle *H)
+{
+	bool result = false;
+	char *q = NULL;
+	PGresult *res = NULL;
+
+	PGTransactionStatusType status = PQtransactionStatus(H->server);
+
+	switch (status) {
+		case PQTRANS_ACTIVE:
+		case PQTRANS_INERROR:
+			break;
+		case PQTRANS_INTRANS: /* failure must not abort the caller's transaction */
+			/* PQexec does not run the statements following a failed one */
+			spprintf(&q, 0, "SAVEPOINT pdo_pgsql_savepoint; %s; RELEASE SAVEPOINT pdo_pgsql_savepoint;", cmd);
+			res = pdo_pgsql_exec_concurrent(H, q);
+
+			if (PQresultStatus(res) != PGRES_COMMAND_OK) {
+				PQclear(pdo_pgsql_exec_concurrent(
+						H, "ROLLBACK TO SAVEPOINT pdo_pgsql_savepoint; RELEASE SAVEPOINT pdo_pgsql_savepoint"));
+			}
+
+			break;
+		default:
+			res = pdo_pgsql_exec_concurrent(H, cmd);
+	}
+
+	if (PQresultStatus(res) == PGRES_COMMAND_OK) {
+		result = true;
+	} else if (res) {
+		const char *sqlstate = pdo_pgsql_sqlstate(res);
+
+		result = sqlstate && !strcmp(sqlstate, ok_sqlstate);
+	}
+
+	if (q) efree(q);
+	if (res) PQclear(res);
+
+	return result;
+}
+#endif
 
 
 static void pgsql_stmt_finish(pdo_pgsql_stmt *S, int fin_mode)
@@ -178,15 +235,16 @@ static int pgsql_stmt_dtor(pdo_stmt_t *stmt)
 	}
 
 	if (S->cursor_name) {
-		if (server_obj_usable) {
+		if (S->is_cursor_declared && server_obj_usable) {
 			pdo_pgsql_db_handle *H = S->H;
-			char *q = NULL;
-			PGresult *res;
-
+#ifndef HAVE_PQCLOSEPORTAL
+			char *q;
 			spprintf(&q, 0, "CLOSE %s", S->cursor_name);
-			res = pdo_pgsql_exec_concurrent(H, q);
+			pdo_pgsql_try_cmd(q, "34000", H); /* 34000: invalid_cursor_name */
 			efree(q);
-			if (res) PQclear(res);
+#else
+			PQclear(PQclosePortal(H->server, S->cursor_name));
+#endif
 		}
 		efree(S->cursor_name);
 		S->cursor_name = NULL;
@@ -228,10 +286,25 @@ static int pgsql_stmt_execute(pdo_stmt_t *stmt)
 	if (S->cursor_name) {
 		char *q = NULL;
 
-		if (S->is_prepared) {
+		if (S->is_cursor_declared) {
+#ifndef HAVE_PQCLOSEPORTAL
 			spprintf(&q, 0, "CLOSE %s", S->cursor_name);
-			PQclear(pdo_pgsql_exec_concurrent(H, q));
+
+			/* 34000: invalid_cursor_name */
+			if (pdo_pgsql_try_cmd(q, "34000", H)) {
+				S->is_cursor_declared = false;
+			}
+
 			efree(q);
+#else
+			PGresult *res = PQclosePortal(H->server, S->cursor_name);
+
+			if (PQresultStatus(res) == PGRES_COMMAND_OK) {
+				S->is_cursor_declared = false;
+			}
+
+			PQclear(res);
+#endif
 		}
 
 		spprintf(&q, 0, "DECLARE %s SCROLL CURSOR WITH HOLD FOR %s", S->cursor_name, ZSTR_VAL(stmt->active_query_string));
@@ -247,7 +320,7 @@ static int pgsql_stmt_execute(pdo_stmt_t *stmt)
 		PQclear(S->result);
 
 		/* the cursor was declared correctly */
-		S->is_prepared = true;
+		S->is_cursor_declared = true;
 
 		/* fetch to be able to get the number of tuples later, but don't advance the cursor pointer */
 		spprintf(&q, 0, "FETCH FORWARD 0 FROM %s", S->cursor_name);
@@ -396,8 +469,16 @@ stmt_retry:
 			return 0;
 		}
 		S->is_running_unbuffered = true;
+		/* no matter if they return 0: PQ then transparently fallbacks to full result fetching */
+#ifdef HAVE_PG_SET_CHUNKED_ROWS_SIZE
+		if (S->chunk_size >= 1) {
+			(void)PQsetChunkedRowsMode(H->server, (int)S->chunk_size);
+		} else {
+			(void)PQsetSingleRowMode(H->server);
+		}
+#else
 		(void)PQsetSingleRowMode(H->server);
-		/* no matter if it returns 0: PQ then transparently fallbacks to full result fetching */
+#endif
 
 		/* try a first fetch to at least have column names and so on */
 		S->result = pdo_pgsql_get_result_concurrent(S->H);
@@ -405,7 +486,7 @@ stmt_retry:
 
 	status = PQresultStatus(S->result);
 
-	if (status != PGRES_COMMAND_OK && status != PGRES_TUPLES_OK && status != PGRES_SINGLE_TUPLE) {
+	if (!pgsql_result_status_ok(status)) {
 		/* Plan-invalidation handling for cache-backed prepared statements.
 		 * After DDL on referenced objects (ALTER TABLE, DROP INDEX, schema
 		 * resolution change, etc.) PostgreSQL invalidates cached plans and
@@ -696,7 +777,7 @@ static int pgsql_stmt_fetch(pdo_stmt_t *stmt,
 			}
 			status = PQresultStatus(S->result);
 
-			if (status != PGRES_COMMAND_OK && status != PGRES_TUPLES_OK && status != PGRES_SINGLE_TUPLE) {
+			if (!pgsql_result_status_ok(status)) {
 				pdo_pgsql_error_stmt(stmt, status, pdo_pgsql_sqlstate(S->result));
 				return 0;
 			}
@@ -971,6 +1052,12 @@ static int pgsql_stmt_get_attr(pdo_stmt_t *stmt, zend_long attr, zval *val)
 
 				ZVAL_NULL(val);
 			}
+			return 1;
+#endif
+
+#ifdef HAVE_PG_SET_CHUNKED_ROWS_SIZE
+		case PDO_PGSQL_ATTR_CHUNK_SIZE:
+			ZVAL_LONG(val, S->chunk_size);
 			return 1;
 #endif
 
