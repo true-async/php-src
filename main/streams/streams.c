@@ -273,6 +273,8 @@ static int _php_stream_free_persistent(zval *zv, void *pStream)
 }
 
 static int php_stream_flush_ex(php_stream *stream, bool closing, php_stream_buffer_lock_t *lock);
+static bool stream_buffer_lock(php_stream *stream, php_stream_buffer_lock_t **held);
+static void stream_buffer_unlock(php_stream_buffer_lock_t *lock);
 
 PHPAPI int php_stream_free(php_stream *stream, int close_options) /* {{{ */
 {
@@ -359,7 +361,9 @@ fprintf(stderr, "stream_free: %s:%p[%s] preserve_handle=%d release_cast=%d remov
 #endif
 
 	if (stream->flags & PHP_STREAM_FLAG_WAS_WRITTEN || stream->writefilters.head) {
-		/* make sure everything is saved */
+		/* make sure everything is saved. The lock is deliberately not taken: a
+		 * close must interrupt the coroutines parked on this stream, not queue
+		 * behind them, and they learn about it from the closed event below. */
 		php_stream_flush_ex(stream, true, NULL);
 	}
 
@@ -483,8 +487,6 @@ struct _php_stream_buffer_lock {
 	uint32_t depth;
 };
 
-
-static void stream_buffer_unlock(php_stream_buffer_lock_t *lock);
 
 static bool stream_buffer_lock_closed(php_stream_buffer_lock_t *lock)
 {
@@ -764,8 +766,16 @@ static zend_result stream_fill_read_buffer_locked(php_stream *stream, size_t siz
 				if (UNEXPECTED(stream_buffer_lock_closed(lock))) {
 					/* A userspace filter suspended, and the close freed the
 					 * chain this loop walks. */
-					status = PSFS_ERR_FATAL;
-					break;
+					while ((bucket = brig_inp->head)) {
+						php_stream_bucket_unlink(bucket);
+						php_stream_bucket_delref(bucket);
+					}
+					while ((bucket = brig_outp->head)) {
+						php_stream_bucket_unlink(bucket);
+						php_stream_bucket_delref(bucket);
+					}
+					efree(chunk_buf);
+					return FAILURE;
 				}
 
 				if (status != PSFS_PASS_ON) {
@@ -884,7 +894,7 @@ static zend_result stream_fill_read_buffer_locked(php_stream *stream, size_t siz
 			justread = stream->ops->read(stream, (char*)stream->readbuf + stream->writepos,
 					stream->readbuflen - stream->writepos
 					);
-			if (justread < 0) {
+			if (justread < 0 || UNEXPECTED(stream_buffer_lock_closed(lock))) {
 				/* Async: stream may have been freed by another coroutine
 				 * while ops->read was parked. Skip the EOF check on the
 				 * (possibly freed) stream. */
@@ -1947,7 +1957,8 @@ PHPAPI ssize_t _php_stream_passthru(php_stream * stream STREAMS_DC)
 		PHPWRITE(buf, b);
 		bcount += b;
 		/* The output write suspends as well, so the next read would go to a
-		 * stream that is no longer there. */
+		 * stream that is no longer there. The bytes already written are
+		 * reported, as on the mmap path above. */
 		if (UNEXPECTED(stream_buffer_lock_closed(lock))) {
 			break;
 		}
@@ -1992,7 +2003,12 @@ PHPAPI zend_string *_php_stream_copy_to_mem(php_stream *src, size_t maxlen, bool
 		ptr = ZSTR_VAL(result);
 		while ((len < maxlen) && !php_stream_eof(src)) {
 			ret = php_stream_read(src, ptr, maxlen - len);
-			if (ret <= 0 || stream_buffer_lock_closed(lock)) {
+			if (UNEXPECTED(stream_buffer_lock_closed(lock))) {
+				zend_string_free(result);
+				stream_buffer_unlock(lock);
+				return NULL;
+			}
+			if (ret <= 0) {
 				// TODO: Propagate error?
 				break;
 			}
@@ -2037,7 +2053,9 @@ PHPAPI zend_string *_php_stream_copy_to_mem(php_stream *src, size_t maxlen, bool
 	// TODO: Propagate error?
 	while ((ret = php_stream_read(src, ptr, buflen - len)) > 0) {
 		if (UNEXPECTED(stream_buffer_lock_closed(lock))) {
-			break;
+			zend_string_free(result);
+			stream_buffer_unlock(lock);
+			return NULL;
 		}
 		len += ret;
 		if (len + min_room >= buflen) {

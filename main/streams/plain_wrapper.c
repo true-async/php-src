@@ -1751,6 +1751,36 @@ static int php_stdiop_set_option(php_stream *stream, int option, int value, void
 			}
 
 			if (data->async_io != NULL) {
+#ifndef PHP_WIN32
+				/* uv_pipe_open()/uv_tty_init() were handed this descriptor and
+				 * close it with the handle, while the stream goes on writing
+				 * after the detach. A stream that also has a FILE* keeps its
+				 * descriptor there and gives this one up; the rest continue on
+				 * a copy. Files are left alone: the reactor closes a descriptor
+				 * of theirs only when it opened it. Descriptors 0-2 are left
+				 * alone too - the reactor dups those itself and spares the
+				 * original under PRESERVE_FD. */
+				if (data->file != NULL) {
+					data->fd = -1;
+				} else if (data->fd > STDERR_FILENO
+						&& ZEND_ASYNC_IO_IS_STREAM(data->async_io->type)) {
+#ifdef F_DUPFD_CLOEXEC
+					const int detached_fd = fcntl(data->fd, F_DUPFD_CLOEXEC, 0);
+#else
+					const int detached_fd = dup(data->fd);
+#endif
+					/* -1 leaves nothing to close twice: the reactor takes the
+					 * descriptor the stream no longer names. */
+					data->fd = detached_fd;
+
+					if (detached_fd >= 0 && data->is_blocked) {
+						/* The reactor made the descriptor non-blocking, and
+						 * nothing switches it back once the IO is gone. */
+						php_fd_set_block(detached_fd);
+						data->sync_io_fallback = 1;
+					}
+				}
+#endif
 				data->async_io->on_detach = NULL;
 				data->async_io->state |= ZEND_ASYNC_IO_PRESERVE_FD;
 				ZEND_ASYNC_IO_CLOSE(data->async_io);
