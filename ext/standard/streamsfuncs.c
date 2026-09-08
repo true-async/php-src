@@ -1372,7 +1372,13 @@ static void apply_filter_to_stream(bool append, INTERNAL_FUNCTION_PARAMETERS)
 		if (append) {
 			zend_result ret = php_stream_filter_append_ex(&stream->readfilters, filter);
 			if (ret != SUCCESS) {
-				php_stream_filter_remove(filter, 1);
+				if (filter->chain == NULL) {
+					/* Never linked: the stream was closed before the append
+					 * started, and the chain to unlink from is gone with it. */
+					php_stream_filter_free(filter);
+				} else {
+					php_stream_filter_remove(filter, 1);
+				}
 				RETURN_FALSE;
 			}
 		} else {
@@ -1389,7 +1395,13 @@ static void apply_filter_to_stream(bool append, INTERNAL_FUNCTION_PARAMETERS)
 		if (append) {
 			zend_result ret = php_stream_filter_append_ex(&stream->writefilters, filter);
 			if (ret != SUCCESS) {
-				php_stream_filter_remove(filter, 1);
+				if (filter->chain == NULL) {
+					/* Never linked: the stream was closed before the append
+					 * started, and the chain to unlink from is gone with it. */
+					php_stream_filter_free(filter);
+				} else {
+					php_stream_filter_remove(filter, 1);
+				}
 				RETURN_FALSE;
 			}
 		} else {

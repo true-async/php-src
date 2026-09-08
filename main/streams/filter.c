@@ -348,9 +348,33 @@ PHPAPI void php_stream_filter_prepend(php_stream_filter_chain *chain, php_stream
 	php_stream_filter_prepend_ex(chain, filter);
 }
 
+static void php_stream_filter_flush_drain(php_stream_bucket_brigade *inp, php_stream_bucket_brigade *outp)
+{
+	php_stream_bucket *bucket;
+
+	while ((bucket = inp->head)) {
+		php_stream_bucket_unlink(bucket);
+		php_stream_bucket_delref(bucket);
+	}
+	while ((bucket = outp->head)) {
+		php_stream_bucket_unlink(bucket);
+		php_stream_bucket_delref(bucket);
+	}
+}
+
 PHPAPI zend_result php_stream_filter_append_ex(php_stream_filter_chain *chain, php_stream_filter *filter)
 {
 	php_stream *stream = chain->stream;
+	php_stream_buffer_lock_t *lock;
+
+	/* Both the acquire and the wind below suspend, and the filter is still
+	 * outside the chain here: a close landing meanwhile frees the chain, not the
+	 * filter, and the caller keeps a filter it can still free. The wind itself
+	 * reallocates readbuf and resets the positions a parked reader credits its
+	 * bytes to, which is what the lock is for. */
+	if (UNEXPECTED(!php_stream_buffer_lock_acquire(stream, &lock))) {
+		return FAILURE;
+	}
 
 	filter->prev = chain->tail;
 	filter->next = NULL;
@@ -375,6 +399,13 @@ PHPAPI zend_result php_stream_filter_append_ex(php_stream_filter_chain *chain, p
 		php_stream_bucket_append(brig_inp, bucket);
 		status = filter->fops->filter(stream, filter, brig_inp, brig_outp, &consumed, PSFS_FLAG_NORMAL);
 
+		if (UNEXPECTED(php_stream_buffer_lock_is_closed(lock))) {
+			/* A userspace filter suspended, and the stream was closed meanwhile. */
+			php_stream_filter_flush_drain(brig_inp, brig_outp);
+			php_stream_buffer_lock_release(lock);
+			return FAILURE;
+		}
+
 		if (stream->readpos + consumed > (uint32_t)stream->writepos) {
 			/* No behaving filter should cause this. */
 			status = PSFS_ERR_FATAL;
@@ -382,18 +413,10 @@ PHPAPI zend_result php_stream_filter_append_ex(php_stream_filter_chain *chain, p
 
 		switch (status) {
 			case PSFS_ERR_FATAL:
-				while (brig_in.head) {
-					bucket = brig_in.head;
-					php_stream_bucket_unlink(bucket);
-					php_stream_bucket_delref(bucket);
-				}
-				while (brig_out.head) {
-					bucket = brig_out.head;
-					php_stream_bucket_unlink(bucket);
-					php_stream_bucket_delref(bucket);
-				}
+				php_stream_filter_flush_drain(&brig_in, &brig_out);
 				php_stream_warn(stream, FilterFailed,
 						"Filter failed to process pre-buffered data");
+				php_stream_buffer_lock_release(lock);
 				return FAILURE;
 			case PSFS_FEED_ME:
 				/* We don't actually need data yet,
@@ -433,12 +456,18 @@ PHPAPI zend_result php_stream_filter_append_ex(php_stream_filter_chain *chain, p
 		}
 	}
 
+	php_stream_buffer_lock_release(lock);
+
 	return SUCCESS;
 }
 
 PHPAPI void php_stream_filter_append(php_stream_filter_chain *chain, php_stream_filter *filter)
 {
 	if (php_stream_filter_append_ex(chain, filter) != SUCCESS) {
+		if (filter->chain != chain) {
+			/* Never linked: the stream was closed before the append started. */
+			return;
+		}
 		if (chain->head == filter) {
 			chain->head = NULL;
 			chain->tail = NULL;
@@ -468,15 +497,33 @@ PHPAPI zend_result php_stream_filter_flush(php_stream_filter *filter, bool finis
 	chain = filter->chain;
 	stream = chain->stream;
 
+	php_stream_buffer_lock_t *lock;
+
+	/* The flush writes into the read buffer and out through ops->write, both of
+	 * which belong to whoever holds the lock. */
+	if (UNEXPECTED(!php_stream_buffer_lock_acquire(stream, &lock))) {
+		return FAILURE;
+	}
+
 	for(current = filter; current; current = current->next) {
 		php_stream_filter_status_t status;
 
 		status = current->fops->filter(stream, current, inp, outp, NULL, flags);
+		if (UNEXPECTED(php_stream_buffer_lock_is_closed(lock))) {
+			/* A userspace filter suspended, and the stream was closed meanwhile. */
+			php_stream_filter_flush_drain(inp, outp);
+			php_stream_buffer_lock_release(lock);
+			return FAILURE;
+		}
 		if (status == PSFS_FEED_ME) {
 			/* We've flushed the data far enough */
+			php_stream_filter_flush_drain(inp, outp);
+			php_stream_buffer_lock_release(lock);
 			return SUCCESS;
 		}
 		if (status == PSFS_ERR_FATAL) {
+			php_stream_filter_flush_drain(inp, outp);
+			php_stream_buffer_lock_release(lock);
 			return FAILURE;
 		}
 		/* Otherwise we have data available to PASS_ON
@@ -499,6 +546,7 @@ PHPAPI zend_result php_stream_filter_flush(php_stream_filter *filter, bool finis
 
 	if (flushed_size == 0) {
 		/* Unlikely, but possible */
+		php_stream_buffer_lock_release(lock);
 		return SUCCESS;
 	}
 
@@ -511,8 +559,10 @@ PHPAPI zend_result php_stream_filter_flush(php_stream_filter *filter, bool finis
 			stream->readpos = 0;
 		}
 		if (flushed_size > (stream->readbuflen - stream->writepos)) {
-			/* Grow the buffer */
-			stream->readbuf = perealloc(stream->readbuf, stream->writepos + flushed_size + stream->chunk_size, stream->is_persistent);
+			/* Grow the buffer. readbuflen follows the allocation: the next fill
+			 * derives its free space from it and would wrap a stale one. */
+			stream->readbuflen = stream->writepos + flushed_size + stream->chunk_size;
+			stream->readbuf = perealloc(stream->readbuf, stream->readbuflen, stream->is_persistent);
 		}
 		while ((bucket = inp->head)) {
 			memcpy(stream->readbuf + stream->writepos, bucket->buf, bucket->buflen);
@@ -524,6 +574,13 @@ PHPAPI zend_result php_stream_filter_flush(php_stream_filter *filter, bool finis
 		/* Send flushed data to the stream */
 		while ((bucket = inp->head)) {
 			ssize_t count = stream->ops->write(stream, bucket->buf, bucket->buflen);
+			if (UNEXPECTED(php_stream_buffer_lock_is_closed(lock))) {
+				/* fclose() from another coroutine freed the stream while the
+				 * write was parked; the position below is gone with it. */
+				php_stream_filter_flush_drain(inp, outp);
+				php_stream_buffer_lock_release(lock);
+				return FAILURE;
+			}
 			if (count > 0) {
 				stream->position += count;
 			}
@@ -531,6 +588,8 @@ PHPAPI zend_result php_stream_filter_flush(php_stream_filter *filter, bool finis
 			php_stream_bucket_delref(bucket);
 		}
 	}
+
+	php_stream_buffer_lock_release(lock);
 
 	return SUCCESS;
 }
