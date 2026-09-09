@@ -90,6 +90,11 @@ struct curl_async_read_state_s {
 			zend_async_io_t *io;        /* async IO handle (borrowed from stream) */
 			zend_async_event_callback_t *io_cb; /* our subscription on io->event */
 			zend_async_io_req_t *req;   /* completed request with data */
+			/* The request curl_async_read submitted and waits for. The io event
+			 * is shared by every operation on the descriptor, so a completion
+			 * for any other request is not this state's to take. NULL while
+			 * nothing is in flight. */
+			zend_async_io_req_t *pending;
 			int fd;                     /* >= 0: owned (CURLFile), -1: stream owns */
 		} file;
 		struct {
