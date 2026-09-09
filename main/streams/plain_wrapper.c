@@ -791,6 +791,21 @@ static ssize_t php_stdiop_read(php_stream *stream, char *buf, size_t count)
 		}
 
 		if (UNEXPECTED(EG(exception)) || UNEXPECTED(req->exception != NULL)) {
+			/* The read finished before the exception arrived — a cancellation,
+			 * usually — and its bytes are already in the caller's buffer. The
+			 * descriptor has moved past them, so dropping them here loses them
+			 * for every later reader of this handle (#288). The exception goes
+			 * on unwinding; the count says what the buffer holds. A read filter
+			 * is the exception: the filter call under a pending exception
+			 * returns without running, which the filter layer reads as a fatal
+			 * error and the stream never recovers. */
+			if (req->completed && req->transferred > 0 && req->exception == NULL
+					&& stream->readfilters.head == NULL) {
+				const ssize_t transferred = req->transferred;
+				req->dispose(req);
+				return transferred;
+			}
+
 			if (!(stream->flags & PHP_STREAM_FLAG_SUPPRESS_ERRORS)) {
 				zend_object *exception = EG(exception) ? EG(exception) : req->exception;
 				zval rv;
