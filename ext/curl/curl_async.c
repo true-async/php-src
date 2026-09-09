@@ -1316,6 +1316,9 @@ static void curl_async_read_complete(
 	if (state->source == CURL_READ_FILE) {
 		if (result == NULL) {
 			if (exception == NULL && state->file.pending != NULL) {
+				/* The read still reports itself, and its data is still good;
+				 * the handle behind it is not, so the next one asks nothing. */
+				state->flags |= CURL_READ_CLOSED;
 				return;
 			}
 
@@ -1769,6 +1772,22 @@ size_t curl_async_read(curl_async_read_state_t *state, char *buffer, const size_
 	}
 
 	/* CURL_READ_FILE: start async read */
+
+	/* libcurl asks again whenever the transfer is unpaused, and unpausing the
+	 * receiving side resumes the sending side with it. A second request would
+	 * take the place of the first, whose completion then belongs to nobody:
+	 * the bytes it took off the descriptor would leave a hole in the body. */
+	if (state->flags & CURL_READ_PENDING) {
+		return CURL_READFUNC_PAUSE;
+	}
+
+	/* The descriptor is gone, and asking the reactor for a read would raise
+	 * inside its own callback. */
+	if (state->flags & CURL_READ_CLOSED) {
+		state->flags |= CURL_READ_ERROR;
+		return CURL_READFUNC_ABORT;
+	}
+
 	zend_async_io_req_t *req = ZEND_ASYNC_IO_READ(state->file.io, NULL, requested);
 
 	if (req == NULL) {
