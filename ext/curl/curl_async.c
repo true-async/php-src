@@ -1301,7 +1301,7 @@ static void curl_async_read_complete(
 	zend_async_event_t *event, zend_async_event_callback_t *callback,
 	void *result, zend_object *exception)
 {
-	const curl_async_read_io_callback_t *io_cb = (curl_async_read_io_callback_t *) callback;
+	curl_async_read_io_callback_t *io_cb = (curl_async_read_io_callback_t *) callback;
 	curl_async_read_state_t *state = io_cb->state;
 
 	if (state == NULL) {
@@ -1309,23 +1309,44 @@ static void curl_async_read_complete(
 	}
 
 	/* Every coroutine doing IO on this descriptor completes through the same
-	 * event, so this runs for reads and writes this state never submitted.
-	 * A notification without a result is the handle itself failing, and that
-	 * one reaches everyone. */
+	 * event, so this runs for reads and writes this state never submitted. A
+	 * notification with no result is the handle closing: with an exception it
+	 * has ended every request, and without one it has kept the descriptor open
+	 * for the requests still in flight, which report themselves later. */
 	if (state->source == CURL_READ_FILE) {
-		if (result != NULL && result != state->file.pending) {
-			return;
-		}
+		if (result == NULL) {
+			if (exception == NULL && state->file.pending != NULL) {
+				return;
+			}
 
-		state->file.pending = NULL;
+			/* A closed handle detaches the request without freeing it, and an
+			 * awaited request has no owner but its awaiter. */
+			if (state->file.pending != NULL) {
+				state->file.pending->dispose(state->file.pending);
+				state->file.pending = NULL;
+			}
+		} else if (result != state->file.pending) {
+			return;
+		} else {
+			state->file.pending = NULL;
+		}
 	}
 
 	state->flags &= ~CURL_READ_PENDING;
 
 	/* Event was cancelled — free orphaned state and bail */
 	if (state->event == NULL) {
-		if (state->source == CURL_READ_FILE && state->file.req != NULL) {
-			state->file.req->dispose(state->file.req);
+		if (state->source == CURL_READ_FILE) {
+			if (state->file.req != NULL) {
+				state->file.req->dispose(state->file.req);
+			}
+
+			/* The subscription outlives the state it names, and the next
+			 * notification on this descriptor would read through it. */
+			if (state->file.io != NULL && state->file.io_cb != NULL) {
+				io_cb->state = NULL;
+				state->file.io->event.del_callback(&state->file.io->event, state->file.io_cb);
+			}
 		}
 		if ((state->flags & CURL_READ_OWNS_FD) && state->file.fd >= 0) {
 			close(state->file.fd);
@@ -1387,6 +1408,12 @@ void curl_async_read_state_free(curl_async_read_state_t *state)
 		state->file.io = NULL;
 		if (state->file.req != NULL) {
 			state->file.req->dispose(state->file.req);
+		}
+		/* A read still in flight is this state's to release: dispose defers
+		 * itself until the backend callback has run. */
+		if (state->file.pending != NULL) {
+			state->file.pending->dispose(state->file.pending);
+			state->file.pending = NULL;
 		}
 		if ((state->flags & CURL_READ_OWNS_FD) && state->file.fd >= 0) {
 			close(state->file.fd);
@@ -1685,6 +1712,12 @@ size_t curl_async_read(curl_async_read_state_t *state, char *buffer, const size_
 		zend_async_io_req_t *req = state->file.req;
 		state->file.req = NULL;
 
+		if (req->exception != NULL) {
+			state->flags |= CURL_READ_ERROR;
+			req->dispose(req);
+			return CURL_READFUNC_ABORT;
+		}
+
 		if (req->transferred <= 0) {
 			state->flags |= CURL_READ_EOF;
 			req->dispose(req);
@@ -1742,6 +1775,12 @@ size_t curl_async_read(curl_async_read_state_t *state, char *buffer, const size_
 
 	/* Sync fast path — data already available (e.g. single coroutine, pread) */
 	if (req->completed) {
+		if (req->exception != NULL) {
+			state->flags |= CURL_READ_ERROR;
+			req->dispose(req);
+			return CURL_READFUNC_ABORT;
+		}
+
 		if (req->transferred <= 0) {
 			state->flags |= CURL_READ_EOF;
 			req->dispose(req);
