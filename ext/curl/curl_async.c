@@ -1344,15 +1344,23 @@ static void curl_async_read_complete(
 				state->file.req->dispose(state->file.req);
 			}
 
+			/* The request this call was given: it left `pending` above, and the
+			 * state that would have read it is about to go. */
+			if (result != NULL) {
+				zend_async_io_req_t *completed = (zend_async_io_req_t *) result;
+				completed->dispose(completed);
+			}
+
 			/* The subscription outlives the state it names, and the next
 			 * notification on this descriptor would read through it. */
 			if (state->file.io != NULL && state->file.io_cb != NULL) {
 				io_cb->state = NULL;
 				state->file.io->event.del_callback(&state->file.io->event, state->file.io_cb);
 			}
-		}
-		if ((state->flags & CURL_READ_OWNS_FD) && state->file.fd >= 0) {
-			close(state->file.fd);
+
+			if ((state->flags & CURL_READ_OWNS_FD) && state->file.fd >= 0) {
+				close(state->file.fd);
+			}
 		}
 		efree(state);
 		return;
