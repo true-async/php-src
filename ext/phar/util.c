@@ -803,14 +803,163 @@ static void phar_set_fp_type(phar_entry_info *entry, enum phar_fp_type type, zen
 	data->offset = offset;
 }
 
+/* Check one entry's contents at `fp` against the checksum recorded for it. */
+static zend_result phar_verify_entry_crc(phar_entry_info *entry, php_stream *fp, char **error)
+{
+	phar_entry_data dummy;
+
+	dummy.internal_file = entry;
+	dummy.phar = entry->phar;
+	dummy.zero = entry->offset;
+	dummy.fp = fp;
+
+	return phar_postprocess_file(&dummy, entry->crc32, error, 1);
+}
+
+/* Hold one stream against every other coroutine, both what it reads and what it
+ * writes. The sides are taken in the order the stream layer takes them - write,
+ * then read, as php_stream_seek() does - so that a path already holding one of
+ * them cannot meet this one head-on. Returns false with nothing held when the
+ * stream was closed while this coroutine waited. */
+static bool phar_stream_lock(php_stream *stream, php_stream_buffer_lock_t **write_lock,
+		php_stream_buffer_lock_t **read_lock)
+{
+	if (UNEXPECTED(!php_stream_buffer_lock_acquire(stream, PHP_STREAM_BUFFER_SIDE_WRITE, write_lock))) {
+		return false;
+	}
+
+	if (UNEXPECTED(!php_stream_buffer_lock_acquire(stream, PHP_STREAM_BUFFER_SIDE_READ, read_lock))) {
+		php_stream_buffer_lock_release(*write_lock);
+		return false;
+	}
+
+	return true;
+}
+
+static void phar_stream_unlock(php_stream_buffer_lock_t *write_lock, php_stream_buffer_lock_t *read_lock)
+{
+	php_stream_buffer_lock_release(read_lock);
+	php_stream_buffer_lock_release(write_lock);
+}
+
+/* Decompress one entry from `archive` into `ufp`, the uncompressed-file stream
+ * shared by every entry, and record where in `ufp` the entry's bytes begin.
+ * The caller holds both sides of both streams. The span from the seek that
+ * remembers the append point to the removal of the decompression filter is one
+ * unit: every call in it parks, and a second entry entering the span meanwhile
+ * would append its own filter to the same write chain and put its bytes at the
+ * offset the first entry remembered as its own. */
+static zend_result phar_decompress_entry_fp(phar_entry_info *entry, php_stream *archive, php_stream *ufp, char **error)
+{
+	phar_archive_data *phar = entry->phar;
+	phar_entry_data dummy;
+	zend_off_t loc;
+
+	if (FAILURE == phar_verify_entry_crc(entry, archive, error)) {
+		return FAILURE;
+	}
+
+	const char *decompression_filter_name = phar_get_decompress_filter_name(entry);
+	if (UNEXPECTED(!decompression_filter_name)) {
+		spprintf(error, 4096, "phar error: unable to read phar \"%s\" (file \"%s\" is compressed with an unknown compression algorithm)", ZSTR_VAL(phar->fname), ZSTR_VAL(entry->filename));
+		return FAILURE;
+	}
+
+	php_stream_filter *filter = php_stream_filter_create(decompression_filter_name, NULL, 0);
+
+	if (!filter) {
+		spprintf(error, 4096, "phar error: unable to read phar \"%s\" (cannot create %s filter while decompressing file \"%s\")", ZSTR_VAL(phar->fname), decompression_filter_name, ZSTR_VAL(entry->filename));
+		return FAILURE;
+	}
+
+	/* now we can safely use proper decompression */
+	/* save the new offset location within ufp */
+	php_stream_seek(ufp, 0, SEEK_END);
+	loc = php_stream_tell(ufp);
+	php_stream_filter_append(&ufp->writefilters, filter);
+	php_stream_seek(archive, phar_get_fp_offset(entry), SEEK_SET);
+
+	if (entry->uncompressed_filesize) {
+		if (SUCCESS != php_stream_copy_to_stream_ex(archive, ufp, entry->compressed_filesize, NULL)) {
+			spprintf(error, 4096, "phar error: internal corruption of phar \"%s\" (actual filesize mismatch on file \"%s\")", ZSTR_VAL(phar->fname), ZSTR_VAL(entry->filename));
+			php_stream_filter_remove(filter, 1);
+			return FAILURE;
+		}
+	}
+
+	php_stream_filter_flush(filter, 1);
+	php_stream_flush(ufp);
+	php_stream_filter_remove(filter, 1);
+
+	if (php_stream_tell(ufp) - loc != (zend_off_t) entry->uncompressed_filesize) {
+		spprintf(error, 4096, "phar error: internal corruption of phar \"%s\" (actual filesize mismatch on file \"%s\")", ZSTR_VAL(phar->fname), ZSTR_VAL(entry->filename));
+		return FAILURE;
+	}
+
+	entry->old_flags = entry->flags;
+
+	/* this is now the new location of the file contents within this fp */
+	phar_set_fp_type(entry, PHAR_UFP, loc);
+	dummy.internal_file = entry;
+	dummy.phar = phar;
+	dummy.zero = entry->offset;
+	dummy.fp = ufp;
+	if (FAILURE == phar_postprocess_file(&dummy, entry->crc32, error, 0)) {
+		return FAILURE;
+	}
+	return SUCCESS;
+}
+
+/* The tail of phar_open_entry_fp(), run with both sides of `archive` held,
+ * because everything below reads through that one stream shared by the archive.
+ * The entry is examined once more here: waiting for the lock parks, and another
+ * coroutine may have opened the same entry meanwhile. The PHAR_TMP branch of
+ * the caller needs no such repetition - PHAR_TMP is given to a newly mounted
+ * entry only, and an entry read from an archive never enters that state. */
+static zend_result phar_open_entry_fp_locked(phar_entry_info *entry, php_stream *archive, char **error)
+{
+	phar_archive_data *phar = entry->phar;
+	php_stream *ufp;
+
+	if (entry->is_modified || entry->fp_type != PHAR_FP) {
+		return SUCCESS;
+	}
+
+	if ((entry->old_flags && !(entry->old_flags & PHAR_ENT_COMPRESSION_MASK)) || !(entry->flags & PHAR_ENT_COMPRESSION_MASK)) {
+		return phar_verify_entry_crc(entry, archive, error);
+	}
+
+	if (!phar_get_entrypufp(entry)) {
+		phar_set_entrypufp(entry, php_stream_fopen_tmpfile());
+		if (!phar_get_entrypufp(entry)) {
+			spprintf(error, 4096, "phar error: Cannot open temporary file for decompressing phar archive \"%s\" file \"%s\"", ZSTR_VAL(phar->fname), ZSTR_VAL(entry->filename));
+			return FAILURE;
+		}
+	}
+
+	ufp = phar_get_entrypufp(entry);
+
+	php_stream_buffer_lock_t *write_lock, *read_lock;
+
+	/* The archive stream is taken before this one and never the other way
+	 * round, so the two cannot cycle. */
+	if (UNEXPECTED(!phar_stream_lock(ufp, &write_lock, &read_lock))) {
+		spprintf(error, 4096, "phar error: decompression stream of phar \"%s\" was closed while file \"%s\" waited for it", ZSTR_VAL(phar->fname), ZSTR_VAL(entry->filename));
+		return FAILURE;
+	}
+
+	const zend_result result = phar_decompress_entry_fp(entry, archive, ufp, error);
+
+	phar_stream_unlock(write_lock, read_lock);
+
+	return result;
+}
+
 /* open and decompress a compressed phar entry
  */
 ZEND_ATTRIBUTE_NONNULL zend_result phar_open_entry_fp(phar_entry_info *entry, char **error, bool follow_links) /* {{{ */
 {
 	phar_archive_data *phar = entry->phar;
-	zend_off_t loc;
-	php_stream *ufp;
-	phar_entry_data dummy;
 
 	if (follow_links && entry->symlink) {
 		phar_entry_info *link_entry = phar_get_link_source(entry);
@@ -842,82 +991,41 @@ ZEND_ATTRIBUTE_NONNULL zend_result phar_open_entry_fp(phar_entry_info *entry, ch
 		}
 	}
 
-	if ((entry->old_flags && !(entry->old_flags & PHAR_ENT_COMPRESSION_MASK)) || !(entry->flags & PHAR_ENT_COMPRESSION_MASK)) {
-		dummy.internal_file = entry;
-		dummy.phar = phar;
-		dummy.zero = entry->offset;
-		dummy.fp = phar_get_pharfp(phar);
-		if (FAILURE == phar_postprocess_file(&dummy, entry->crc32, error, 1)) {
-			return FAILURE;
-		}
-		return SUCCESS;
+	/* Reading an entry parks, and the caller takes its reference only once this
+	 * call has returned: without a reference held here, the coroutine that
+	 * finishes first drops the last one and phar_archive_delref() closes the
+	 * archive stream the others are queued on. The stream is remembered rather
+	 * than read again after each park, so that the whole call works on the one
+	 * that was locked. */
+	const bool is_counted = !phar->is_persistent;
+
+	if (is_counted) {
+		++phar->refcount;
 	}
 
-	if (!phar_get_entrypufp(entry)) {
-		phar_set_entrypufp(entry, php_stream_fopen_tmpfile());
-		if (!phar_get_entrypufp(entry)) {
-			spprintf(error, 4096, "phar error: Cannot open temporary file for decompressing phar archive \"%s\" file \"%s\"", ZSTR_VAL(phar->fname), ZSTR_VAL(entry->filename));
-			return FAILURE;
-		}
+	php_stream *archive = phar_get_pharfp(phar);
+	php_stream_buffer_lock_t *write_lock, *read_lock;
+	zend_result result;
+
+	if (UNEXPECTED(!phar_stream_lock(archive, &write_lock, &read_lock))) {
+		spprintf(error, 4096, "phar error: phar archive \"%s\" was closed while file \"%s\" waited to be read", ZSTR_VAL(phar->fname), ZSTR_VAL(entry->filename));
+		result = FAILURE;
+	} else {
+		result = phar_open_entry_fp_locked(entry, archive, error);
+		phar_stream_unlock(write_lock, read_lock);
 	}
 
-	dummy.internal_file = entry;
-	dummy.phar = phar;
-	dummy.zero = entry->offset;
-	dummy.fp = phar_get_pharfp(phar);
-	if (FAILURE == phar_postprocess_file(&dummy, entry->crc32, error, 1)) {
-		return FAILURE;
+	if (is_counted) {
+		/* The count is restored by hand rather than through
+		 * phar_archive_delref(): at zero it closes the archive stream and may
+		 * drop the archive from the name map, and phar_get_entry_data(), the
+		 * caller that reaches here most often, takes its own reference on the
+		 * next line. A holder that let go while this call was parked leaves
+		 * that teardown to whoever drops the count to zero next. */
+		--phar->refcount;
 	}
 
-	ufp = phar_get_entrypufp(entry);
-
-	const char *decompression_filter_name = phar_get_decompress_filter_name(entry);
-	if (UNEXPECTED(!decompression_filter_name)) {
-		spprintf(error, 4096, "phar error: unable to read phar \"%s\" (file \"%s\" is compressed with an unknown compression algorithm)", ZSTR_VAL(phar->fname), ZSTR_VAL(entry->filename));
-		return FAILURE;
-	}
-
-	php_stream_filter *filter = php_stream_filter_create(decompression_filter_name, NULL, 0);
-
-	if (!filter) {
-		spprintf(error, 4096, "phar error: unable to read phar \"%s\" (cannot create %s filter while decompressing file \"%s\")", ZSTR_VAL(phar->fname), decompression_filter_name, ZSTR_VAL(entry->filename));
-		return FAILURE;
-	}
-
-	/* now we can safely use proper decompression */
-	/* save the new offset location within ufp */
-	php_stream_seek(ufp, 0, SEEK_END);
-	loc = php_stream_tell(ufp);
-	php_stream_filter_append(&ufp->writefilters, filter);
-	php_stream_seek(phar_get_entrypfp(entry), phar_get_fp_offset(entry), SEEK_SET);
-
-	if (entry->uncompressed_filesize) {
-		if (SUCCESS != php_stream_copy_to_stream_ex(phar_get_entrypfp(entry), ufp, entry->compressed_filesize, NULL)) {
-			spprintf(error, 4096, "phar error: internal corruption of phar \"%s\" (actual filesize mismatch on file \"%s\")", ZSTR_VAL(phar->fname), ZSTR_VAL(entry->filename));
-			php_stream_filter_remove(filter, 1);
-			return FAILURE;
-		}
-	}
-
-	php_stream_filter_flush(filter, 1);
-	php_stream_flush(ufp);
-	php_stream_filter_remove(filter, 1);
-
-	if (php_stream_tell(ufp) - loc != (zend_off_t) entry->uncompressed_filesize) {
-		spprintf(error, 4096, "phar error: internal corruption of phar \"%s\" (actual filesize mismatch on file \"%s\")", ZSTR_VAL(phar->fname), ZSTR_VAL(entry->filename));
-		return FAILURE;
-	}
-
-	entry->old_flags = entry->flags;
-
-	/* this is now the new location of the file contents within this fp */
-	phar_set_fp_type(entry, PHAR_UFP, loc);
-	dummy.zero = entry->offset;
-	dummy.fp = ufp;
-	if (FAILURE == phar_postprocess_file(&dummy, entry->crc32, error, 0)) {
-		return FAILURE;
-	}
-	return SUCCESS;
+	return result;
 }
 /* }}} */
 
