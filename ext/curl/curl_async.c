@@ -1360,6 +1360,14 @@ static void curl_async_read_complete(
 	/* Handle error from async event layer */
 	if (exception != NULL || result == NULL) {
 		state->flags |= CURL_READ_ERROR;
+
+		/* A failed read is notified with its own exception and reaches here
+		 * rather than the branch below, so this is where it is released. */
+		if (result != NULL) {
+			zend_async_io_req_t *failed = (zend_async_io_req_t *) result;
+			failed->dispose(failed);
+		}
+
 		goto finish;
 	}
 
@@ -1711,12 +1719,6 @@ size_t curl_async_read(curl_async_read_state_t *state, char *buffer, const size_
 	if (state->source == CURL_READ_FILE && state->file.req != NULL) {
 		zend_async_io_req_t *req = state->file.req;
 		state->file.req = NULL;
-
-		if (req->exception != NULL) {
-			state->flags |= CURL_READ_ERROR;
-			req->dispose(req);
-			return CURL_READFUNC_ABORT;
-		}
 
 		if (req->transferred <= 0) {
 			state->flags |= CURL_READ_EOF;
