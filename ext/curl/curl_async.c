@@ -1308,6 +1308,18 @@ static void curl_async_read_complete(
 		return;
 	}
 
+	/* Every coroutine doing IO on this descriptor completes through the same
+	 * event, so this runs for reads and writes this state never submitted.
+	 * A notification without a result is the handle itself failing, and that
+	 * one reaches everyone. */
+	if (state->source == CURL_READ_FILE) {
+		if (result != NULL && result != state->file.pending) {
+			return;
+		}
+
+		state->file.pending = NULL;
+	}
+
 	state->flags &= ~CURL_READ_PENDING;
 
 	/* Event was cancelled — free orphaned state and bail */
@@ -1745,6 +1757,7 @@ size_t curl_async_read(curl_async_read_state_t *state, char *buffer, const size_
 
 	/* Async path — callback will receive the completed req and unpause */
 	state->flags |= CURL_READ_PENDING;
+	state->file.pending = req;
 	return CURL_READFUNC_PAUSE;
 #endif
 }
