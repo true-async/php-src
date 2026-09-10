@@ -79,6 +79,7 @@ static zend_always_inline void curl_async_event_set_callback_exception(
 #define CURL_READ_ABORT    0x10   /* callback returned CURL_READFUNC_ABORT */
 #define CURL_READ_PAUSE    0x20   /* callback returned CURL_READFUNC_PAUSE */
 #define CURL_READ_CLOSED   0x40   /* the IO handle was closed under this state */
+#define CURL_READ_MIME     0x80   /* the mime callback argument owns this state */
 
 struct curl_async_read_state_s {
 	CURL *curl;                     /* back-ref for curl_easy_pause */
