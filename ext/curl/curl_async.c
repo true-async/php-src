@@ -95,13 +95,7 @@ static inline bool curl_has_pending_async_io(const curl_async_event_t *curl_even
 			&& (curl_event->ch->async_read_state->flags & CURL_READ_PENDING));
 }
 
-/**
- * @brief The code a finished transfer reports.
- *
- * A user callback that threw aborts the transfer whatever libcurl made of it:
- * the exception travels to the caller with the notification, and curl_errno()
- * has to say the same thing.
- */
+/** @brief The code a finished transfer reports: a callback that threw decides it. */
 static zend_always_inline CURLcode curl_async_transfer_result(
 	const curl_async_event_t *curl_event, const CURLcode result)
 {
@@ -736,9 +730,8 @@ CURLcode curl_async_perform(php_curl *ch)
 	// Suspend coroutine until curl completes
 	const bool resumed = ZEND_ASYNC_SUSPEND();
 
-	/* The waker carries the code the completion decided. A coroutine woken by an
-	 * exception carries none, and the callback that threw left its own code on the
-	 * handle. Neither is read from the event, which may already be disposed. */
+	/* Not from the event, which the notification may already have disposed: the
+	 * waker carries the completion's code, the handle a throwing callback's. */
 	CURLcode result = EXPECTED(resumed) ? CURLE_OK : CURLE_ABORTED_BY_CALLBACK;
 
 	if (coroutine->waker != NULL && Z_TYPE(coroutine->waker->result) == IS_LONG) {
@@ -1938,17 +1931,15 @@ size_t curl_async_read_cb(char *buffer, const size_t size, const size_t nitems, 
 }
 
 /**
- * @brief Seek callback for a CURLFile part.
+ * @brief Seek callback for a CURLFile part, called when libcurl replays the body.
  *
- * libcurl rewinds the body to replay it, after a redirect or an authentication
- * challenge. Answers CURL_SEEKFUNC_CANTSEEK when the part cannot be replayed,
- * which makes libcurl fail the transfer rather than send it truncated.
+ * CURL_SEEKFUNC_CANTSEEK fails the transfer rather than send it truncated.
  */
 int curl_async_seek_cb(void *arg, const curl_off_t offset, const int origin)
 {
 	mime_data_cb_arg_t *cb_arg = (mime_data_cb_arg_t *) arg;
 
-	/* Nothing read yet: the first read opens at the beginning anyway. */
+	/* Nothing read yet: the first read opens at the beginning. */
 	if (cb_arg->stream == NULL) {
 		return origin == SEEK_SET && offset == 0 ? CURL_SEEKFUNC_OK : CURL_SEEKFUNC_CANTSEEK;
 	}
@@ -1956,12 +1947,12 @@ int curl_async_seek_cb(void *arg, const curl_off_t offset, const int origin)
 	if (cb_arg->async_state != NULL) {
 		curl_async_read_state_t *state = cb_arg->async_state;
 
-		/* A read in flight will land at the position being left. */
+		/* In flight: it would land at the position being left. */
 		if (state->flags & CURL_READ_PENDING) {
 			return CURL_SEEKFUNC_CANTSEEK;
 		}
 
-		/* One that finished holds bytes from that position. */
+		/* Finished: it holds bytes from that position. */
 		if (state->file.req != NULL) {
 			state->file.req->dispose(state->file.req);
 			state->file.req = NULL;
@@ -2034,8 +2025,7 @@ size_t curl_async_read_dispatch(php_curl *ch, char *buffer, const size_t request
 				curl_async_read_state_free(ch->async_read_state);
 				ch->async_read_state = NULL;
 
-				/* No source named at all: CURLOPT_READFUNCTION reset to null with no
-				 * CURLOPT_INFILE behind it. Nothing to send is an empty body, not a
+				/* No source named at all. Nothing to send is an empty body, not a
 				 * failed transfer. */
 				if (Z_ISUNDEF(read_handler->stream) && read_handler->fp == NULL) {
 					return 0;

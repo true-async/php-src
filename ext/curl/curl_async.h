@@ -54,7 +54,7 @@ typedef struct curl_async_event_s {
 	curl_async_write_state_t *write_state;        /* heap-allocated, NULL until first async write */
 	curl_async_write_state_t *header_write_state; /* same, for header writes */
 	zend_object *callback_exception;       /* exception from user callback, forwarded on completion */
-	CURLcode callback_error;               /* code that callback would have made libcurl report */
+	CURLcode callback_error;               /* what the callback would have made libcurl report */
 } curl_async_event_t;
 
 /* Store a callback exception on the event, chaining via "previous" if one
@@ -66,15 +66,13 @@ static zend_always_inline void curl_async_event_set_callback_exception(
 		zend_exception_set_previous(exception, event->callback_exception);
 	}
 	event->callback_exception = exception;
-	/* The transfer reports what the callback would have made libcurl report: a
-	 * write or header callback answers CURLE_WRITE_ERROR, a read one
-	 * CURLE_ABORTED_BY_CALLBACK. The first to throw decides. */
+	/* The first callback to throw decides the code. */
 	if (event->callback_error == CURLE_OK) {
 		event->callback_error = error;
 	}
 
-	/* Also on the handle, which outlives the event: curl_async_perform() reads it
-	 * after the suspend that the exception ends, when the event may be gone. */
+	/* And on the handle, which outlives the event: curl_async_perform() reads it
+	 * after the suspend, by when the event may be gone. */
 	if (event->ch != NULL && event->ch->err.no == CURLE_OK) {
 		SAVE_CURL_ERROR(event->ch, error);
 	}
@@ -240,10 +238,8 @@ void curl_async_free_cb(void *arg);
  * @brief Seek callback for a CURLFile part, passed to curl_mime_data_cb().
  *
  * @param arg    Pointer to mime_data_cb_arg_t.
- * @param offset Target position, in the sense given by origin.
  * @param origin SEEK_SET, SEEK_CUR or SEEK_END.
- * @return CURL_SEEKFUNC_OK, or CURL_SEEKFUNC_CANTSEEK when the part cannot be
- *         replayed from that position.
+ * @return CURL_SEEKFUNC_CANTSEEK when the part cannot be replayed from there.
  */
 int curl_async_seek_cb(void *arg, curl_off_t offset, int origin);
 
