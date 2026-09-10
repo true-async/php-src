@@ -75,10 +75,10 @@ static zend_always_inline void curl_async_event_set_callback_exception(
 #define CURL_READ_EOF      0x01
 #define CURL_READ_ERROR    0x02
 #define CURL_READ_PENDING  0x04
-#define CURL_READ_OWNS_FD  0x08   /* fd was opened by us and must be closed */
 #define CURL_READ_ABORT    0x10   /* callback returned CURL_READFUNC_ABORT */
 #define CURL_READ_PAUSE    0x20   /* callback returned CURL_READFUNC_PAUSE */
 #define CURL_READ_CLOSED   0x40   /* the IO handle was closed under this state */
+#define CURL_READ_MIME     0x80   /* the mime callback argument owns this state */
 
 struct curl_async_read_state_s {
 	CURL *curl;                     /* back-ref for curl_easy_pause */
@@ -96,7 +96,9 @@ struct curl_async_read_state_s {
 			 * for any other request is not this state's to take. NULL while
 			 * nothing is in flight. */
 			zend_async_io_req_t *pending;
-			int fd;                     /* >= 0: owned (CURLFile), -1: stream owns */
+			/* Borrowed from the stream, which closes it. -1 when the stream
+			 * gave none, and then only the io path is usable. */
+			int fd;
 		} file;
 		struct {
 			zend_string *result;        /* string returned by PHP callback */
