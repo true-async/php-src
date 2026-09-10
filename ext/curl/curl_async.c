@@ -1385,10 +1385,6 @@ static void curl_async_read_complete(
 				state->file.io = NULL;
 			}
 
-			if ((state->flags & CURL_READ_OWNS_FD) && state->file.fd >= 0) {
-				close(state->file.fd);
-			}
-
 			/* A mime state outlives its event: libcurl frees the part, and
 			 * curl_async_free_cb() frees the state with it. Everything this
 			 * state held is released above, so the free_cb finds nothing left
@@ -1470,9 +1466,6 @@ void curl_async_read_state_free(curl_async_read_state_t *state)
 		if (state->file.pending != NULL) {
 			state->file.pending->dispose(state->file.pending);
 			state->file.pending = NULL;
-		}
-		if ((state->flags & CURL_READ_OWNS_FD) && state->file.fd >= 0) {
-			close(state->file.fd);
 		}
 	} else if (state->source == CURL_READ_CALLBACK) {
 		if (state->callback.result != NULL) {
