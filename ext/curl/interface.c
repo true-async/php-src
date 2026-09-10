@@ -646,10 +646,11 @@ static int curl_fnmatch(void *ctx, const char *pattern, const char *string)
 
 	/* Capture an exception from the user callback onto the async event so it is
 	 * delivered through the coroutine to the awaiter.  Without this, EG(exception)
-	 * stays set across further libcurl iterations and escapes outside the
-	 * coroutine as an uncaught error.  libcurl has no result code for a failing
-	 * fnmatch callback, it only tells a match from a non-match, so the transfer
-	 * reports the generic abort instead. */
+	 * stays set across further libcurl iterations and escapes outside the coroutine
+	 * as an uncaught error.  The result is overwritten because a warning raised as
+	 * an exception leaves the callback's own answer in rval.  libcurl has no code
+	 * for a failing fnmatch callback, only match and non-match, so the transfer
+	 * reports the generic abort. */
 	if (EG(exception) && ch->async_event != NULL) {
 		curl_async_event_t *curl_event = (curl_async_event_t *) ch->async_event;
 		GC_ADDREF(EG(exception));
@@ -871,9 +872,10 @@ static int curl_ssh_hostkeyfunction(void *clientp, int keytype, const char *key,
 	}
 
 	/* Same handoff as the other callbacks: the exception is carried on the event
-	 * rather than left in EG(exception) past the transfer.  A key the callback
-	 * refuses fails verification, which is what libcurl reports for anything but
-	 * CURLKHMATCH_OK. */
+	 * rather than left in EG(exception) past the transfer.  It takes a throw from
+	 * the callback and the wrong-return error above alike, and overwrites the
+	 * result in both, since either can leave the callback's own answer in rval.
+	 * Anything but CURLKHMATCH_OK fails verification in libcurl. */
 	if (EG(exception) && ch->async_event != NULL) {
 		curl_async_event_t *curl_event = (curl_async_event_t *) ch->async_event;
 		GC_ADDREF(EG(exception));
