@@ -54,17 +54,28 @@ typedef struct curl_async_event_s {
 	curl_async_write_state_t *write_state;        /* heap-allocated, NULL until first async write */
 	curl_async_write_state_t *header_write_state; /* same, for header writes */
 	zend_object *callback_exception;       /* exception from user callback, forwarded on completion */
+	CURLcode callback_error;               /* what the callback would have made libcurl report */
 } curl_async_event_t;
 
 /* Store a callback exception on the event, chaining via "previous" if one
  * already exists.  Caller must have already addref'd `exception`. */
 static zend_always_inline void curl_async_event_set_callback_exception(
-	curl_async_event_t *event, zend_object *exception
-) {
+	curl_async_event_t *event, zend_object *exception, const CURLcode error)
+{
 	if (event->callback_exception != NULL && event->callback_exception != exception) {
 		zend_exception_set_previous(exception, event->callback_exception);
 	}
 	event->callback_exception = exception;
+	/* The first callback to throw decides the code. */
+	if (event->callback_error == CURLE_OK) {
+		event->callback_error = error;
+	}
+
+	/* And on the handle, which outlives the event: curl_async_perform() reads it
+	 * after the suspend, by when the event may be gone. */
+	if (event->ch != NULL && event->ch->err.no == CURLE_OK) {
+		SAVE_CURL_ERROR(event->ch, error);
+	}
 }
 
 /* Read source type */
@@ -222,6 +233,15 @@ size_t curl_async_read_cb(char *buffer, size_t size, size_t nitems, void *arg);
  * handle, pending request, and file descriptor.
  */
 void curl_async_free_cb(void *arg);
+
+/**
+ * @brief Seek callback for a CURLFile part, passed to curl_mime_data_cb().
+ *
+ * @param arg    Pointer to mime_data_cb_arg_t.
+ * @param origin SEEK_SET, SEEK_CUR or SEEK_END.
+ * @return CURL_SEEKFUNC_CANTSEEK when the part cannot be replayed from there.
+ */
+int curl_async_seek_cb(void *arg, curl_off_t offset, int origin);
 
 /**
  * @brief Async write callback for PHP_CURL_FILE mode (body and headers).

@@ -95,6 +95,13 @@ static inline bool curl_has_pending_async_io(const curl_async_event_t *curl_even
 			&& (curl_event->ch->async_read_state->flags & CURL_READ_PENDING));
 }
 
+/** @brief The code a finished transfer reports: a callback that threw decides it. */
+static zend_always_inline CURLcode curl_async_transfer_result(
+	const curl_async_event_t *curl_event, const CURLcode result)
+{
+	return curl_event->callback_error != CURLE_OK ? curl_event->callback_error : result;
+}
+
 static void process_curl_completed_handles(void)
 {
 	CURLMsg *msg;
@@ -123,7 +130,7 @@ static void process_curl_completed_handles(void)
 			curl_multi_remove_handle(curl_multi_handle, msg->easy_handle);
 
 			zval result;
-			ZVAL_LONG(&result, msg->data.result);
+			ZVAL_LONG(&result, curl_async_transfer_result(curl_event, msg->data.result));
 			ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(&curl_event->base);
 			/* Stop BEFORE notify — notify may trigger dispose/dtor */
 			curl_event->base.stop(&curl_event->base);
@@ -143,7 +150,7 @@ static void process_curl_completed_handles(void)
 			curl_event->curl = NULL;
 
 			zval result;
-			ZVAL_LONG(&result, CURLE_ABORTED_BY_CALLBACK);
+			ZVAL_LONG(&result, curl_async_transfer_result(curl_event, CURLE_ABORTED_BY_CALLBACK));
 			ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(&curl_event->base);
 			curl_event->base.stop(&curl_event->base);
 			ZEND_ASYNC_CALLBACKS_NOTIFY(&curl_event->base, &result, curl_event->callback_exception);
@@ -721,15 +728,16 @@ CURLcode curl_async_perform(php_curl *ch)
 	}
 
 	// Suspend coroutine until curl completes
-	if (UNEXPECTED(false == ZEND_ASYNC_SUSPEND())) {
-		ZEND_ASYNC_WAKER_DESTROY(coroutine);
-		return CURLE_ABORTED_BY_CALLBACK;
-	}
+	const bool resumed = ZEND_ASYNC_SUSPEND();
 
-	// Get result from waker
-	CURLcode result = CURLE_OK;
+	/* Not from the event, which the notification may already have disposed: the
+	 * waker carries the completion's code, the handle a throwing callback's. */
+	CURLcode result = EXPECTED(resumed) ? CURLE_OK : CURLE_ABORTED_BY_CALLBACK;
+
 	if (coroutine->waker != NULL && Z_TYPE(coroutine->waker->result) == IS_LONG) {
 		result = (CURLcode) Z_LVAL(coroutine->waker->result);
+	} else if (!resumed && ch->err.no != CURLE_OK) {
+		result = (CURLcode) ch->err.no;
 	}
 
 	ZEND_ASYNC_WAKER_DESTROY(coroutine);
@@ -1135,6 +1143,7 @@ CURLMcode curl_async_multi_perform(php_curlm * curl_m, int *running_handles)
 			if (event->callback_exception != NULL) {
 				zend_object *const exception = event->callback_exception;
 				event->callback_exception = NULL;
+				event->callback_error = CURLE_OK;
 
 				zval exception_zv;
 				ZVAL_OBJ(&exception_zv, exception);
@@ -1508,7 +1517,7 @@ static void curl_async_read_callback_complete(
 		 * Store it on curl_event to forward to the waiting coroutine. */
 		ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(event);
 		GC_ADDREF(exception);
-		curl_async_event_set_callback_exception(curl_event, exception);
+		curl_async_event_set_callback_exception(curl_event, exception, CURLE_ABORTED_BY_CALLBACK);
 		state->flags |= CURL_READ_ERROR;
 	} else {
 		zend_coroutine_t * const coro = (zend_coroutine_t *) event;
@@ -1533,7 +1542,7 @@ static void curl_async_read_callback_complete(
 				zend_object *ex = EG(exception);
 				GC_ADDREF(ex);
 				zend_clear_exception();
-				curl_async_event_set_callback_exception(curl_event, ex);
+				curl_async_event_set_callback_exception(curl_event, ex, CURLE_ABORTED_BY_CALLBACK);
 				state->flags |= CURL_READ_ERROR;
 			}
 		} else {
@@ -1661,7 +1670,7 @@ static size_t curl_async_read_callback_sync(
 		if (curl_event != NULL) {
 			zend_object *ex = EG(exception);
 			GC_ADDREF(ex);
-			curl_async_event_set_callback_exception(curl_event, ex);
+			curl_async_event_set_callback_exception(curl_event, ex, CURLE_ABORTED_BY_CALLBACK);
 			zend_clear_exception();
 		}
 		zval_ptr_dtor(&retval);
@@ -1688,7 +1697,7 @@ static size_t curl_async_read_callback_sync(
 				zend_object *ex = EG(exception);
 				GC_ADDREF(ex);
 				zend_clear_exception();
-				curl_async_event_set_callback_exception(state->event, ex);
+				curl_async_event_set_callback_exception(state->event, ex, CURLE_ABORTED_BY_CALLBACK);
 				state->flags |= CURL_READ_ERROR;
 				length = CURL_READFUNC_ABORT;
 			}
@@ -1922,6 +1931,41 @@ size_t curl_async_read_cb(char *buffer, const size_t size, const size_t nitems, 
 }
 
 /**
+ * @brief Seek callback for a CURLFile part, called when libcurl replays the body.
+ *
+ * CURL_SEEKFUNC_CANTSEEK fails the transfer rather than send it truncated.
+ */
+int curl_async_seek_cb(void *arg, const curl_off_t offset, const int origin)
+{
+	mime_data_cb_arg_t *cb_arg = (mime_data_cb_arg_t *) arg;
+
+	/* Nothing read yet: the first read opens at the beginning. */
+	if (cb_arg->stream == NULL) {
+		return origin == SEEK_SET && offset == 0 ? CURL_SEEKFUNC_OK : CURL_SEEKFUNC_CANTSEEK;
+	}
+
+	if (cb_arg->async_state != NULL) {
+		curl_async_read_state_t *state = cb_arg->async_state;
+
+		/* In flight: it would land at the position being left. */
+		if (state->flags & CURL_READ_PENDING) {
+			return CURL_SEEKFUNC_CANTSEEK;
+		}
+
+		/* Finished: it holds bytes from that position. */
+		if (state->file.req != NULL) {
+			state->file.req->dispose(state->file.req);
+			state->file.req = NULL;
+		}
+
+		state->flags &= ~(CURL_READ_EOF | CURL_READ_ERROR | CURL_READ_ABORT);
+	}
+
+	return php_stream_seek(cb_arg->stream, offset, origin) == SUCCESS
+			? CURL_SEEKFUNC_OK : CURL_SEEKFUNC_CANTSEEK;
+}
+
+/**
  * @brief Free callback for async CURLFile state.
  *
  * Called by libcurl when the mime part is freed. Cleans up the async IO
@@ -1980,6 +2024,13 @@ size_t curl_async_read_dispatch(php_curl *ch, char *buffer, const size_t request
 			if (ch->async_read_state->file.fd < 0) {
 				curl_async_read_state_free(ch->async_read_state);
 				ch->async_read_state = NULL;
+
+				/* No source named at all. Nothing to send is an empty body, not a
+				 * failed transfer. */
+				if (Z_ISUNDEF(read_handler->stream) && read_handler->fp == NULL) {
+					return 0;
+				}
+
 				return CURL_READFUNC_ABORT;
 			}
 
@@ -2065,7 +2116,7 @@ static void curl_async_write_finish_deferred(curl_async_event_t *curl_event)
 	}
 
 	zval done_result;
-	ZVAL_LONG(&done_result, curl_event->done_result);
+	ZVAL_LONG(&done_result, curl_async_transfer_result(curl_event, curl_event->done_result));
 	ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(&curl_event->base);
 	/* Stop BEFORE notify — notify may trigger dispose/dtor */
 	curl_event->base.stop(&curl_event->base);
@@ -2139,7 +2190,7 @@ static void curl_async_write_user_complete(
 		 * Store it on curl_event to forward to the waiting coroutine. */
 		ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(event);
 		GC_ADDREF(exception);
-		curl_async_event_set_callback_exception(curl_event, exception);
+		curl_async_event_set_callback_exception(curl_event, exception, CURLE_WRITE_ERROR);
 		SAVE_CURL_ERROR(curl_event->ch, CURLE_WRITE_ERROR);
 		state->has_pending_result = true;
 		state->pending_result = (size_t) -1;
@@ -2187,7 +2238,7 @@ static void curl_async_write_user_complete(
 				curl_multi_remove_handle(curl_multi_handle, curl_event->curl);
 			}
 			zval done_result;
-			ZVAL_LONG(&done_result, curl_event->done_result);
+			ZVAL_LONG(&done_result, curl_async_transfer_result(curl_event, curl_event->done_result));
 			ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(&curl_event->base);
 			curl_event->base.stop(&curl_event->base);
 			ZEND_ASYNC_CALLBACKS_NOTIFY(&curl_event->base, &done_result, curl_event->callback_exception);
@@ -2264,7 +2315,7 @@ size_t curl_async_write_user(char *data, const size_t size, const size_t nmemb, 
 			if (curl_event != NULL) {
 				zend_object *ex = EG(exception);
 				GC_ADDREF(ex);
-				curl_async_event_set_callback_exception(curl_event, ex);
+				curl_async_event_set_callback_exception(curl_event, ex, CURLE_WRITE_ERROR);
 				zend_clear_exception();
 			}
 			SAVE_CURL_ERROR(ch, CURLE_WRITE_ERROR);

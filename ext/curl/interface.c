@@ -693,7 +693,7 @@ static int curl_progress(void *clientp, double dltotal, double dlnow, double ult
 	if (EG(exception) && ch->async_event != NULL) {
 		curl_async_event_t *curl_event = (curl_async_event_t *) ch->async_event;
 		GC_ADDREF(EG(exception));
-		curl_async_event_set_callback_exception(curl_event, EG(exception));
+		curl_async_event_set_callback_exception(curl_event, EG(exception), CURLE_ABORTED_BY_CALLBACK);
 		zend_clear_exception();
 		rval = 1;
 	}
@@ -743,7 +743,7 @@ static int curl_xferinfo(void *clientp, curl_off_t dltotal, curl_off_t dlnow, cu
 	if (EG(exception) && ch->async_event != NULL) {
 		curl_async_event_t *curl_event = (curl_async_event_t *) ch->async_event;
 		GC_ADDREF(EG(exception));
-		curl_async_event_set_callback_exception(curl_event, EG(exception));
+		curl_async_event_set_callback_exception(curl_event, EG(exception), CURLE_ABORTED_BY_CALLBACK);
 		zend_clear_exception();
 		rval = 1;
 	}
@@ -803,7 +803,7 @@ static int curl_prereqfunction(void *clientp, char *conn_primary_ip, char *conn_
 	if (EG(exception) && ch->async_event != NULL) {
 		curl_async_event_t *curl_event = (curl_async_event_t *) ch->async_event;
 		GC_ADDREF(EG(exception));
-		curl_async_event_set_callback_exception(curl_event, EG(exception));
+		curl_async_event_set_callback_exception(curl_event, EG(exception), CURLE_ABORTED_BY_CALLBACK);
 		zend_clear_exception();
 		rval = CURL_PREREQFUNC_ABORT;
 	}
@@ -977,7 +977,7 @@ static int curl_seek(void *clientp, curl_off_t offset, int origin)
 	if (EG(exception) && ch->async_event != NULL) {
 		curl_async_event_t *curl_event = (curl_async_event_t *) ch->async_event;
 		GC_ADDREF(EG(exception));
-		curl_async_event_set_callback_exception(curl_event, EG(exception));
+		curl_async_event_set_callback_exception(curl_event, EG(exception), CURLE_SEND_FAIL_REWIND);
 		zend_clear_exception();
 		rval = CURL_SEEKFUNC_FAIL;
 	}
@@ -1097,7 +1097,7 @@ static int curl_debug(CURL *handle, curl_infotype type, char *data, size_t size,
 	if (EG(exception) && ch->async_event != NULL) {
 		curl_async_event_t *curl_event = (curl_async_event_t *) ch->async_event;
 		GC_ADDREF(EG(exception));
-		curl_async_event_set_callback_exception(curl_event, EG(exception));
+		curl_async_event_set_callback_exception(curl_event, EG(exception), CURLE_ABORTED_BY_CALLBACK);
 		zend_clear_exception();
 	}
 
@@ -1526,7 +1526,7 @@ static inline zend_result build_mime_structure_from_hash(php_curl *ch, zval *zpo
 
 				if ((form_error = curl_mime_name(part, ZSTR_VAL(string_key))) != CURLE_OK
 					|| (form_error = curl_mime_data_cb(part, filesize,
-						curl_async_read_cb, NULL, curl_async_free_cb, cb_arg)) != CURLE_OK
+						curl_async_read_cb, curl_async_seek_cb, curl_async_free_cb, cb_arg)) != CURLE_OK
 					|| (form_error = curl_mime_filename(part, filename ? filename : ZSTR_VAL(postval))) != CURLE_OK
 					|| (form_error = curl_mime_type(part, type ? type : "application/octet-stream")) != CURLE_OK) {
 					error = form_error;
