@@ -643,6 +643,21 @@ static int curl_fnmatch(void *ctx, const char *pattern, const char *string)
 		/* TODO Check callback returns an int or something castable to int */
 		rval = php_curl_get_long(&retval);
 	}
+
+	/* Capture an exception from the user callback onto the async event so it is
+	 * delivered through the coroutine to the awaiter.  Without this, EG(exception)
+	 * stays set across further libcurl iterations and escapes outside the
+	 * coroutine as an uncaught error.  libcurl has no result code for a failing
+	 * fnmatch callback, it only tells a match from a non-match, so the transfer
+	 * reports the generic abort instead. */
+	if (EG(exception) && ch->async_event != NULL) {
+		curl_async_event_t *curl_event = (curl_async_event_t *) ch->async_event;
+		GC_ADDREF(EG(exception));
+		curl_async_event_set_callback_exception(curl_event, EG(exception), CURLE_ABORTED_BY_CALLBACK);
+		zend_clear_exception();
+		rval = CURL_FNMATCHFUNC_FAIL;
+	}
+
 	zval_ptr_dtor(&argv[0]);
 	zval_ptr_dtor(&argv[1]);
 	zval_ptr_dtor(&argv[2]);
@@ -853,6 +868,18 @@ static int curl_ssh_hostkeyfunction(void *clientp, int keytype, const char *key,
 			zend_throw_error(NULL, "The CURLOPT_SSH_HOSTKEYFUNCTION callback must return either CURLKHMATCH_OK or CURLKHMATCH_MISMATCH");
 			zval_ptr_dtor(&retval);
 		}
+	}
+
+	/* Same handoff as the other callbacks: the exception is carried on the event
+	 * rather than left in EG(exception) past the transfer.  A key the callback
+	 * refuses fails verification, which is what libcurl reports for anything but
+	 * CURLKHMATCH_OK. */
+	if (EG(exception) && ch->async_event != NULL) {
+		curl_async_event_t *curl_event = (curl_async_event_t *) ch->async_event;
+		GC_ADDREF(EG(exception));
+		curl_async_event_set_callback_exception(curl_event, EG(exception), CURLE_PEER_FAILED_VERIFICATION);
+		zend_clear_exception();
+		rval = CURLKHMATCH_MISMATCH;
 	}
 
 	zval_ptr_dtor(&args[0]);
