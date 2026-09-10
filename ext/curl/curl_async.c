@@ -328,11 +328,8 @@ static bool curl_async_event_stop(zend_async_event_t *event)
 	curl_event->write_state = NULL;
 	curl_event->header_write_state = NULL;
 
-	/* A CURLFile part keeps a read state of its own, hung on the mime callback
-	 * argument rather than on the handle, and the handle owns those arguments.
-	 * Without this the state would still name an event that is about to be
-	 * freed, and its completion would read through it. The state itself belongs
-	 * to curl_async_free_cb(), which libcurl calls when it releases the part. */
+	/* A CURLFile part hangs its read state on the mime callback argument, which
+	 * the handle owns. Freeing it stays with curl_async_free_cb(). */
 	if (curl_event->ch->to_free != NULL) {
 		zend_llist_position pos;
 		mime_data_cb_arg_t **cb_arg_p;
@@ -1358,9 +1355,8 @@ static void curl_async_read_complete(
 	/* Event was cancelled — free orphaned state and bail */
 	if (state->event == NULL) {
 		if (state->source == CURL_READ_FILE) {
-			/* Each field is cleared as it is released: a mime state is not freed
-			 * here, and its owner walks the same fields when libcurl lets go of
-			 * the part. */
+			/* Cleared as released: a mime state survives this call, and its owner
+			 * walks the same fields. */
 			if (state->file.req != NULL) {
 				state->file.req->dispose(state->file.req);
 				state->file.req = NULL;
@@ -1374,9 +1370,8 @@ static void curl_async_read_complete(
 			}
 
 			/* The subscription outlives the state it names, and the next
-			 * notification on this descriptor would read through it. Dropping it
-			 * releases the reference it held; the notify in progress holds one of
-			 * its own, so the io survives until this call returns. */
+			 * notification on this descriptor would read through it. The notify in
+			 * progress holds a reference, so the io outlives this call. */
 			if (state->file.io != NULL && state->file.io_cb != NULL) {
 				io_cb->state = NULL;
 				state->file.io->event.del_callback(&state->file.io->event, state->file.io_cb);
@@ -1385,10 +1380,8 @@ static void curl_async_read_complete(
 				state->file.io = NULL;
 			}
 
-			/* A mime state outlives its event: libcurl frees the part, and
-			 * curl_async_free_cb() frees the state with it. Everything this
-			 * state held is released above, so the free_cb finds nothing left
-			 * to do but the free itself. */
+			/* curl_async_free_cb() frees a mime state, when libcurl releases the
+			 * part. */
 			if (state->flags & CURL_READ_MIME) {
 				return;
 			}
@@ -1445,11 +1438,8 @@ finish:
 void curl_async_read_state_free(curl_async_read_state_t *state)
 {
 	if (state->source == CURL_READ_FILE) {
-		/* The stream opened the io and closes it, but the close disposes it too,
-		 * and that can happen while this subscription still stands. The
-		 * subscription holds a reference for exactly that window: removing it
-		 * here and releasing the reference is what frees the io, and leaving it
-		 * would fire the callback on a freed state. */
+		/* Closing the stream disposes the io, which can happen while this
+		 * subscription still stands; the reference it holds covers that window. */
 		if (state->file.io != NULL && state->file.io_cb != NULL) {
 			state->file.io->event.del_callback(&state->file.io->event,
 			                                   state->file.io_cb);
@@ -1909,9 +1899,8 @@ size_t curl_async_read_cb(char *buffer, const size_t size, const size_t nitems, 
 				io_cb->state = cb_arg->async_state;
 
 				if (io->event.add_callback(&io->event, &io_cb->base)) {
-					/* The io belongs to the stream, and closing the stream disposes
-					 * it. This subscription outlives that close, so it holds a
-					 * reference of its own; curl_async_read_state_free() drops it. */
+					/* The subscription outlives the stream's close, so it counts:
+					 * curl_async_read_state_free() drops this reference. */
 					ZEND_ASYNC_EVENT_ADD_REF(&io->event);
 					cb_arg->async_state->file.io_cb = &io_cb->base;
 				} else {
@@ -2011,8 +2000,7 @@ size_t curl_async_read_dispatch(php_curl *ch, char *buffer, const size_t request
 						io_cb->state = ch->async_read_state;
 
 						if (io->event.add_callback(&io->event, &io_cb->base)) {
-							/* Same reference as the CURLFile path above: the stream
-							 * may close while this read is parked. */
+							/* Counted as in curl_async_read_cb(). */
 							ZEND_ASYNC_EVENT_ADD_REF(&io->event);
 							ch->async_read_state->file.io_cb = &io_cb->base;
 						} else {

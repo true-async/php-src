@@ -96,9 +96,7 @@ struct curl_async_read_state_s {
 			 * for any other request is not this state's to take. NULL while
 			 * nothing is in flight. */
 			zend_async_io_req_t *pending;
-			/* Borrowed from the stream, which closes it. -1 when the stream
-			 * gave none, and then only the io path is usable. */
-			int fd;
+			int fd;                     /* borrowed from the stream, -1 when it gave none */
 		} file;
 		struct {
 			zend_string *result;        /* string returned by PHP callback */
