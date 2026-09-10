@@ -54,17 +54,30 @@ typedef struct curl_async_event_s {
 	curl_async_write_state_t *write_state;        /* heap-allocated, NULL until first async write */
 	curl_async_write_state_t *header_write_state; /* same, for header writes */
 	zend_object *callback_exception;       /* exception from user callback, forwarded on completion */
+	CURLcode callback_error;               /* code that callback would have made libcurl report */
 } curl_async_event_t;
 
 /* Store a callback exception on the event, chaining via "previous" if one
  * already exists.  Caller must have already addref'd `exception`. */
 static zend_always_inline void curl_async_event_set_callback_exception(
-	curl_async_event_t *event, zend_object *exception
-) {
+	curl_async_event_t *event, zend_object *exception, const CURLcode error)
+{
 	if (event->callback_exception != NULL && event->callback_exception != exception) {
 		zend_exception_set_previous(exception, event->callback_exception);
 	}
 	event->callback_exception = exception;
+	/* The transfer reports what the callback would have made libcurl report: a
+	 * write or header callback answers CURLE_WRITE_ERROR, a read one
+	 * CURLE_ABORTED_BY_CALLBACK. The first to throw decides. */
+	if (event->callback_error == CURLE_OK) {
+		event->callback_error = error;
+	}
+
+	/* Also on the handle, which outlives the event: curl_async_perform() reads it
+	 * after the suspend that the exception ends, when the event may be gone. */
+	if (event->ch != NULL && event->ch->err.no == CURLE_OK) {
+		SAVE_CURL_ERROR(event->ch, error);
+	}
 }
 
 /* Read source type */
