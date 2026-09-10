@@ -2033,6 +2033,14 @@ size_t curl_async_read_dispatch(php_curl *ch, char *buffer, const size_t request
 			if (ch->async_read_state->file.fd < 0) {
 				curl_async_read_state_free(ch->async_read_state);
 				ch->async_read_state = NULL;
+
+				/* No source named at all: CURLOPT_READFUNCTION reset to null with no
+				 * CURLOPT_INFILE behind it. Nothing to send is an empty body, not a
+				 * failed transfer. */
+				if (Z_ISUNDEF(read_handler->stream) && read_handler->fp == NULL) {
+					return 0;
+				}
+
 				return CURL_READFUNC_ABORT;
 			}
 
