@@ -643,6 +643,22 @@ static int curl_fnmatch(void *ctx, const char *pattern, const char *string)
 		/* TODO Check callback returns an int or something castable to int */
 		rval = php_curl_get_long(&retval);
 	}
+
+	/* Capture an exception from the user callback onto the async event so it is
+	 * delivered through the coroutine to the awaiter.  Without this, EG(exception)
+	 * stays set across further libcurl iterations and escapes outside the coroutine
+	 * as an uncaught error.  The result is overwritten because a warning raised as
+	 * an exception leaves the callback's own answer in rval.  libcurl has no code
+	 * for a failing fnmatch callback, only match and non-match, so the transfer
+	 * reports the generic abort. */
+	if (EG(exception) && ch->async_event != NULL) {
+		curl_async_event_t *curl_event = (curl_async_event_t *) ch->async_event;
+		GC_ADDREF(EG(exception));
+		curl_async_event_set_callback_exception(curl_event, EG(exception), CURLE_ABORTED_BY_CALLBACK);
+		zend_clear_exception();
+		rval = CURL_FNMATCHFUNC_FAIL;
+	}
+
 	zval_ptr_dtor(&argv[0]);
 	zval_ptr_dtor(&argv[1]);
 	zval_ptr_dtor(&argv[2]);
@@ -853,6 +869,19 @@ static int curl_ssh_hostkeyfunction(void *clientp, int keytype, const char *key,
 			zend_throw_error(NULL, "The CURLOPT_SSH_HOSTKEYFUNCTION callback must return either CURLKHMATCH_OK or CURLKHMATCH_MISMATCH");
 			zval_ptr_dtor(&retval);
 		}
+	}
+
+	/* Same handoff as the other callbacks: the exception is carried on the event
+	 * rather than left in EG(exception) past the transfer.  It takes a throw from
+	 * the callback and the wrong-return error above alike, and overwrites the
+	 * result in both, since either can leave the callback's own answer in rval.
+	 * Anything but CURLKHMATCH_OK fails verification in libcurl. */
+	if (EG(exception) && ch->async_event != NULL) {
+		curl_async_event_t *curl_event = (curl_async_event_t *) ch->async_event;
+		GC_ADDREF(EG(exception));
+		curl_async_event_set_callback_exception(curl_event, EG(exception), CURLE_PEER_FAILED_VERIFICATION);
+		zend_clear_exception();
+		rval = CURLKHMATCH_MISMATCH;
 	}
 
 	zval_ptr_dtor(&args[0]);
