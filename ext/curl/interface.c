@@ -1526,7 +1526,7 @@ static inline zend_result build_mime_structure_from_hash(php_curl *ch, zval *zpo
 
 				if ((form_error = curl_mime_name(part, ZSTR_VAL(string_key))) != CURLE_OK
 					|| (form_error = curl_mime_data_cb(part, filesize,
-						curl_async_read_cb, NULL, curl_async_free_cb, cb_arg)) != CURLE_OK
+						curl_async_read_cb, curl_async_seek_cb, curl_async_free_cb, cb_arg)) != CURLE_OK
 					|| (form_error = curl_mime_filename(part, filename ? filename : ZSTR_VAL(postval))) != CURLE_OK
 					|| (form_error = curl_mime_type(part, type ? type : "application/octet-stream")) != CURLE_OK) {
 					error = form_error;

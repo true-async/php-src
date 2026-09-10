@@ -224,6 +224,17 @@ size_t curl_async_read_cb(char *buffer, size_t size, size_t nitems, void *arg);
 void curl_async_free_cb(void *arg);
 
 /**
+ * @brief Seek callback for a CURLFile part, passed to curl_mime_data_cb().
+ *
+ * @param arg    Pointer to mime_data_cb_arg_t.
+ * @param offset Target position, in the sense given by origin.
+ * @param origin SEEK_SET, SEEK_CUR or SEEK_END.
+ * @return CURL_SEEKFUNC_OK, or CURL_SEEKFUNC_CANTSEEK when the part cannot be
+ *         replayed from that position.
+ */
+int curl_async_seek_cb(void *arg, curl_off_t offset, int origin);
+
+/**
  * @brief Async write callback for PHP_CURL_FILE mode (body and headers).
  *
  * Uses the stream's async IO handle to write data asynchronously.

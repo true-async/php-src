@@ -1922,6 +1922,43 @@ size_t curl_async_read_cb(char *buffer, const size_t size, const size_t nitems, 
 }
 
 /**
+ * @brief Seek callback for a CURLFile part.
+ *
+ * libcurl rewinds the body to replay it, after a redirect or an authentication
+ * challenge. Answers CURL_SEEKFUNC_CANTSEEK when the part cannot be replayed,
+ * which makes libcurl fail the transfer rather than send it truncated.
+ */
+int curl_async_seek_cb(void *arg, const curl_off_t offset, const int origin)
+{
+	mime_data_cb_arg_t *cb_arg = (mime_data_cb_arg_t *) arg;
+
+	/* Nothing read yet: the first read opens at the beginning anyway. */
+	if (cb_arg->stream == NULL) {
+		return origin == SEEK_SET && offset == 0 ? CURL_SEEKFUNC_OK : CURL_SEEKFUNC_CANTSEEK;
+	}
+
+	if (cb_arg->async_state != NULL) {
+		curl_async_read_state_t *state = cb_arg->async_state;
+
+		/* A read in flight will land at the position being left. */
+		if (state->flags & CURL_READ_PENDING) {
+			return CURL_SEEKFUNC_CANTSEEK;
+		}
+
+		/* One that finished holds bytes from that position. */
+		if (state->file.req != NULL) {
+			state->file.req->dispose(state->file.req);
+			state->file.req = NULL;
+		}
+
+		state->flags &= ~(CURL_READ_EOF | CURL_READ_ERROR | CURL_READ_ABORT);
+	}
+
+	return php_stream_seek(cb_arg->stream, offset, origin) == SUCCESS
+			? CURL_SEEKFUNC_OK : CURL_SEEKFUNC_CANTSEEK;
+}
+
+/**
  * @brief Free callback for async CURLFile state.
  *
  * Called by libcurl when the mime part is freed. Cleans up the async IO
