@@ -921,7 +921,7 @@ PHPAPI void php_explode_negative_limit(const zend_string *delim, zend_string *st
 		to_return = limit + found;
 		/* limit is at least -1 therefore no need of bounds checking : i will be always less than found */
 		for (i = 0; i < to_return; i++) { /* this checks also for to_return > 0 */
-			ZVAL_STRINGL(&tmp, positions[i], (positions[i+1] - ZSTR_LEN(delim)) - positions[i]);
+			ZVAL_STRINGL_FAST(&tmp, positions[i], (positions[i+1] - ZSTR_LEN(delim)) - positions[i]);
 			zend_hash_next_index_insert_new(Z_ARRVAL_P(return_value), &tmp);
 		}
 		efree((void *)positions);
@@ -5891,13 +5891,15 @@ static void php_str_pad_fill(zend_string *result, size_t pad_chars, const char *
 		return;
 	}
 
+	const char *start = p;
 	const char *end = p + pad_chars;
-	while (p + pad_str_len <= end) {
-		p = zend_mempcpy(p, pad_str, pad_str_len);
-	}
+	size_t len = MIN(pad_str_len, pad_chars);
+	p = zend_mempcpy(p, pad_str, len);
 
-	if (p < end) {
-		memcpy(p, pad_str, end - p);
+	/* Double the filled area on each iteration. */
+	while (p < end) {
+		len = MIN(p - start, end - p);
+		p = zend_mempcpy(p, start, len);
 	}
 
 	ZSTR_LEN(result) += pad_chars;
