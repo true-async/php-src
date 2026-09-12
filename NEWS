@@ -1,12 +1,34 @@
 PHP                                                                        NEWS
 |||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
-?? ??? ????, PHP 8.6.0beta3
+?? ??? ????, PHP 8.6.0RC1
+
+- Core:
+  . Fixed incorrect internal pointer and foreach iterator positions when
+    compacting arrays with holes. (Weilin Du)
+
+- DOM:
+  . Fixed use-after-free when re-constructing a DOMXPath whose php:function
+    registrations are freed while still reachable from the cycle collector.
+    (Ilia Alshanetsky)
+
+- MBString:
+  . Fixed bug GH-23106 (mb_strpos() reads past the end of a haystack ending in
+    a truncated UTF-8 sequence). (Lazizbek Ergashev)
+
+- SPL:
+  . Fixed bug GH-23385 (SplDoublyLinkedList::serialize() use-after-free when
+    __serialize() removes an element). (David Carlier)
+
+
+10 Sep 2026, PHP 8.6.0beta3
 
 - BCMath:
   . Fixed out-of-bounds read in bc_is_zero_for_scale() when scale exceeds
     n_scale. (Ilia Alshanetsky)
 
 - Core:
+  . Fixed out-of-bounds reads during automatic UTF-16/32 encoding detection.
+    (Yudai Takada)
   . Calling is_a() or is_subclass_of() with a string as the first argument
     when $allow_string is false is now deprecated. (Daniel Scherzer)
   . Fixed bug GH-23232 (lone namespace separator asks the autoloader for an
@@ -16,11 +38,18 @@ PHP                                                                        NEWS
   . Fixed bug GH-23242 (PHP development server does not support Expect
     100-continue flow control). (Sjoerd Langkemper)
 
+- Calendar:
+  . Fixed *tojd() functions and cal_to_jd() truncating arguments outside the
+    int range instead of rejecting them. (lacatoire)
+
 - DOM:
   . Fixed NamedNodeMap::getNamedItemNS() with an empty URI not matching
     the null namespace in spec-following mode. (Ilia Alshanetsky)
   . Fixed stale getElementsByClassName() and other node list caches after
     className/classList writes and attribute removals. (Ilia Alshanetsky)
+  . Fixed reference cycles through DOMXPath and XSLTProcessor php:function
+    callback arguments and return values not being collectable.
+    (Ilia Alshanetsky)
 
 - Hash:
   . Fixed hash_file() reporting argument #1 ($algo) instead of argument #2
@@ -50,6 +79,13 @@ PHP                                                                        NEWS
     replacement when a \k<name> backref has no closing delimiter.
     (Ilia Alshanetsky)
 
+- ODBC:
+  . Fixed odbc_field_len(), odbc_field_scale() and odbc_field_type()
+    returning uninitialized memory when SQLColAttribute fails.
+    (Ilia Alshanetsky)
+  . odbc_error() and odbc_errormsg() now also report SQLColAttribute
+    failures. (Ilia Alshanetsky)
+
 - PCNTL:
   . Fixed the declared signature of pcntl_signal(), whose $restart_syscalls
     argument accepts null and defaults to it. (lacatoire)
@@ -76,6 +112,8 @@ PHP                                                                        NEWS
 - SOAP:
   . Fixed WSDL cache corruption when a soap:header defines headerfaults.
     (Ilia Alshanetsky)
+  . Fixed stack overflow when parsing a WSDL with self-referential schema
+    groups or attributeGroups. (Ilia Alshanetsky)
 
 - Sodium:
   . Added support for the libsodium 1.0.22 KEM APIs (X-Wing and ML-KEM768).
@@ -97,6 +135,9 @@ PHP                                                                        NEWS
 - SimpleXML:
   . Fixed writing to a dimension of the object returned by attributes() not
     creating the attribute. (Ilia Alshanetsky)
+  . Fixed child elements of the element returned by
+    SimpleXMLElement::addChild() not being accessible by property name when
+    namespaces are involved. (Ilia Alshanetsky)
 
 - Streams:
   . Added so_rcvbuf and so_sndbuf stream socket context options, setting the
@@ -393,7 +434,6 @@ PHP                                                                        NEWS
     (Girgias)
   . The SORT_LOCALE_STRING constant for the family of sort functions is now
     deprecated, use one of the following functions instead:
-    * Collator::sort()
     * Collator::asort()
     * Collator::sort()
     * Collator::sortWithSortKeys()
