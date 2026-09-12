@@ -14554,8 +14554,21 @@ static int zend_jit_fetch_obj(zend_jit_ctx         *jit,
 		prop_ref = ir_ADD_OFFSET(obj_ref, prop_info->offset);
 		prop_addr = ZEND_ADDR_REF_ZVAL(prop_ref);
 		if (JIT_G(trigger) == ZEND_JIT_ON_HOT_TRACE) {
-			if (opline->opcode == ZEND_FETCH_OBJ_W || !(res_info & MAY_BE_GUARD) || !JIT_G(current_frame)) {
-				/* perform IS_UNDEF check only after result type guard (during deoptimization) */
+			/* Where this check is skipped, IS_UNDEF is caught only by the result type
+			 * guard that follows (during deoptimization). That guard stands in for it
+			 * only where it admits IS_UNDEF, which zend_jit_guard_fetch_result_type()
+			 * does for ZEND_FETCH_OBJ_IS with a NULL result. An unset() declared
+			 * property served by __isset()/__get() traces to the type those return, so
+			 * IS_UNDEF fails the guard, and the deoptimization resumes at the next
+			 * opline with the empty slot copied into the result: isset() answers false
+			 * and the magic handler never runs. */
+			bool undef_needs_vm = opline->opcode == ZEND_FETCH_OBJ_IS
+				&& concrete_type(res_info) != IS_NULL;
+
+			if (opline->opcode == ZEND_FETCH_OBJ_W
+			 || !(res_info & MAY_BE_GUARD)
+			 || !JIT_G(current_frame)
+			 || undef_needs_vm) {
 				int32_t exit_point = zend_jit_trace_get_exit_point(opline, ZEND_JIT_EXIT_TO_VM);
 				const void *exit_addr = zend_jit_trace_get_exit_addr(exit_point);
 
