@@ -1237,8 +1237,9 @@ PHP_METHOD(PDO, getAttribute)
 		switch (attr_conn->methods->get_attribute(attr_conn, attr, return_value)) {
 			case -1:
 				pdo_pool_sync_error(dbh, attr_conn);
-				pdo_pool_maybe_release(dbh);
+				/* Raised before the release: the error is read from the connection. */
 				PDO_HANDLE_DBH_ERR();
+				pdo_pool_maybe_release(dbh);
 				RETURN_FALSE;
 
 			case 0:
@@ -1285,14 +1286,16 @@ PHP_METHOD(PDO, exec)
 
 	ret = conn->methods->doer(conn, statement);
 	pdo_pool_sync_error(dbh, conn);
-	pdo_pool_maybe_release(dbh);
 
+	/* The error is read from the connection, so it is raised before the slot goes back to the pool. */
 	if (ret == -1) {
 		PDO_HANDLE_DBH_ERR();
+		pdo_pool_maybe_release(dbh);
 		RETURN_FALSE;
-	} else {
-		RETURN_LONG(ret);
 	}
+
+	pdo_pool_maybe_release(dbh);
+	RETURN_LONG(ret);
 }
 /* }}} */
 
@@ -1535,13 +1538,15 @@ PHP_METHOD(PDO, quote)
 
 	quoted = conn->methods->quoter(conn, str, paramtype);
 	pdo_pool_sync_error(dbh, conn);
-	pdo_pool_maybe_release(dbh);
 
+	/* Raised before the release: the error is read from the connection. */
 	if (quoted == NULL) {
 		PDO_HANDLE_DBH_ERR();
+		pdo_pool_maybe_release(dbh);
 		RETURN_FALSE;
 	}
 
+	pdo_pool_maybe_release(dbh);
 	RETURN_STR(quoted);
 }
 /* }}} */
