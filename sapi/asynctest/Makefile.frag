@@ -7,3 +7,6 @@ sapi/asynctest/tests/test-listen_uaf: $(PHP_GLOBAL_OBJS) $(PHP_SAPI_OBJS) $(PHP_
 
 sapi/asynctest/tests/test-timer_overflow: $(PHP_GLOBAL_OBJS) $(PHP_SAPI_OBJS) $(PHP_ASYNCTEST_TIMER_OVERFLOW_OBJS)
 	$(ASYNCTEST_BUILD) $(PHP_ASYNCTEST_TIMER_OVERFLOW_OBJS) -o $@
+
+sapi/asynctest/tests/test-listen_pause: $(PHP_GLOBAL_OBJS) $(PHP_SAPI_OBJS) $(PHP_ASYNCTEST_LISTEN_PAUSE_OBJS)
+	$(ASYNCTEST_BUILD) $(PHP_ASYNCTEST_LISTEN_PAUSE_OBJS) -o $@
