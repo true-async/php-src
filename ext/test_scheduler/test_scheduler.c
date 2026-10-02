@@ -163,6 +163,8 @@ ZEND_DECLARE_MODULE_GLOBALS(test_scheduler)
  * in with test_scheduler.enable=1. */
 PHP_INI_BEGIN()
 	PHP_INI_ENTRY("test_scheduler.enable", "0", PHP_INI_SYSTEM, NULL)
+	/* Tests only: register as if built for this Async API version; 0 is the real one. */
+	PHP_INI_ENTRY("test_scheduler.api_version", "0", PHP_INI_SYSTEM, NULL)
 PHP_INI_END()
 
 /* False when disabled: MINIT registered nothing. */
@@ -529,8 +531,13 @@ static bool ts_await(zend_coroutine_t *coroutine)
 	ts_coroutine_t *target = ts_from_coro(coroutine);
 	zend_coroutine_t *self = ZEND_ASYNC_CURRENT_COROUTINE;
 
-	if (UNEXPECTED(self == NULL || ZEND_ASYNC_IN_SCHEDULER_CONTEXT)) {
+	if (UNEXPECTED(self == NULL)) {
 		zend_throw_error(NULL, "await() requires a running coroutine");
+		return false;
+	}
+
+	/* The scheduler's own work cannot wait: the caller goes on without it. */
+	if (UNEXPECTED(ZEND_ASYNC_IN_SCHEDULER_CONTEXT)) {
 		return false;
 	}
 
@@ -984,12 +991,10 @@ static ZEND_STACK_ALIGNED void ts_coroutine_entry(zend_fiber_transfer *transfer)
 
 	ZEND_ASSERT(ts != NULL && "A coroutine must be current when its context starts");
 
-	if (UNEXPECTED(transfer->flags & ZEND_FIBER_TRANSFER_FLAG_BAILOUT)) {
-		/* Unwound by ts_bailout_all() before the body ever ran: skip it. */
-		bailout = true;
-		zval_ptr_dtor(&transfer->value);
-		ZVAL_UNDEF(&transfer->value);
-	} else if (UNEXPECTED(transfer->flags & ZEND_FIBER_TRANSFER_FLAG_ERROR)) {
+	/* ts_bailout_all() unwinds only coroutines whose body started. */
+	ZEND_ASSERT(!(transfer->flags & ZEND_FIBER_TRANSFER_FLAG_BAILOUT));
+
+	if (UNEXPECTED(transfer->flags & ZEND_FIBER_TRANSFER_FLAG_ERROR)) {
 		/* Cancelled before the body ever ran. */
 		ts->coro.exception = Z_OBJ(transfer->value);
 		ZVAL_UNDEF(&transfer->value);
@@ -1001,6 +1006,7 @@ static ZEND_STACK_ALIGNED void ts_coroutine_entry(zend_fiber_transfer *transfer)
 
 		zend_first_try {
 			ts_vm_stack_start(ts);
+			ZEND_COROUTINE_SET_STARTED(&ts->coro);
 
 			if (ts->coro.internal_entry != NULL) {
 				ts->coro.internal_entry();
@@ -1087,6 +1093,11 @@ static void ts_bailout_all(void)
 				}
 			}
 			ZEND_HASH_FOREACH_END();
+
+			/* Every coroutine is finished: a queue entry left behind would
+			 * send a loop rebuilt later into a context that never ran. */
+			TSG(queue).head = 0;
+			TSG(queue).count = 0;
 
 			return;
 		}
@@ -1326,6 +1337,7 @@ static ts_coroutine_t *ts_adopt_main_context(void)
 	main_coro->context = *zero_context;
 	main_coro->context_is_main = true;
 	main_coro->context_created = true;
+	ZEND_COROUTINE_SET_STARTED(&main_coro->coro);
 
 	EG(current_fiber_context) = &main_coro->context;
 
@@ -1377,13 +1389,13 @@ static bool ts_enqueue(zend_coroutine_t *coroutine, zend_object *error, bool tra
 {
 	ts_coroutine_t *ts = ts_from_coro(coroutine);
 
-	/* Finished: nothing to run, the enqueue is a no-op. */
 	if (UNEXPECTED(ZEND_COROUTINE_IS_FINISHED(coroutine))) {
 		if (error != NULL && transfer_error) {
 			OBJ_RELEASE(error);
 		}
 
-		return true;
+		zend_throw_error(NULL, "Cannot enqueue a finished coroutine");
+		return false;
 	}
 
 	/* Thrown at the suspension point when the coroutine runs. */
@@ -1437,19 +1449,14 @@ static zend_execute_data *ts_coroutine_execute_data(zend_coroutine_t *coroutine)
 
 /* Cancellation is a resume with an error: the coroutine wakes inside the
  * suspend it is parked in, the error is thrown there, and the body unwinds
- * through its own finally blocks. */
+ * through its own finally blocks. A coroutine that has not run yet receives
+ * the error at its first entry and never starts. */
 static bool ts_cancel(
 		zend_coroutine_t *coroutine, zend_object *error, bool transfer_error, const bool is_safely)
 {
 	(void) is_safely;
 
-	/* Nothing to unwind, or a cancellation is already in flight. The last case
-	 * matters most: a fiber destroyed from inside its own force-close re-enters
-	 * here for the coroutine it is already unwinding — re-enqueuing it leaves a
-	 * stale entry that the loop later switches into after the context is gone.
-	 * Cancellation is idempotent: the first graceful exit wins. */
-	if (ZEND_COROUTINE_IS_FINISHED(coroutine) || !ZEND_COROUTINE_IS_STARTED(coroutine)
-			|| ZEND_COROUTINE_IS_CANCELLED(coroutine)) {
+	if (ZEND_COROUTINE_IS_FINISHED(coroutine)) {
 		if (error != NULL && transfer_error) {
 			OBJ_RELEASE(error);
 		}
@@ -1458,6 +1465,19 @@ static bool ts_cancel(
 	}
 
 	ZEND_COROUTINE_SET_CANCELLED(coroutine);
+
+	/* The coroutine is running, or a cancellation is already in flight. A running one matters most: a fiber destroyed from inside its
+	 * own force-close re-enters here for the coroutine it is already unwinding —
+	 * re-enqueuing it leaves a stale entry that the loop later switches into
+	 * after the context is gone. Until delivered, the first error wins; once
+	 * delivered, F_CANCELLED stays set and a later cancel is delivered again. */
+	if (ZEND_COROUTINE_IS_RUNNING(coroutine) || ts_from_coro(coroutine)->pending_error != NULL) {
+		if (error != NULL && transfer_error) {
+			OBJ_RELEASE(error);
+		}
+
+		return true;
+	}
 
 	return ts_enqueue(coroutine, error, transfer_error);
 }
@@ -1551,12 +1571,6 @@ static bool ts_suspend(bool from_main, bool is_bailout)
 
 	if (UNEXPECTED(ZEND_ASYNC_IN_SCHEDULER_CONTEXT)) {
 		zend_throw_error(NULL, "A coroutine cannot be suspended from the scheduler context");
-		return false;
-	}
-
-	/* Cancelled: never park again, nothing will wake it. */
-	if (UNEXPECTED(ZEND_COROUTINE_IS_CANCELLED(&self->coro))) {
-		zend_throw_exception(ts_ce_cancellation_error, "The coroutine has been cancelled", 0);
 		return false;
 	}
 
@@ -1723,6 +1737,11 @@ PHP_FUNCTION(TestScheduler_await)
 
 	ts_coroutine_t *target = ts_from_obj(object);
 
+	if (UNEXPECTED(ZEND_ASYNC_IN_SCHEDULER_CONTEXT)) {
+		zend_throw_error(NULL, "await() requires a running coroutine");
+		RETURN_THROWS();
+	}
+
 	if (!ts_await(&target->coro)) {
 		RETURN_THROWS();
 	}
@@ -1819,8 +1838,9 @@ PHP_METHOD(TestScheduler_Coroutine, getAwaitingInfo)
 /// Module
 ///////////////////////////////////////////////////////////////////
 
-static const zend_async_scheduler_api_t ts_scheduler_api = {
+static zend_async_scheduler_api_t ts_scheduler_api = {
 	.size = sizeof(zend_async_scheduler_api_t),
+	.version = ZEND_ASYNC_API_VERSION,
 	.new_coroutine = ts_new_coroutine,
 	.gc_new_coroutine = ts_gc_new_coroutine,
 	.enqueue_coroutine = ts_enqueue,
@@ -1878,8 +1898,15 @@ PHP_MINIT_FUNCTION(test_scheduler)
 	ts_coroutine_handlers.get_gc = ts_coroutine_object_gc;
 	ts_coroutine_handlers.clone_obj = NULL;
 
+	const zend_long api_version = zend_ini_long(ZEND_STRL("test_scheduler.api_version"), 0);
+
+	if (api_version != 0) {
+		ts_scheduler_api.version = (uint32_t) api_version;
+	}
+
+	/* Refused (the core warned why): stay loaded but inert rather than abort startup. */
 	if (!zend_async_scheduler_register("test_scheduler", &ts_scheduler_api)) {
-		return FAILURE;
+		return SUCCESS;
 	}
 
 	ts_registered = true;

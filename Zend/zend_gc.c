@@ -302,6 +302,9 @@ typedef struct _zend_gc_globals {
 	uint32_t dtor_pending;
 	/* Result of the last coroutine-run collection, returned to the waiters. */
 	int gc_collected;
+	/* The last gc_collect_cycles() call only started the GC coroutine: its 0
+	 * counts nothing, so the threshold heuristic must not read it. */
+	bool run_deferred;
 
 #if GC_BENCH
 	uint32_t root_buf_length;
@@ -549,6 +552,7 @@ static void gc_globals_ctor_ex(zend_gc_globals *gc_globals)
 	gc_globals->microtask = NULL;
 	gc_globals->dtor_pending = 0;
 	gc_globals->gc_collected = 0;
+	gc_globals->run_deferred = false;
 
 #if GC_BENCH
 	gc_globals->root_buf_length = 0;
@@ -607,6 +611,14 @@ void gc_reset(void)
 		GC_G(zval_marked_grey) = 0;
 #endif
 	}
+
+	/* A bailout can end the request before the GC coroutines finish, and
+	 * their memory goes with the request: none of these may reach the next. */
+	GC_G(gc_coroutine) = NULL;
+	GC_G(dtor_coroutine) = NULL;
+	GC_G(microtask) = NULL;
+	GC_G(dtor_pending) = 0;
+	GC_G(run_deferred) = false;
 
 	GC_G(activated_at) = zend_hrtime();
 }
@@ -712,7 +724,12 @@ static zend_never_inline void ZEND_FASTCALL gc_possible_root_when_full(zend_refc
 
 	if (GC_G(gc_enabled) && !GC_G(gc_active)) {
 		GC_ADDREF(ref);
-		gc_adjust_threshold(gc_collect_cycles());
+		GC_G(run_deferred) = false;
+		const int count = gc_collect_cycles();
+		if (!GC_G(run_deferred)) {
+			gc_adjust_threshold(count);
+		}
+
 		if (UNEXPECTED(GC_DELREF(ref) == 0)) {
 			rc_dtor_func(ref);
 			return;
@@ -2178,6 +2195,27 @@ static void zend_gc_coroutine(void)
 	GC_TRACE("GC coroutine finished");
 }
 
+/* Clears GC_G(gc_coroutine) however the run ends. A bailout skips the tail of
+ * zend_gc_coroutine(), and the next gc_collect_cycles() of the request (a
+ * shutdown function's) would await the stale coroutine instead of collecting. */
+static bool gc_coroutine_finish_handler(
+		zend_coroutine_t *coroutine, zend_coroutine_t *waiter, void *data, const bool is_bailout)
+{
+	(void) waiter;
+	(void) data;
+
+	if (GC_G(gc_coroutine) == coroutine) {
+		GC_G(gc_coroutine) = NULL;
+	}
+
+	/* No iterator resumes after a bailout: drop the hand-off they armed. */
+	if (is_bailout) {
+		gc_disarm_iterator_microtask();
+	}
+
+	return false;
+}
+
 static zend_always_inline zend_coroutine_t *new_gc_coroutine(void)
 {
 	zend_coroutine_t *coroutine = ZEND_ASYNC_GC_NEW_COROUTINE();
@@ -2189,7 +2227,11 @@ static zend_always_inline zend_coroutine_t *new_gc_coroutine(void)
 	coroutine->internal_entry = zend_gc_coroutine;
 	GC_G(gc_coroutine) = coroutine;
 
-	if (UNEXPECTED(!ZEND_ASYNC_ENQUEUE_COROUTINE(coroutine))) {
+	const uint32_t handler_id = ZEND_ASYNC_ADD_FINISH_HANDLER(
+			coroutine, gc_coroutine_finish_handler, NULL, NULL);
+
+	if (UNEXPECTED(handler_id == 0 || !ZEND_ASYNC_ENQUEUE_COROUTINE(coroutine))) {
+		ZEND_ASYNC_REMOVE_FINISH_HANDLER(coroutine, handler_id);
 		GC_G(gc_coroutine) = NULL;
 		return NULL;
 	}
@@ -2205,6 +2247,18 @@ ZEND_API int zend_gc_collect_cycles(void)
 		 * waiting for us, waiting for it back would deadlock. Reentrant
 		 * calls get 0, as ever. */
 		if (GC_G(gc_active)) {
+			return 0;
+		}
+
+		/* This stack cannot wait here (a tick function, a signal handler, the
+		 * scheduler's own work): start the run without waiting for it. It
+		 * collects when the scheduler next picks the GC coroutine. */
+		if (UNEXPECTED(zend_fiber_switch_blocked() || ZEND_ASYNC_IN_SCHEDULER_CONTEXT)) {
+			if (GC_G(gc_coroutine) == NULL) {
+				new_gc_coroutine();
+			}
+
+			GC_G(run_deferred) = true;
 			return 0;
 		}
 
@@ -2231,7 +2285,12 @@ ZEND_API int zend_gc_collect_cycles(void)
 		zend_gc_check_root_tmpvars();
 		GC_G(gc_active) = was_active;
 
-		return awaited ? GC_G(gc_collected) : 0;
+		if (UNEXPECTED(!awaited)) {
+			GC_G(run_deferred) = true;
+			return 0;
+		}
+
+		return GC_G(gc_collected);
 	}
 
 	int total_count = 0;

@@ -110,6 +110,11 @@ typedef struct _zend_fiber_vm_state {
 	size_t vm_stack_page_size;
 	zend_execute_data *current_execute_data;
 	int error_reporting;
+	/* An EH_THROW window (zend_replace_error_handling) belongs to the code that
+	 * opened it: left global, a fiber suspended inside one turns every warning
+	 * raised elsewhere into an exception of that window's class. */
+	zend_error_handling_t error_handling;
+	zend_class_entry *exception_class;
 	uint32_t jit_trace_num;
 	JMP_BUF *bailout;
 	zend_fiber *active_fiber;
@@ -127,6 +132,8 @@ static zend_always_inline void zend_fiber_capture_vm_state(zend_fiber_vm_state *
 	state->vm_stack_page_size = EG(vm_stack_page_size);
 	state->current_execute_data = EG(current_execute_data);
 	state->error_reporting = EG(error_reporting);
+	state->error_handling = EG(error_handling);
+	state->exception_class = EG(exception_class);
 	state->jit_trace_num = EG(jit_trace_num);
 	state->bailout = EG(bailout);
 	state->active_fiber = EG(active_fiber);
@@ -144,6 +151,8 @@ static zend_always_inline void zend_fiber_restore_vm_state(zend_fiber_vm_state *
 	EG(vm_stack_page_size) = state->vm_stack_page_size;
 	EG(current_execute_data) = state->current_execute_data;
 	EG(error_reporting) = state->error_reporting;
+	EG(error_handling) = state->error_handling;
+	EG(exception_class) = state->exception_class;
 	EG(jit_trace_num) = state->jit_trace_num;
 	EG(bailout) = state->bailout;
 	EG(active_fiber) = state->active_fiber;
@@ -414,6 +423,14 @@ ZEND_API bool zend_fiber_switch_blocked(void)
 	return zend_fiber_switch_blocking;
 }
 
+/* The Fiber methods switch contexts, which is refused where switching is
+ * blocked and while the scheduler runs its own work: there is no coroutine
+ * to park, and the scheduler would be switched out of its own loop. */
+static zend_always_inline bool zend_fiber_switch_refused(void)
+{
+	return zend_fiber_switch_blocked() || (ZEND_ASYNC_ON && ZEND_ASYNC_IN_SCHEDULER_CONTEXT);
+}
+
 ZEND_API zend_result zend_fiber_init_context(zend_fiber_context *context, void *kind, zend_fiber_coroutine coroutine, size_t stack_size)
 {
 	context->stack = zend_fiber_stack_allocate(stack_size);
@@ -492,9 +509,18 @@ ZEND_API void zend_fiber_switch_context(zend_fiber_transfer *transfer)
 		))
 	) && "Error transfer requires a throwable value");
 
-	zend_observer_fiber_switch_notify(from, to);
+	if (UNEXPECTED(ZEND_OBSERVER_FIBER_SWITCH_ENABLED)) {
+		zend_observer_fiber_switch_notify(from, to);
+	}
 
 	zend_fiber_capture_vm_state(&state);
+
+	/* Leave our EH_THROW window behind: it belongs to whoever opened it. A context
+	 * resumed by this switch restores its own below, in its own frame of this
+	 * function; a context entered for the first time never reaches that restore,
+	 * and without this would run inside a window it never opened. */
+	EG(error_handling) = EH_NORMAL;
+	EG(exception_class) = NULL;
 
 	to->status = ZEND_FIBER_STATUS_RUNNING;
 
@@ -753,8 +779,10 @@ static void zend_fiber_coroutine_dispose(zend_coroutine_t *coroutine)
 /* The fiber lets go of its coroutine. Ownership is one-way (fiber → coroutine,
  * never back), which keeps the fiber collectable. A fiber that dies while its
  * body is still parked cancels it — the body unwinds through its finally
- * blocks, like a force-closed legacy fiber. */
-static void zend_fiber_release_coroutine(zend_fiber *fiber)
+ * blocks, like a force-closed legacy fiber. A body queued but not yet run is
+ * cancelled too, so it never starts; without cancel_unfinished the coroutine
+ * is only released, for one that was never queued. */
+static void zend_fiber_release_coroutine(zend_fiber *fiber, bool cancel_unfinished)
 {
 	zend_coroutine_t *coroutine = fiber->coroutine;
 
@@ -767,8 +795,7 @@ static void zend_fiber_release_coroutine(zend_fiber *fiber)
 	coroutine->extended_data = NULL;
 	fiber->coroutine = NULL;
 
-	if (ZEND_ASYNC_ON && ZEND_COROUTINE_IS_STARTED(coroutine)
-		&& !ZEND_COROUTINE_IS_FINISHED(coroutine)) {
+	if (cancel_unfinished && ZEND_ASYNC_ON && !ZEND_COROUTINE_IS_FINISHED(coroutine)) {
 		ZEND_ASYNC_CANCEL(coroutine, zend_create_graceful_exit(), true);
 	}
 
@@ -856,6 +883,16 @@ static void zend_fiber_coroutine_entry(void)
 		 * exit is a disposal unwind and must not shut anything down. */
 		if (zend_is_unwind_exit(EG(exception))) {
 			ZEND_ASYNC_SHUTDOWN();
+
+			/* The scheduler took the exit over: the body ended, nothing is
+			 * thrown to the caller. */
+			if (EG(exception) == NULL) {
+				if (caller != NULL) {
+					ZEND_ASYNC_ENQUEUE_COROUTINE(caller);
+				}
+
+				return;
+			}
 		}
 
 		if (fiber != NULL) {
@@ -1036,7 +1073,7 @@ static void zend_fiber_coroutine_start(zend_fiber *fiber, zval *return_value)
 	fiber->coroutine->fcall = fcall;
 
 	if (UNEXPECTED(!ZEND_ASYNC_ENQUEUE_COROUTINE(fiber->coroutine))) {
-		zend_fiber_release_coroutine(fiber);
+		zend_fiber_release_coroutine(fiber, false);
 		return;
 	}
 
@@ -1109,7 +1146,7 @@ static void zend_fiber_object_destroy(zend_object *object)
 	 * it. The legacy path below never applies (fiber->context uninitialized). */
 	if (fiber->coroutine != NULL) {
 		fiber->flags |= ZEND_FIBER_FLAG_DESTROYED;
-		zend_fiber_release_coroutine(fiber);
+		zend_fiber_release_coroutine(fiber, true);
 		return;
 	}
 
@@ -1161,7 +1198,7 @@ static void zend_fiber_object_free(zend_object *object)
 	/* A fiber that was never suspended (so dtor_obj had nothing to close) can
 	 * still own a coroutine: one that never started, or one that already
 	 * finished. */
-	zend_fiber_release_coroutine(fiber);
+	zend_fiber_release_coroutine(fiber, true);
 
 	zval_ptr_dtor(&fiber->fci.function_name);
 	zval_ptr_dtor(&fiber->result);
@@ -1311,7 +1348,7 @@ ZEND_METHOD(Fiber, start)
 		Z_PARAM_VARIADIC_WITH_NAMED(fiber->fci.params, fiber->fci.param_count, fiber->fci.named_params);
 	ZEND_PARSE_PARAMETERS_END();
 
-	if (UNEXPECTED(zend_fiber_switch_blocked())) {
+	if (UNEXPECTED(zend_fiber_switch_refused())) {
 		zend_throw_error(zend_ce_fiber_error, "Cannot switch fibers in current execution context");
 		RETURN_THROWS();
 	}
@@ -1367,12 +1404,12 @@ ZEND_METHOD(Fiber, suspend)
 			RETURN_THROWS();
 		}
 
-		if (UNEXPECTED(zend_fiber_switch_blocked())) {
+		if (UNEXPECTED(zend_fiber_switch_refused())) {
 			zend_throw_error(zend_ce_fiber_error, "Cannot switch fibers in current execution context");
 			RETURN_THROWS();
 		}
 
-		if (UNEXPECTED(current->extended_data == NULL || ZEND_COROUTINE_IS_CANCELLED(current))) {
+		if (UNEXPECTED(current->extended_data == NULL)) {
 			zend_throw_error(zend_ce_fiber_error, "Cannot suspend in a force-closed fiber");
 			RETURN_THROWS();
 		}
@@ -1394,7 +1431,7 @@ ZEND_METHOD(Fiber, suspend)
 		RETURN_THROWS();
 	}
 
-	if (UNEXPECTED(zend_fiber_switch_blocked())) {
+	if (UNEXPECTED(zend_fiber_switch_refused())) {
 		zend_throw_error(zend_ce_fiber_error, "Cannot switch fibers in current execution context");
 		RETURN_THROWS();
 	}
@@ -1418,7 +1455,7 @@ ZEND_METHOD(Fiber, resume)
 		Z_PARAM_ZVAL(value);
 	ZEND_PARSE_PARAMETERS_END();
 
-	if (UNEXPECTED(zend_fiber_switch_blocked())) {
+	if (UNEXPECTED(zend_fiber_switch_refused())) {
 		zend_throw_error(zend_ce_fiber_error, "Cannot switch fibers in current execution context");
 		RETURN_THROWS();
 	}
@@ -1461,7 +1498,7 @@ ZEND_METHOD(Fiber, throw)
 		Z_PARAM_OBJECT_OF_CLASS(exception, zend_ce_throwable)
 	ZEND_PARSE_PARAMETERS_END();
 
-	if (UNEXPECTED(zend_fiber_switch_blocked())) {
+	if (UNEXPECTED(zend_fiber_switch_refused())) {
 		zend_throw_error(zend_ce_fiber_error, "Cannot switch fibers in current execution context");
 		RETURN_THROWS();
 	}
