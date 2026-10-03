@@ -152,6 +152,8 @@ ZEND_BEGIN_MODULE_GLOBALS(test_scheduler)
 	HashTable coroutines;
 	/* The loop. It is not a task, so it lives here and not in the table. */
 	ts_coroutine_t *scheduler;
+	zend_long fail_new_coroutine;
+	zend_long fail_enqueue;
 ZEND_END_MODULE_GLOBALS(test_scheduler)
 
 ZEND_DECLARE_MODULE_GLOBALS(test_scheduler)
@@ -165,6 +167,14 @@ PHP_INI_BEGIN()
 	PHP_INI_ENTRY("test_scheduler.enable", "0", PHP_INI_SYSTEM, NULL)
 	/* Tests only: register as if built for this Async API version; 0 is the real one. */
 	PHP_INI_ENTRY("test_scheduler.api_version", "0", PHP_INI_SYSTEM, NULL)
+	/* Tests only: the n-th new_coroutine or gc_new_coroutine call from now
+	 * returns NULL, as a provider that cannot create a coroutine does; 0 is off. */
+	STD_PHP_INI_ENTRY("test_scheduler.fail_new_coroutine", "0", PHP_INI_ALL, OnUpdateLong,
+			fail_new_coroutine, zend_test_scheduler_globals, test_scheduler_globals)
+	/* Tests only: the n-th enqueue of a coroutine never queued before fails
+	 * with an Error, as a provider that cannot give it a stack does; 0 is off. */
+	STD_PHP_INI_ENTRY("test_scheduler.fail_enqueue", "0", PHP_INI_ALL, OnUpdateLong,
+			fail_enqueue, zend_test_scheduler_globals, test_scheduler_globals)
 PHP_INI_END()
 
 /* False when disabled: MINIT registered nothing. */
@@ -191,6 +201,12 @@ static zend_always_inline ts_coroutine_t *ts_from_coro(zend_coroutine_t *coro)
 }
 
 static bool ts_enqueue(zend_coroutine_t *coroutine, zend_object *error, bool transfer_error);
+
+/* True for the call an armed fault countdown picks; counts the countdown down. */
+static zend_always_inline bool ts_fault_hit(zend_long *countdown)
+{
+	return *countdown > 0 && --(*countdown) == 0;
+}
 
 ///////////////////////////////////////////////////////////////////
 /// Switch/finish handler vectors
@@ -777,6 +793,10 @@ static HashTable *ts_coroutine_object_gc(zend_object *object, zval **table, int 
 	if (ts->coro.fcall != NULL) {
 		zend_get_gc_buffer_add_zval(buf, &ts->coro.fcall->fci.function_name);
 
+		if (ts->coro.fcall->fci.object != NULL) {
+			zend_get_gc_buffer_add_obj(buf, ts->coro.fcall->fci.object);
+		}
+
 		for (uint32_t i = 0; i < ts->coro.fcall->fci.param_count; i++) {
 			zend_get_gc_buffer_add_zval(buf, &ts->coro.fcall->fci.params[i]);
 		}
@@ -796,15 +816,6 @@ static HashTable *ts_coroutine_object_gc(zend_object *object, zval **table, int 
 	zend_get_gc_buffer_use(buf, table, num);
 
 	return NULL;
-}
-
-static zend_coroutine_t *ts_coroutine_from_object(zend_object *object)
-{
-	if (object->ce != ts_ce_coroutine) {
-		return NULL;
-	}
-
-	return &ts_from_obj(object)->coro;
 }
 
 static ts_coroutine_t *ts_coroutine_new(void)
@@ -1370,9 +1381,11 @@ static zend_coroutine_t *ts_launch(void)
 /// The Async Core slots
 ///////////////////////////////////////////////////////////////////
 
-static zend_coroutine_t *ts_new_coroutine(size_t extra_size)
+static zend_coroutine_t *ts_new_coroutine(void)
 {
-	(void) extra_size;
+	if (UNEXPECTED(ts_fault_hit(&TSG(fail_new_coroutine)))) {
+		return NULL;
+	}
 
 	return &ts_coroutine_new()->coro;
 }
@@ -1382,6 +1395,10 @@ static zend_coroutine_t *ts_new_coroutine(size_t extra_size)
  * does would tell them apart here. */
 static zend_coroutine_t *ts_gc_new_coroutine(void)
 {
+	if (UNEXPECTED(ts_fault_hit(&TSG(fail_new_coroutine)))) {
+		return NULL;
+	}
+
 	return &ts_coroutine_new()->coro;
 }
 
@@ -1395,6 +1412,16 @@ static bool ts_enqueue(zend_coroutine_t *coroutine, zend_object *error, bool tra
 		}
 
 		zend_throw_error(NULL, "Cannot enqueue a finished coroutine");
+		return false;
+	}
+
+	if (UNEXPECTED(ZEND_COROUTINE_STATUS(coroutine) == ZEND_COROUTINE_STATUS_CREATED
+			&& ts_fault_hit(&TSG(fail_enqueue)))) {
+		if (error != NULL && transfer_error) {
+			OBJ_RELEASE(error);
+		}
+
+		zend_throw_error(NULL, "Cannot enqueue the coroutine: test_scheduler.fail_enqueue");
 		return false;
 	}
 
@@ -1571,6 +1598,12 @@ static bool ts_suspend(bool from_main, bool is_bailout)
 
 	if (UNEXPECTED(ZEND_ASYNC_IN_SCHEDULER_CONTEXT)) {
 		zend_throw_error(NULL, "A coroutine cannot be suspended from the scheduler context");
+		return false;
+	}
+
+	/* Nothing may have started the loop yet: after the main flow ended it is
+	 * gone, and a destructor can suspend with nothing queued. */
+	if (UNEXPECTED(!ts_scheduler_ensure())) {
 		return false;
 	}
 
@@ -1849,7 +1882,6 @@ static zend_async_scheduler_api_t ts_scheduler_api = {
 	.shutdown = ts_shutdown,
 	.cancel = ts_cancel,
 	.get_class_ce = ts_get_class_ce,
-	.coroutine_from_object = ts_coroutine_from_object,
 	.intercept_fiber = ts_intercept_fiber,
 	.coroutine_execute_data = ts_coroutine_execute_data,
 	.defer = ts_defer,
