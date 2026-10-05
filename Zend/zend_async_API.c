@@ -424,11 +424,9 @@ static bool await_stub(zend_coroutine_t *coroutine)
 	return false;
 }
 
-static bool cancel_stub(
-		zend_coroutine_t *coroutine, zend_object *error, bool transfer_error, const bool is_safely)
+static bool cancel_stub(zend_coroutine_t *coroutine, zend_object *error, bool transfer_error)
 {
 	(void) coroutine;
-	(void) is_safely;
 
 	if (error != NULL && transfer_error) {
 		OBJ_RELEASE(error);
@@ -467,7 +465,6 @@ static zend_class_entry *get_class_ce_default(zend_async_class type)
 }
 
 ZEND_API zend_async_new_coroutine_t zend_async_new_coroutine_fn = NULL;
-ZEND_API zend_async_gc_new_coroutine_t zend_async_gc_new_coroutine_fn = NULL;
 ZEND_API zend_async_enqueue_coroutine_t zend_async_enqueue_coroutine_fn = enqueue_coroutine_stub;
 ZEND_API zend_async_suspend_t zend_async_suspend_fn = suspend_stub;
 ZEND_API zend_async_cancel_t zend_async_cancel_fn = cancel_stub;
@@ -534,10 +531,6 @@ ZEND_API bool zend_async_scheduler_register(
 
 	if (API_PROVIDES(api, new_coroutine)) {
 		zend_async_new_coroutine_fn = api->new_coroutine;
-	}
-
-	if (API_PROVIDES(api, gc_new_coroutine)) {
-		zend_async_gc_new_coroutine_fn = api->gc_new_coroutine;
 	}
 
 	if (API_PROVIDES(api, enqueue_coroutine)) {
@@ -620,10 +613,8 @@ ZEND_API bool zend_async_scheduler_register(
 	return true;
 }
 
-/* Withdraw the registration and reset every slot to its default. The slots
- * are process-wide: this runs at process shutdown, or when a just-registered
- * scheduler fails to launch — never per request. The internal-context key
- * registry is NOT touched here. */
+/* The slots are process-wide: never per request. The internal-context key
+ * registry is not touched here. */
 ZEND_API void zend_async_scheduler_unregister(void)
 {
 #ifdef ZTS
@@ -636,7 +627,6 @@ ZEND_API void zend_async_scheduler_unregister(void)
 	}
 
 	zend_async_new_coroutine_fn = NULL;
-	zend_async_gc_new_coroutine_fn = NULL;
 	zend_async_enqueue_coroutine_fn = enqueue_coroutine_stub;
 	zend_async_suspend_fn = suspend_stub;
 	zend_async_cancel_fn = cancel_stub;
