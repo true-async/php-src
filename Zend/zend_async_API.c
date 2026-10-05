@@ -30,6 +30,11 @@ static void internal_globals_ctor(zend_async_globals_t *globals)
 	memset(globals, 0, sizeof(zend_async_globals_t));
 }
 
+static void internal_globals_dtor(zend_async_globals_t *globals)
+{
+	(void) globals;
+}
+
 #ifdef ZTS
 static MUTEX_T scheduler_mutex = NULL;
 #endif
@@ -40,11 +45,19 @@ void zend_async_globals_ctor(void)
 	scheduler_mutex = tsrm_mutex_alloc();
 
 	ts_allocate_fast_id(&zend_async_globals_id, &zend_async_globals_offset,
-			sizeof(zend_async_globals_t), (ts_allocate_ctor) internal_globals_ctor, NULL);
+			sizeof(zend_async_globals_t), (ts_allocate_ctor) internal_globals_ctor,
+			(ts_allocate_dtor) internal_globals_dtor);
 
 	ZEND_ASSERT(zend_async_globals_id != 0 && "zend_async_globals allocation failed");
 #else
 	internal_globals_ctor(&zend_async_globals_api);
+#endif
+}
+
+void zend_async_globals_dtor(void)
+{
+#ifndef ZTS
+	internal_globals_dtor(&zend_async_globals_api);
 #endif
 }
 
@@ -424,9 +437,11 @@ static bool await_stub(zend_coroutine_t *coroutine)
 	return false;
 }
 
-static bool cancel_stub(zend_coroutine_t *coroutine, zend_object *error, bool transfer_error)
+static bool cancel_stub(
+		zend_coroutine_t *coroutine, zend_object *error, bool transfer_error, const bool is_safely)
 {
 	(void) coroutine;
+	(void) is_safely;
 
 	if (error != NULL && transfer_error) {
 		OBJ_RELEASE(error);
@@ -464,14 +479,23 @@ static zend_class_entry *get_class_ce_default(zend_async_class type)
 	return NULL;
 }
 
+static void default_call_on_main_stack(void (*fn)(void *), void *arg)
+{
+	fn(arg);
+}
+
 ZEND_API zend_async_new_coroutine_t zend_async_new_coroutine_fn = NULL;
+ZEND_API zend_async_gc_new_coroutine_t zend_async_gc_new_coroutine_fn = NULL;
 ZEND_API zend_async_enqueue_coroutine_t zend_async_enqueue_coroutine_fn = enqueue_coroutine_stub;
 ZEND_API zend_async_suspend_t zend_async_suspend_fn = suspend_stub;
 ZEND_API zend_async_cancel_t zend_async_cancel_fn = cancel_stub;
 ZEND_API zend_async_scheduler_launch_t zend_async_scheduler_launch_fn = launch_stub;
 ZEND_API zend_async_shutdown_t zend_async_shutdown_fn = shutdown_stub;
 ZEND_API zend_async_get_class_ce_t zend_async_get_class_ce_fn = get_class_ce_default;
+ZEND_API zend_async_call_on_main_stack_t zend_async_call_on_main_stack_fn =
+		default_call_on_main_stack;
 ZEND_API zend_async_defer_t zend_async_defer_fn = defer_stub;
+ZEND_API zend_async_coroutine_from_object_t zend_async_coroutine_from_object_fn = NULL;
 ZEND_API zend_async_intercept_fiber_t zend_async_intercept_fiber_fn = NULL;
 ZEND_API zend_async_coroutine_execute_data_t zend_async_coroutine_execute_data_fn = NULL;
 ZEND_API zend_async_coroutine_add_switch_handler_t zend_async_coroutine_add_switch_handler_fn = NULL;
@@ -533,6 +557,10 @@ ZEND_API bool zend_async_scheduler_register(
 		zend_async_new_coroutine_fn = api->new_coroutine;
 	}
 
+	if (API_PROVIDES(api, gc_new_coroutine)) {
+		zend_async_gc_new_coroutine_fn = api->gc_new_coroutine;
+	}
+
 	if (API_PROVIDES(api, enqueue_coroutine)) {
 		zend_async_enqueue_coroutine_fn = api->enqueue_coroutine;
 	}
@@ -557,8 +585,16 @@ ZEND_API bool zend_async_scheduler_register(
 		zend_async_get_class_ce_fn = api->get_class_ce;
 	}
 
+	if (API_PROVIDES(api, call_on_main_stack)) {
+		zend_async_call_on_main_stack_fn = api->call_on_main_stack;
+	}
+
 	if (API_PROVIDES(api, defer)) {
 		zend_async_defer_fn = api->defer;
+	}
+
+	if (API_PROVIDES(api, coroutine_from_object)) {
+		zend_async_coroutine_from_object_fn = api->coroutine_from_object;
 	}
 
 	if (API_PROVIDES(api, intercept_fiber)) {
@@ -627,13 +663,16 @@ ZEND_API void zend_async_scheduler_unregister(void)
 	}
 
 	zend_async_new_coroutine_fn = NULL;
+	zend_async_gc_new_coroutine_fn = NULL;
 	zend_async_enqueue_coroutine_fn = enqueue_coroutine_stub;
 	zend_async_suspend_fn = suspend_stub;
 	zend_async_cancel_fn = cancel_stub;
 	zend_async_scheduler_launch_fn = launch_stub;
 	zend_async_shutdown_fn = shutdown_stub;
 	zend_async_get_class_ce_fn = get_class_ce_default;
+	zend_async_call_on_main_stack_fn = default_call_on_main_stack;
 	zend_async_defer_fn = defer_stub;
+	zend_async_coroutine_from_object_fn = NULL;
 	zend_async_intercept_fiber_fn = NULL;
 	zend_async_coroutine_execute_data_fn = NULL;
 	zend_async_coroutine_add_switch_handler_fn = NULL;
@@ -652,6 +691,7 @@ ZEND_API void zend_async_scheduler_unregister(void)
 
 void zend_async_api_shutdown(void)
 {
+	zend_async_globals_dtor();
 	zend_async_scheduler_unregister();
 	internal_context_keys_shutdown();
 
@@ -663,9 +703,23 @@ void zend_async_api_shutdown(void)
 #endif
 }
 
+ZEND_API bool zend_async_is_enabled(void)
+{
+	return scheduler_module_name != NULL;
+}
+
 ZEND_API const char *zend_async_get_scheduler_module(void)
 {
 	return scheduler_module_name;
+}
+
+ZEND_API zend_coroutine_t *zend_async_coroutine_from_object(zend_object *object)
+{
+	if (UNEXPECTED(zend_async_coroutine_from_object_fn == NULL)) {
+		return NULL;
+	}
+
+	return zend_async_coroutine_from_object_fn(object);
 }
 
 ///////////////////////////////////////////////////////////////////

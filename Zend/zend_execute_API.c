@@ -265,7 +265,7 @@ static bool shutdown_destructors_switch_handler(zend_coroutine_t *coroutine, boo
 		return false;
 	}
 
-	zend_coroutine_t *iterator = ZEND_ASYNC_NEW_COROUTINE();
+	zend_coroutine_t *iterator = ZEND_ASYNC_GC_NEW_COROUTINE();
 
 	if (UNEXPECTED(iterator == NULL)) {
 		return false;
@@ -348,7 +348,7 @@ void shutdown_destructors(void) /* {{{ */
 		if (should_continue) {
 			EG(shutdown_context).pass = ZEND_SHUTDOWN_PASS_NONE;
 			EG(shutdown_context).coroutine = NULL;
-			zend_objects_store_call_destructors_async();
+			zend_objects_store_call_destructors_async(&EG(objects_store));
 		}
 	} zend_catch {
 		/* if we couldn't destruct cleanly, mark all objects as destructed anyway */

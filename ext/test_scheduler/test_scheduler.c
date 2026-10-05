@@ -167,7 +167,7 @@ PHP_INI_BEGIN()
 	PHP_INI_ENTRY("test_scheduler.enable", "0", PHP_INI_SYSTEM, NULL)
 	/* Tests only: register as if built for this Async API version; 0 is the real one. */
 	PHP_INI_ENTRY("test_scheduler.api_version", "0", PHP_INI_SYSTEM, NULL)
-	/* Tests only: the n-th new_coroutine call from now
+	/* Tests only: the n-th new_coroutine or gc_new_coroutine call from now
 	 * returns NULL, as a provider that cannot create a coroutine does; 0 is off. */
 	STD_PHP_INI_ENTRY("test_scheduler.fail_new_coroutine", "0", PHP_INI_ALL, OnUpdateLong,
 			fail_new_coroutine, zend_test_scheduler_globals, test_scheduler_globals)
@@ -818,6 +818,15 @@ static HashTable *ts_coroutine_object_gc(zend_object *object, zval **table, int 
 	return NULL;
 }
 
+static zend_coroutine_t *ts_coroutine_from_object(zend_object *object)
+{
+	if (UNEXPECTED(object->ce != ts_ce_coroutine)) {
+		return NULL;
+	}
+
+	return &ts_from_obj(object)->coro;
+}
+
 static ts_coroutine_t *ts_coroutine_new(void)
 {
 	zend_object *object = ts_coroutine_object_create(ts_ce_coroutine);
@@ -1381,7 +1390,21 @@ static zend_coroutine_t *ts_launch(void)
 /// The Async Core slots
 ///////////////////////////////////////////////////////////////////
 
-static zend_coroutine_t *ts_new_coroutine(void)
+static zend_coroutine_t *ts_new_coroutine(size_t extra_size)
+{
+	(void) extra_size;
+
+	if (UNEXPECTED(ts_fault_hit(&TSG(fail_new_coroutine)))) {
+		return NULL;
+	}
+
+	return &ts_coroutine_new()->coro;
+}
+
+/* This reference scheduler treats a GC coroutine exactly like any other:
+ * the FIFO run queue has no notion of priority to give it. A scheduler that
+ * does would tell them apart here. */
+static zend_coroutine_t *ts_gc_new_coroutine(void)
 {
 	if (UNEXPECTED(ts_fault_hit(&TSG(fail_new_coroutine)))) {
 		return NULL;
@@ -1466,8 +1489,11 @@ static zend_execute_data *ts_coroutine_execute_data(zend_coroutine_t *coroutine)
  * suspend it is parked in, the error is thrown there, and the body unwinds
  * through its own finally blocks. A coroutine that has not run yet receives
  * the error at its first entry and never starts. */
-static bool ts_cancel(zend_coroutine_t *coroutine, zend_object *error, bool transfer_error)
+static bool ts_cancel(
+		zend_coroutine_t *coroutine, zend_object *error, bool transfer_error, const bool is_safely)
 {
+	(void) is_safely;
+
 	if (ZEND_COROUTINE_IS_FINISHED(coroutine)) {
 		if (error != NULL && transfer_error) {
 			OBJ_RELEASE(error);
@@ -1860,12 +1886,14 @@ static zend_async_scheduler_api_t ts_scheduler_api = {
 	.size = sizeof(zend_async_scheduler_api_t),
 	.version = ZEND_ASYNC_API_VERSION,
 	.new_coroutine = ts_new_coroutine,
+	.gc_new_coroutine = ts_gc_new_coroutine,
 	.enqueue_coroutine = ts_enqueue,
 	.suspend = ts_suspend,
 	.launch = ts_launch,
 	.shutdown = ts_shutdown,
 	.cancel = ts_cancel,
 	.get_class_ce = ts_get_class_ce,
+	.coroutine_from_object = ts_coroutine_from_object,
 	.intercept_fiber = ts_intercept_fiber,
 	.coroutine_execute_data = ts_coroutine_execute_data,
 	.defer = ts_defer,
