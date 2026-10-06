@@ -1341,7 +1341,7 @@ static void php_io_hooks_php_call(zend_fcall_info_cache *fcc, zval *retval, zend
 }
 
 /* A Done that hands data to the caller: bytes in its buffer, a descriptor,
- * a reaped child, a taken signal, a resolved name */
+ * an exited child, a taken signal, a resolved name */
 static bool php_io_op_result_is_data(php_io_op *op, const php_io_completion_obj *c)
 {
 	if (c->status != PHP_IO_DONE || c->error) {
@@ -1370,7 +1370,11 @@ static zend_result php_io_hooks_php_run(php_io_hooks *hooks, php_io_op *op, php_
 	ZVAL_UNDEF(&retval);
 	php_io_hooks_php_call(&PHP_IO_HOOKS_PHP(hooks)->run_fcc, &retval, zobj);
 
-	if (EG(exception)) {
+	/* A completion from the queue survives an exception: the op's output is already delivered */
+	if (EG(exception) && (Z_TYPE(retval) != IS_OBJECT
+			|| !instanceof_function(Z_OBJCE(retval), php_io_completion_ce)
+			|| PHP_IO_COMPLETION_FROM_ZOBJ(Z_OBJ(retval))->operation != zobj
+			|| !PHP_IO_COMPLETION_FROM_ZOBJ(Z_OBJ(retval))->produced)) {
 		zval_ptr_dtor(&retval);
 		return FAILURE;
 	}

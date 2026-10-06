@@ -61,6 +61,9 @@ static int php_io_wsa_error(int err)
 		case ECONNREFUSED: return WSAECONNREFUSED;
 		case ECONNRESET: return WSAECONNRESET;
 		case ECONNABORTED: return WSAECONNABORTED;
+		case ENETUNREACH: return WSAENETUNREACH;
+		case EHOSTUNREACH: return WSAEHOSTUNREACH;
+		case EADDRINUSE: return WSAEADDRINUSE;
 		default: return err;
 	}
 }
@@ -74,10 +77,12 @@ static zend_always_inline void php_io_set_errno(int err)
 	errno = err;
 }
 
-/* A stream whose in-flight op outlived its frame, kept by a queue */
+/* A stream or a handle whose in-flight op outlived its frame, kept by a queue */
 typedef struct php_io_orphan {
 	php_io_queue *queue;
-	php_stream *stream;
+	php_stream *stream; /* NULL for a handle */
+	zend_object *handle;
+	zend_resource *res; /* NULL for a stream kept off the resource list */
 	bool freeing; /* php_stream_free() is draining it */
 } php_io_orphan;
 
@@ -312,6 +317,8 @@ static php_io_registration *php_io_register(php_io_registration **list, php_stre
 	}
 
 	reg->trigger = trigger;
+	/* What an earlier provider kept is not the new one's */
+	reg->provider_data = NULL;
 	reg->generation = FG(io_hooks_generation);
 	if (hooks->ops->add) {
 		/* An add() that unregisters the pair (closes the stream) leaves the record to this frame */
@@ -470,11 +477,15 @@ PHPAPI void php_io_hooks_request_shutdown(void)
 		while (zend_hash_num_elements(FG(io_orphans)) > 0) {
 			zend_hash_internal_pointer_reset(FG(io_orphans));
 			php_io_orphan *o = zend_hash_get_current_data_ptr(FG(io_orphans));
-			php_stream *stream = o->stream;
-			if (o->queue->ops->drain) {
-				o->queue->ops->drain(o->queue, stream);
+			if (o->stream) {
+				php_stream *stream = o->stream;
+				if (o->queue->ops->drain) {
+					o->queue->ops->drain(o->queue, stream);
+				}
+				php_io_stream_unfreeze(stream);
+			} else {
+				php_io_handle_drain(o->handle);
 			}
-			php_io_stream_unfreeze(stream);
 		}
 		zend_hash_destroy(FG(io_orphans));
 		efree(FG(io_orphans));
@@ -484,11 +495,6 @@ PHPAPI void php_io_hooks_request_shutdown(void)
 		php_io_unfreeze_list(&EG(regular_list));
 		php_io_unfreeze_list(&EG(persistent_list));
 		FG(io_ops_in_flight) = 0;
-	}
-	if (FG(io_reaped)) {
-		zend_hash_destroy(FG(io_reaped));
-		efree(FG(io_reaped));
-		FG(io_reaped) = NULL;
 	}
 	if (FG(io_addrinfo)) {
 		struct addrinfo *head;
@@ -531,84 +537,15 @@ PHPAPI void php_io_freeaddrinfo(struct addrinfo *res)
 	freeaddrinfo(res);
 }
 
-typedef struct php_io_reaped_child {
-	int status;
-	pid_t pgid;
-} php_io_reaped_child;
-
-static void php_io_reaped_child_dtor(zval *zv)
-{
-	efree(Z_PTR_P(zv));
-}
-
-PHPAPI void php_io_child_reaped_ex(pid_t pid, pid_t pgid, int status)
-{
-	if (!FG(io_reaped)) {
-		FG(io_reaped) = emalloc(sizeof(HashTable));
-		zend_hash_init(FG(io_reaped), 4, NULL, php_io_reaped_child_dtor, 0);
-	}
-	php_io_reaped_child *child = emalloc(sizeof(*child));
-	child->status = status;
-	child->pgid = pgid;
-	zend_hash_index_update_ptr(FG(io_reaped), (zend_ulong) pid, child);
-}
-
-PHPAPI void php_io_child_reaped(pid_t pid, int status)
-{
-	php_io_child_reaped_ex(pid, 0, status);
-}
-
-/* pid selects as waitpid() does: itself, -1 any child, 0 the caller's
- * process group, < -1 the group -pid. A child whose group is unknown is
- * only taken by pid or by -1. */
-PHPAPI bool php_io_child_take_reaped(pid_t *pid, int *status)
-{
-	if (!FG(io_reaped) || zend_hash_num_elements(FG(io_reaped)) == 0) {
-		return false;
-	}
-	php_io_reaped_child *child = NULL;
-	zend_ulong key = 0;
-	if (*pid > 0) {
-		key = (zend_ulong) *pid;
-		child = zend_hash_index_find_ptr(FG(io_reaped), key);
-	} else {
-#ifndef PHP_WIN32
-		pid_t pgid = *pid == 0 ? getpgrp() : -*pid;
-#else
-		pid_t pgid = -*pid;
-#endif
-		php_io_reaped_child *c;
-		ZEND_HASH_FOREACH_NUM_KEY_PTR(FG(io_reaped), key, c) {
-			if (*pid == -1 || (c->pgid > 0 && c->pgid == pgid)) {
-				child = c;
-				break;
-			}
-		} ZEND_HASH_FOREACH_END();
-	}
-	if (!child) {
-		return false;
-	}
-	*pid = (pid_t) key;
-	*status = child->status;
-	zend_hash_index_del(FG(io_reaped), key);
-	return true;
-}
-
 PHPAPI void php_io_child_forget(pid_t pid)
 {
 #ifdef HAVE_IOR
 	if (pid == 0) {
 		php_io_ring_after_fork();
 	}
+#else
+	(void) pid;
 #endif
-	if (!FG(io_reaped)) {
-		return;
-	}
-	if (pid == 0) {
-		zend_hash_clean(FG(io_reaped));
-	} else if (pid > 0) {
-		zend_hash_index_del(FG(io_reaped), (zend_ulong) pid);
-	}
 }
 
 PHPAPI uint32_t php_io_ops_in_flight(void)
@@ -618,65 +555,80 @@ PHPAPI uint32_t php_io_ops_in_flight(void)
 
 /* Orphans */
 
-static zend_always_inline zend_ulong php_io_stream_key(php_stream *stream)
+static zend_always_inline zend_ulong php_io_orphan_key(const void *owner)
 {
-	zend_ulong key = (zend_ulong) (uintptr_t) stream;
+	zend_ulong key = (zend_ulong) (uintptr_t) owner;
 	return (key >> 3) | (key << ((sizeof(key) * 8) - 3));
 }
-
 
 static void php_io_orphan_dtor(zval *zv)
 {
 	efree(Z_PTR_P(zv));
 }
 
-PHPAPI void php_io_stream_orphan(php_stream *stream, php_io_queue *queue)
+static php_io_orphan *php_io_orphan_add(const void *owner, php_io_queue *queue)
 {
 	if (!FG(io_orphans)) {
 		FG(io_orphans) = emalloc(sizeof(HashTable));
 		zend_hash_init(FG(io_orphans), 4, NULL, php_io_orphan_dtor, 0);
 	}
-	if (!zend_hash_index_exists(FG(io_orphans), php_io_stream_key(stream))) {
-		php_io_orphan *o = emalloc(sizeof(*o));
-		o->queue = queue;
+	if (zend_hash_index_exists(FG(io_orphans), php_io_orphan_key(owner))) {
+		return NULL;
+	}
+	php_io_orphan *o = ecalloc(1, sizeof(*o));
+	o->queue = queue;
+	zend_hash_index_add_new_ptr(FG(io_orphans), php_io_orphan_key(owner), o);
+	return o;
+}
+
+static zend_always_inline php_io_orphan *php_io_orphan_find(const void *owner)
+{
+	return FG(io_orphans) ? zend_hash_index_find_ptr(FG(io_orphans), php_io_orphan_key(owner)) : NULL;
+}
+
+PHPAPI void php_io_stream_orphan(php_stream *stream, php_io_queue *queue)
+{
+	php_io_orphan *o = php_io_orphan_add(stream, queue);
+	if (o) {
 		o->stream = stream;
-		o->freeing = false;
+		o->res = stream->res;
 		/* The buffer belongs to the backend until the completion arrives */
-		GC_ADDREF(stream->res);
-		zend_hash_index_add_new_ptr(FG(io_orphans), php_io_stream_key(stream), o);
+		if (o->res) {
+			GC_ADDREF(o->res);
+		}
 	}
 }
 
 PHPAPI void php_io_stream_unfreeze(php_stream *stream)
 {
-	if (!FG(io_orphans)) {
-		return;
-	}
-	php_io_orphan *o = zend_hash_index_find_ptr(FG(io_orphans), php_io_stream_key(stream));
+	php_io_orphan *o = php_io_orphan_find(stream);
 	if (!o) {
 		return;
 	}
+	zend_resource *res = o->res;
 	bool freeing = o->freeing;
-	zend_hash_index_del(FG(io_orphans), php_io_stream_key(stream));
+	zend_hash_index_del(FG(io_orphans), php_io_orphan_key(stream));
 	stream->flags &= ~PHP_STREAM_FLAG_IN_USE;
+	if (!res) {
+		return;
+	}
 	if (!freeing) {
-		zend_list_delete(stream->res);
+		zend_list_delete(res);
+	} else if (GC_REFCOUNT(res) > 1) {
+		/* The free still uses it: a last reference goes with the resource list */
+		GC_DELREF(res);
 	}
 }
 
 PHPAPI bool php_io_stream_busy(php_stream *stream)
 {
-	return (stream->flags & PHP_STREAM_FLAG_IN_USE)
-			&& !(FG(io_orphans) && zend_hash_index_exists(FG(io_orphans), php_io_stream_key(stream)));
+	return (stream->flags & PHP_STREAM_FLAG_IN_USE) && !php_io_orphan_find(stream);
 }
 
 /* Called from php_stream_free() with the stream still frozen */
 PHPAPI void php_io_stream_drain(php_stream *stream)
 {
-	if (!FG(io_orphans)) {
-		return;
-	}
-	php_io_orphan *o = zend_hash_index_find_ptr(FG(io_orphans), php_io_stream_key(stream));
+	php_io_orphan *o = php_io_orphan_find(stream);
 	if (!o) {
 		return;
 	}
@@ -685,6 +637,44 @@ PHPAPI void php_io_stream_drain(php_stream *stream)
 		o->queue->ops->drain(o->queue, stream);
 	}
 	php_io_stream_unfreeze(stream);
+}
+
+/* The op of a handle without a stream: its descriptor must stay open until the op settled */
+PHPAPI void php_io_handle_orphan(zend_object *handle, php_io_queue *queue)
+{
+	php_io_orphan *o = php_io_orphan_add(handle, queue);
+	if (o) {
+		o->handle = handle;
+		GC_ADDREF(handle);
+	}
+}
+
+PHPAPI void php_io_handle_unfreeze(zend_object *handle)
+{
+	if (php_io_orphan_find(handle)) {
+		zend_hash_index_del(FG(io_orphans), php_io_orphan_key(handle));
+		OBJ_RELEASE(handle);
+	}
+}
+
+PHPAPI bool php_io_handle_busy(zend_object *handle)
+{
+	return php_io_orphan_find(handle) != NULL;
+}
+
+/* Before the owner closes the descriptor */
+PHPAPI void php_io_handle_drain(zend_object *handle)
+{
+	php_io_orphan *o = php_io_orphan_find(handle);
+	if (!o) {
+		return;
+	}
+	GC_ADDREF(handle);
+	if (o->queue->ops->drain) {
+		o->queue->ops->drain(o->queue, handle);
+	}
+	php_io_handle_unfreeze(handle);
+	OBJ_RELEASE(handle);
 }
 
 /* Entry point */
@@ -924,6 +914,27 @@ static void php_io_op_clear_outputs(php_io_op *op)
 	}
 }
 
+/* A readiness Any with a member the provider cannot wait for runs here as a whole */
+static bool php_io_any_member_unsupported(const php_io_op *op)
+{
+	if (op->type != PHP_IO_OP_ANY) {
+		return false;
+	}
+	bool unsupported = false;
+	for (uint32_t i = 0; i < op->u.any.n_results; i++) {
+		unsupported |= op->u.any.results[i].status == PHP_IO_UNSUPPORTED;
+	}
+	if (!unsupported) {
+		return false;
+	}
+	for (uint32_t i = 0; i < op->u.any.n; i++) {
+		if (op->u.any.ops[i]->type != PHP_IO_OP_POLL && op->u.any.ops[i]->type != PHP_IO_OP_TIMER) {
+			return false;
+		}
+	}
+	return true;
+}
+
 /* A successful Done must fit the op: no more bytes than the buffer holds */
 static bool php_io_result_valid(const php_io_op *op, const php_io_op_result *result)
 {
@@ -937,6 +948,7 @@ static bool php_io_result_valid(const php_io_op *op, const php_io_op_result *res
 		case PHP_IO_OP_SEND:
 			return result->res >= 0 && (uint64_t) result->res <= op->u.io.len;
 		case PHP_IO_OP_ACCEPT:
+			return result->res >= 0;
 		case PHP_IO_OP_WAITPID:
 		case PHP_IO_OP_SIGWAIT:
 			return result->res > 0;
@@ -953,6 +965,15 @@ static bool php_io_result_valid(const php_io_op *op, const php_io_op_result *res
 static zend_result php_io_run_ex(php_io_op *op, php_io_op_result *result)
 {
 	php_io_hooks *hooks = FG(io_hooks);
+	if (hooks && UNEXPECTED(EG(exception))) {
+		/* A provider must not suspend with it pending, or a cancellation is lost */
+		php_io_op_finish(op);
+		result->status = PHP_IO_CANCELLED;
+		result->index = 0;
+		result->res = -1;
+		result->error = ECANCELED;
+		return FAILURE;
+	}
 	if (hooks) {
 		php_io_op_clear_outputs(op);
 		result->status = PHP_IO_UNSUPPORTED;
@@ -977,7 +998,8 @@ static zend_result php_io_run_ex(php_io_op *op, php_io_op_result *result)
 			result->error = ECANCELED;
 			return FAILURE;
 		}
-		if (result->status != PHP_IO_UNSUPPORTED) {
+		if ((result->status != PHP_IO_UNSUPPORTED && !php_io_any_member_unsupported(op))
+				|| EG(exception)) {
 			return SUCCESS;
 		}
 	}
@@ -1055,6 +1077,39 @@ static void php_io_frame_end(php_io_frame *f, php_io_op *op)
 	if (f->res) {
 		GC_DELREF(f->res);
 	}
+}
+
+PHPAPI void php_io_stream_keep_read(php_stream *stream, bool in_buffer, ssize_t res)
+{
+	if (res < 0) {
+		return;
+	}
+	if (res > 0 && !in_buffer) {
+		php_stream_mark_read_lost(stream);
+	} else {
+		php_stream_read_buffer_commit(stream, res);
+	}
+}
+
+/* The caller is being cancelled: a finished read keeps its bytes and nothing more runs */
+static bool php_io_run_cancelled(php_stream *stream, const php_io_op *op,
+		const php_io_op_result *result)
+{
+	if (EXPECTED(!EG(exception))) {
+		return false;
+	}
+	if (result->status == PHP_IO_DONE) {
+		if (op->type != PHP_IO_OP_READ && op->type != PHP_IO_OP_RECV) {
+			return false;
+		}
+		if (stream && !result->error && php_io_op_read_advances(op)) {
+			php_io_stream_keep_read(stream, op->flags & PHP_IO_OP_F_STREAM_BUF, result->res);
+		}
+	} else if (result->status != PHP_IO_READY && result->status != PHP_IO_UNSUPPORTED) {
+		return false;
+	}
+	php_io_set_errno(ECANCELED);
+	return true;
 }
 
 static zend_always_inline uint32_t php_io_hook_flags(void)
@@ -1203,7 +1258,8 @@ static zend_always_inline ssize_t php_io_descriptor_op(php_stream *stream, zend_
 			op.flags |= PHP_IO_OP_F_AFTER_DRAIN;
 		}
 		if (php_io_op_register_wait(&op, stream, op.ready_events) == FAILURE
-				|| php_io_run(&op, &result) == FAILURE) {
+				|| php_io_run(&op, &result) == FAILURE
+				|| php_io_run_cancelled(stream, &op, &result)) {
 			php_io_set_errno(ECANCELED);
 			ret = -1;
 			break;
@@ -1228,7 +1284,16 @@ static zend_always_inline ssize_t php_io_descriptor_op(php_stream *stream, zend_
  * past the frame; any other buffer is the caller's. */
 static zend_always_inline uint32_t php_io_stream_buf_flag(php_stream *stream, const void *buf)
 {
-	return stream && stream->readbuf && buf == stream->readbuf + stream->writepos ? PHP_IO_OP_F_STREAM_BUF : 0;
+	return stream && buf == php_stream_read_buffer_tail(stream) ? PHP_IO_OP_F_STREAM_BUF : 0;
+}
+
+static zend_always_inline bool php_io_stream_read_lost(php_stream *stream)
+{
+	if (stream && php_stream_is_read_lost(stream)) {
+		php_io_set_errno(EIO);
+		return true;
+	}
+	return false;
 }
 
 #ifdef PHP_WIN32
@@ -1252,6 +1317,9 @@ static void php_io_recv_prep(php_io_op *op, php_stream *stream, const php_io_soc
 PHPAPI ssize_t php_io_recv_ex(php_stream *stream, zend_object *handle, php_socket_t fd, void *buf,
 		size_t len, int flags, php_deadline *dl)
 {
+	if (php_io_stream_read_lost(stream)) {
+		return -1;
+	}
 	php_io_sock_call c = { .fd = fd, .buf = buf, .len = len, .flags = flags };
 	return php_io_descriptor_op(stream, handle, dl, PHP_IO_HOOKS_F_DIRECT_DATA, php_io_recv_syscall,
 			php_io_recv_prep, &c);
@@ -1309,6 +1377,11 @@ static zend_always_inline ssize_t php_io_readiness_op(php_stream *stream, zend_o
 			ret = -1;
 			break;
 		}
+		if (EG(exception)) {
+			php_io_set_errno(ECANCELED);
+			ret = -1;
+			break;
+		}
 		waited = true;
 	}
 	return ret;
@@ -1348,6 +1421,9 @@ static ssize_t php_io_recvfrom_syscall(const php_io_sock_call *c)
 PHPAPI ssize_t php_io_recvfrom_ex(php_stream *stream, zend_object *handle, php_socket_t fd, void *buf,
 		size_t len, int flags, struct sockaddr *addr, socklen_t *addrlen, php_deadline *dl)
 {
+	if (php_io_stream_read_lost(stream)) {
+		return -1;
+	}
 	php_io_sock_call c = { .fd = fd, .buf = buf, .len = len, .flags = flags, .addr = addr, .addrlen = addrlen };
 	return php_io_readiness_op(stream, handle, PHP_POLL_READ, dl, php_io_recvfrom_syscall, &c);
 }
@@ -1537,7 +1613,8 @@ static ssize_t php_io_file_op(php_stream *stream, int fd, php_deadline *dl, bool
 			}
 			op.stream = stream;
 			if ((!regular && php_io_op_register_wait(&op, stream, op.ready_events) == FAILURE)
-					|| php_io_run(&op, &result) == FAILURE) {
+					|| php_io_run(&op, &result) == FAILURE
+					|| php_io_run_cancelled(stream, &op, &result)) {
 				php_io_set_errno(ECANCELED);
 				ret = -1;
 				break;
@@ -1563,7 +1640,8 @@ static ssize_t php_io_file_op(php_stream *stream, int fd, php_deadline *dl, bool
 			}
 			op.stream = stream;
 			if (php_io_op_register_wait(&op, stream, events) == FAILURE
-					|| php_io_run(&op, &result) == FAILURE) {
+					|| php_io_run(&op, &result) == FAILURE
+					|| php_io_run_cancelled(stream, &op, &result)) {
 				php_io_set_errno(ECANCELED);
 				ret = -1;
 				break;
@@ -1624,6 +1702,9 @@ static ssize_t php_io_write_syscall(int fd, void *buf, size_t len, int64_t offse
 
 PHPAPI ssize_t php_io_read_at(php_stream *stream, int fd, void *buf, size_t len, int64_t offset, php_deadline *dl)
 {
+	if (php_io_stream_read_lost(stream)) {
+		return -1;
+	}
 	bool regular = !stream || !(stream->flags & PHP_STREAM_FLAG_NO_SEEK);
 	return php_io_file_op(stream, fd, dl, regular, php_io_read_syscall, buf, len, offset, php_io_op_read);
 }
@@ -1788,17 +1869,9 @@ static pid_t php_io_waitpid_sync(pid_t pid, int *status, php_deadline *dl)
  * WNOHANG of this platform. */
 PHPAPI pid_t php_io_waitpid(zend_object *handle, pid_t pid, int *status, int options, php_deadline *dl)
 {
-	int recorded;
-	pid_t which = pid;
 	if (pid <= 0) {
 		_set_errno(ENOTSUP);
 		return -1;
-	}
-	if (php_io_child_take_reaped(&which, &recorded)) {
-		if (status) {
-			*status = recorded;
-		}
-		return which;
 	}
 
 	if (FG(io_hooks) && !(dl && dl->hrtime == 0)) {
@@ -1814,15 +1887,7 @@ PHPAPI pid_t php_io_waitpid(zend_object *handle, pid_t pid, int *status, int opt
 				break;
 			}
 			if (result.status == PHP_IO_READY) {
-				/* A handle the provider watched: what it recorded, or the process asked without waiting */
-				which = pid;
-				if (php_io_child_take_reaped(&which, &recorded)) {
-					if (status) {
-						*status = recorded;
-					}
-					ret = which;
-					break;
-				}
+				/* A handle the provider watched: the process asked without waiting */
 				php_deadline now;
 				php_deadline_init_nonblock(&now);
 				ret = php_io_waitpid_sync(pid, status, &now);
@@ -1848,20 +1913,13 @@ PHPAPI pid_t php_io_waitpid(zend_object *handle, pid_t pid, int *status, int opt
 #endif
 
 #ifndef PHP_WIN32
-/* The wait is the provider's; after Ready the core takes what a handle recorded or asks the kernel
- * without waiting, and waits again when nothing changed yet. The op's descriptor is the process or
- * signal source, so the poll queue completes it Ready without a handle object. */
+/* The wait is the provider's and collecting the child is the core's. After Ready the core collects
+ * with waitpid(WNOHANG) and waits again when nothing changed yet. A Done names a child the ring
+ * observed without collecting it: the core collects that pid, and waits again when another waiter
+ * collected it first. The op's descriptor is the process or signal source, so the poll queue
+ * completes it Ready without a handle object. */
 PHPAPI pid_t php_io_waitpid(zend_object *handle, pid_t pid, int *status, int options, php_deadline *dl)
 {
-	int recorded;
-	pid_t which = pid;
-	if (php_io_child_take_reaped(&which, &recorded)) {
-		if (status) {
-			*status = recorded;
-		}
-		return which;
-	}
-
 	if (FG(io_hooks) && !(options & WNOHANG)) {
 		php_io_op op;
 		php_io_op_result result;
@@ -1889,14 +1947,6 @@ PHPAPI pid_t php_io_waitpid(zend_object *handle, pid_t pid, int *status, int opt
 				break;
 			}
 			if (result.status == PHP_IO_READY) {
-				which = pid;
-				if (php_io_child_take_reaped(&which, &recorded)) {
-					if (status) {
-						*status = recorded;
-					}
-					ret = which;
-					break;
-				}
 				ret = waitpid(pid, status, options | WNOHANG);
 				if (ret != 0) {
 					break;
@@ -1910,6 +1960,9 @@ PHPAPI pid_t php_io_waitpid(zend_object *handle, pid_t pid, int *status, int opt
 			ssize_t r;
 			php_io_data_result(&result, &r);
 			ret = (pid_t) r;
+			if (ret > 0 && waitpid(ret, status, options | WNOHANG) != ret) {
+				continue;
+			}
 			break;
 		}
 		if (pidfd >= 0) {

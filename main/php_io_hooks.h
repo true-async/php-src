@@ -127,6 +127,16 @@ struct _php_io_op {
 
 PHPAPI void php_io_op_poll(php_io_op *op, zend_object *handle, php_socket_t fd, uint32_t events,
 		php_deadline dl);
+
+/* A read whose bytes cannot be read again */
+static zend_always_inline bool php_io_op_read_advances(const php_io_op *op)
+{
+	return (op->type == PHP_IO_OP_READ || op->type == PHP_IO_OP_RECV) && op->u.io.offset < 0
+			&& !(op->type == PHP_IO_OP_RECV && (op->u.io.flags & MSG_PEEK));
+}
+
+/* Bytes a read took for nobody */
+PHPAPI void php_io_stream_keep_read(php_stream *stream, bool in_buffer, ssize_t res);
 PHPAPI void php_io_op_timer(php_io_op *op, php_deadline dl);
 PHPAPI void php_io_op_read(php_io_op *op, zend_object *handle, php_socket_t fd, void *buf, size_t len,
 		int64_t off, php_deadline dl);
@@ -325,18 +335,17 @@ PHPAPI int php_io_sigwait(zend_object *handle, const php_sigset_t *set, php_sigi
 /* Active php_io_run() frames */
 PHPAPI uint32_t php_io_ops_in_flight(void);
 
-/* A child reaped through a handle: the next wait for it gets its status. pgid 0 when unknown. */
-PHPAPI void php_io_child_reaped(pid_t pid, int status);
-PHPAPI void php_io_child_reaped_ex(pid_t pid, pid_t pgid, int status);
-/* pid as for waitpid(2); the reaped pid comes back */
-PHPAPI bool php_io_child_take_reaped(pid_t *pid, int *status);
-/* pid as fork() returned it */
+/* pid as fork() returned it: the child drops what the parent's ring had */
 PHPAPI void php_io_child_forget(pid_t pid);
 
 /* A stream whose in-flight op a queue kept after its frame ended */
 PHPAPI void php_io_stream_orphan(php_stream *stream, php_io_queue *queue);
 PHPAPI void php_io_stream_unfreeze(php_stream *stream);
 PHPAPI void php_io_stream_drain(php_stream *stream);
+PHPAPI void php_io_handle_orphan(zend_object *handle, php_io_queue *queue);
+PHPAPI void php_io_handle_unfreeze(zend_object *handle);
+PHPAPI bool php_io_handle_busy(zend_object *handle);
+PHPAPI void php_io_handle_drain(zend_object *handle);
 /* Frozen by a running op, not only by an orphan */
 PHPAPI bool php_io_stream_busy(php_stream *stream);
 
@@ -395,7 +404,7 @@ typedef struct _php_io_queue_ops {
 	int (*wait)(php_io_queue *q, php_io_queue_completion *out, uint32_t max, const php_deadline *dl);
 	void (*orphan)(php_io_queue *q, php_io_op *op);
 	/* May be NULL when orphan() never keeps an op in flight */
-	void (*drain)(php_io_queue *q, php_stream *stream);
+	void (*drain)(php_io_queue *q, const void *owner);
 	uint32_t (*count_pending)(php_io_queue *q);
 	uint32_t (*hook_flags)(php_io_queue *q);
 	void (*destroy)(php_io_queue *q);
