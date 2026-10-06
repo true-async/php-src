@@ -191,6 +191,9 @@ struct _php_stream_wrapper	{
 
 #define PHP_STREAM_FLAG_NO_IO						0x400
 
+/* A user filter of this stream is running; its filters must not be removed. */
+#define PHP_STREAM_FLAG_USER_FILTER_RUNNING			0x800
+
 #define PHP_STREAM_FLAG_WAS_WRITTEN					0x80000000
 
 struct _php_stream  {

@@ -147,6 +147,8 @@ static php_stream_filter_status_t userfilter_filter(
 	/* Make sure the stream is not closed while the filter callback executes. */
 	uint32_t orig_no_fclose = stream->flags & PHP_STREAM_FLAG_NO_FCLOSE;
 	stream->flags |= PHP_STREAM_FLAG_NO_FCLOSE;
+	uint32_t orig_running = stream->flags & PHP_STREAM_FLAG_USER_FILTER_RUNNING;
+	stream->flags |= PHP_STREAM_FLAG_USER_FILTER_RUNNING;
 
 	/* Give the userfilter class a hook back to the stream */
 	zend_class_entry *old_scope = EG(fake_scope);
@@ -169,8 +171,8 @@ static php_stream_filter_status_t userfilter_filter(
 				php_error_docref(NULL, E_WARNING, "Unprocessed filter buckets remaining on input brigade");
 			}
 			zend_string_release(stream_name);
-			stream->flags &= ~PHP_STREAM_FLAG_NO_FCLOSE;
-			stream->flags |= orig_no_fclose;
+			stream->flags &= ~(PHP_STREAM_FLAG_NO_FCLOSE | PHP_STREAM_FLAG_USER_FILTER_RUNNING);
+			stream->flags |= orig_no_fclose | orig_running;
 			return PSFS_ERR_FATAL;
 		}
 	}
@@ -232,8 +234,8 @@ static php_stream_filter_status_t userfilter_filter(
 	zval_ptr_dtor(&args[1]);
 	zval_ptr_dtor(&args[0]);
 
-	stream->flags &= ~PHP_STREAM_FLAG_NO_FCLOSE;
-	stream->flags |= orig_no_fclose;
+	stream->flags &= ~(PHP_STREAM_FLAG_NO_FCLOSE | PHP_STREAM_FLAG_USER_FILTER_RUNNING);
+	stream->flags |= orig_no_fclose | orig_running;
 
 	return ret;
 }
