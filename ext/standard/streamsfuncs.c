@@ -1344,8 +1344,20 @@ PHP_FUNCTION(stream_filter_remove)
 		RETURN_THROWS();
 	}
 
+	if (filter->chain && filter->chain->stream
+			&& (filter->chain->stream->flags & PHP_STREAM_FLAG_USER_FILTER_RUNNING)) {
+		php_error_docref(NULL, E_WARNING, "Unable to remove filter while a user filter of the same stream is running");
+		RETURN_FALSE;
+	}
+
 	if (php_stream_filter_flush(filter, 1) == FAILURE) {
 		php_error_docref(NULL, E_WARNING, "Unable to flush filter, not removing");
+		RETURN_FALSE;
+	}
+
+	/* The flush writes to the stream, which may run PHP code that removes this filter. */
+	if (Z_RES_TYPE_P(zfilter) != php_file_le_stream_filter()) {
+		php_error_docref(NULL, E_WARNING, "Filter has already been removed");
 		RETURN_FALSE;
 	}
 
