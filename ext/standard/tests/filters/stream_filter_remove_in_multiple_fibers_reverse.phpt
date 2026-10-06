@@ -1,5 +1,5 @@
 --TEST--
-stream_filter_remove() while the same user filter is suspended in several Fibers
+stream_filter_remove() while the same user filter is suspended in several Fibers that finish in reverse order
 --FILE--
 <?php
 class Suspender extends php_user_filter {
@@ -26,13 +26,13 @@ $fiber1 = new Fiber(fn() => fwrite($stream, 'one'));
 $fiber2 = new Fiber(fn() => fwrite($stream, 'two'));
 $fiber1->start();
 $fiber2->start();
-$fiber1->resume();
-var_dump($fiber1->getReturn());
+$fiber2->resume();
+var_dump($fiber2->getReturn());
 
 var_dump(stream_filter_remove($filter));
 
-$fiber2->resume();
-var_dump($fiber2->getReturn());
+$fiber1->resume();
+var_dump($fiber1->getReturn());
 
 var_dump(stream_filter_remove($filter));
 
@@ -46,4 +46,4 @@ Warning: stream_filter_remove(): Unable to remove a filter while it is running i
 bool(false)
 int(3)
 bool(true)
-string(6) "onetwo"
+string(6) "twoone"
