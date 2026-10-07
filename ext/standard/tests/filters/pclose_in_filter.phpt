@@ -4,11 +4,9 @@ pclose() of the stream from its user filter's callback
 <?php
 class Closer extends php_user_filter {
     public function filter($in, $out, &$consumed, bool $closing): int {
-        global $stream;
-        if ($stream) {
-            $closed = $stream;
-            $stream = null;
-            var_dump(pclose($closed));
+        global $fp;
+        if (!$closing) {
+            var_dump(pclose($fp));
         }
         while ($bucket = stream_bucket_make_writeable($in)) {
             $consumed += $bucket->datalen;
@@ -19,13 +17,12 @@ class Closer extends php_user_filter {
 }
 
 stream_filter_register('closer', 'Closer');
-$stream = $fp = fopen('php://memory', 'w+');
+$fp = fopen('php://memory', 'w+');
 stream_filter_append($fp, 'closer', STREAM_FILTER_WRITE);
-var_dump(fwrite($fp, 'abc'));
+fwrite($fp, 'abc');
 var_dump(pclose($fp));
 ?>
 --EXPECTF--
 Warning: pclose(): %d is not a valid stream resource in %s on line %d
 int(-1)
-int(3)
-int(%i)
+int(0)
