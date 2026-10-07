@@ -1,5 +1,5 @@
 --TEST--
-stream_filter_remove() while a user filter of the same stream is running
+stream_filter_remove() of a user filter while it is running
 --FILE--
 <?php
 class Remover extends php_user_filter {
@@ -45,12 +45,12 @@ var_dump(stream_filter_remove($filter));
 --EXPECTF--
 From the filter itself:
 
-Warning: stream_filter_remove(): Unable to remove filter while a user filter of the same stream is running in %s on line %d
+Warning: stream_filter_remove(): Unable to remove a filter while it is running in %s on line %d
 bool(false)
 bool(true)
 While the filter is suspended in a Fiber:
 
-Warning: stream_filter_remove(): Unable to remove filter while a user filter of the same stream is running in %s on line %d
+Warning: stream_filter_remove(): Unable to remove a filter while it is running in %s on line %d
 bool(false)
 int(5)
 bool(true)
