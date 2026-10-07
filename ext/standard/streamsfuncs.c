@@ -1344,7 +1344,7 @@ PHP_FUNCTION(stream_filter_remove)
 		RETURN_THROWS();
 	}
 
-	if (filter->calls_in_progress > 0) {
+	if (filter->running_calls > 0) {
 		php_error_docref(NULL, E_WARNING, "Unable to remove a filter while it is running");
 		RETURN_FALSE;
 	}
@@ -1360,7 +1360,7 @@ PHP_FUNCTION(stream_filter_remove)
 		RETURN_FALSE;
 	}
 
-	if (filter->calls_in_progress > 0) {
+	if (filter->running_calls > 0) {
 		php_error_docref(NULL, E_WARNING, "Unable to remove a filter while it is running");
 		RETURN_FALSE;
 	}
