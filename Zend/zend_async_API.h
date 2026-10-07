@@ -105,6 +105,13 @@ typedef enum {
 	ZEND_COROUTINE_STATUS_FINISHED /* completed; result or exception is set */
 } zend_coroutine_status;
 
+/* How soon a coroutine the engine creates should start; the scheduler decides
+ * how to honour the request (see zend_async_gc_new_coroutine_t). */
+typedef enum {
+	ZEND_COROUTINE_NORMAL = 0,
+	ZEND_COROUTINE_HI_PRIORITY = 255
+} zend_coroutine_priority;
+
 struct _zend_coroutine_s {
 	/* Bits 0-3: zend_coroutine_status (the scheduler is the only writer);
 	 * bits 4-15: the core's ZEND_COROUTINE_F_* modifiers; bits 16-31 belong to
@@ -122,7 +129,8 @@ struct _zend_coroutine_s {
 	zend_coroutine_entry_t internal_entry;
 	/* Custom data of the scheduler/extension. Nullable. */
 	void *extended_data;
-	/* Completion result. */
+	/* Completion result. An internal entry may set it too (the GC run stores its
+	 * count); the provider keeps it until the coroutine is freed. */
 	zval result;
 	/* Completion exception. Nullable. */
 	zend_object *exception;
@@ -262,13 +270,20 @@ struct _zend_coroutine_s {
  * coroutine the caller never manages to enqueue stays the scheduler's until the
  * request ends, and it waits for nothing. */
 typedef zend_coroutine_t *(*zend_async_new_coroutine_t)(void);
-/* Allocate a coroutine for the engine's own GC bookkeeping (running
- * zend_gc_collect_cycles() and its destructor phase). A separate slot lets a
- * scheduler treat these specially — priority, concurrency limits — if it cares.
- * NULL falls back to new_coroutine(); see ZEND_ASYNC_GC_NEW_COROUTINE(). A NULL
- * from this slot is a failure the engine survives, not a way to throttle: a
- * scheduler that keeps refusing never runs the destructors of garbage cycles. */
-typedef zend_coroutine_t *(*zend_async_gc_new_coroutine_t)(void);
+/* Allocate a coroutine for the engine's own GC bookkeeping: the collector's
+ * run (zend_gc_collect_cycles()), its destructor iterators and the iterators of
+ * the shutdown destructor passes. `priority` is ZEND_COROUTINE_HI_PRIORITY for
+ * the collector's run and ZEND_COROUTINE_NORMAL for the iterators. A scheduler
+ * should run a HI_PRIORITY coroutine, when it is first enqueued, before the
+ * coroutines already queued; its later wakes take the ordinary place. The
+ * run's caller waits for it with a stack parked in the middle of an opcode, and
+ * so does every queued coroutine that finds the root buffer full before the run
+ * starts, so a queue that ignores the request keeps one parked stack per such
+ * coroutine until the run's turn. NULL falls back to new_coroutine(), which
+ * takes no priority; see ZEND_ASYNC_GC_NEW_COROUTINE(). A NULL from this slot
+ * is a failure the engine survives, not a way to throttle: a scheduler that
+ * keeps refusing never runs the destructors of garbage cycles. */
+typedef zend_coroutine_t *(*zend_async_gc_new_coroutine_t)(zend_coroutine_priority priority);
 /* Put a CREATED/SUSPENDED coroutine into the run queue (-> STATUS_QUEUED).
  * Enqueuing a fresh coroutine and resuming a suspended one are the same
  * operation. A non-NULL `error` is thrown at the suspension point when the
@@ -358,7 +373,10 @@ typedef bool (*zend_async_defer_t)(zend_async_microtask_t *task);
  * observed. False when the wait was aborted — a cancellation delivered to the
  * waiter, or misuse (no current coroutine, awaiting itself) — or when the wait
  * is not possible here (the scheduler is running its own work): false without
- * an exception, and the caller does not wait. */
+ * an exception, and the caller does not wait. The caller holds a reference to
+ * `coroutine` across the call (ZEND_COROUTINE_ADD_REF()); the slot takes none,
+ * so its return releases nothing that could add a GC root or run a
+ * destructor on the waiter. */
 typedef bool (*zend_async_coroutine_await_t)(zend_coroutine_t *coroutine);
 
 /*
@@ -435,7 +453,7 @@ typedef uint32_t (*zend_async_get_coroutine_count_t)(void);
 /* Raised by one at every incompatible change to this API: a changed slot
  * signature or meaning, a reordered field. Appending a slot does not raise it:
  * `size` tells the core which slots the provider knows. */
-#define ZEND_ASYNC_API_VERSION 2
+#define ZEND_ASYNC_API_VERSION 3
 
 /**
  * Scheduler API bundle. A provider fills the struct and calls
@@ -610,11 +628,11 @@ END_EXTERN_C()
 #define ZEND_ASYNC_NEW_COROUTINE() \
 	(zend_async_new_coroutine_fn != NULL ? zend_async_new_coroutine_fn() : NULL)
 /* A coroutine for the engine's own GC bookkeeping. Falls back to the plain
- * new_coroutine slot when the scheduler does not distinguish them; NULL when
- * the provider cannot mint C coroutines at all. */
-#define ZEND_ASYNC_GC_NEW_COROUTINE() \
+ * new_coroutine slot, which drops `priority`, when the scheduler does not
+ * distinguish them; NULL when the provider cannot mint C coroutines at all. */
+#define ZEND_ASYNC_GC_NEW_COROUTINE(priority) \
 	(zend_async_gc_new_coroutine_fn != NULL \
-					? zend_async_gc_new_coroutine_fn() \
+					? zend_async_gc_new_coroutine_fn(priority) \
 					: zend_async_new_coroutine_fn != NULL ? zend_async_new_coroutine_fn() : NULL)
 #define ZEND_ASYNC_ENQUEUE_COROUTINE(coroutine) \
 	zend_async_enqueue_coroutine_fn((coroutine), NULL, false)
