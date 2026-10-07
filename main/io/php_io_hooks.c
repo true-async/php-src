@@ -1467,7 +1467,7 @@ PHPAPI php_socket_t php_io_accept(php_stream *stream, php_socket_t fd, struct so
  * (where EINPROGRESS is defined as it), EALREADY for one started before. Not EAGAIN:
  * Linux gives it for a connect that did not start, an AF_UNIX one to a full backlog. */
 #ifdef PHP_WIN32
-# define PHP_IO_CONNECT_PENDING(err) ((err) == EINPROGRESS || (err) == EALREADY || (err) == WSAEALREADY)
+# define PHP_IO_CONNECT_PENDING(err) ((err) == EINPROGRESS || (err) == WSAEALREADY)
 # define PHP_IO_IS_ENOTCONN(err) ((err) == ENOTCONN || (err) == WSAENOTCONN)
 #else
 # define PHP_IO_CONNECT_PENDING(err) ((err) == EINPROGRESS || (err) == EALREADY)
@@ -1507,8 +1507,8 @@ PHPAPI int php_io_connect_ex(php_stream *stream, zend_object *handle, php_socket
 
 	for (;;) {
 		if (started) {
-			/* Not a wait after a drain: a registration keeps the hangup of an earlier
-			 * failed connect on this socket */
+			/* The kernel is asked, not a registration's record, which keeps the hangup
+			 * of an earlier failed connect on this socket */
 			php_io_op_poll(&op, handle, fd, PHP_POLL_WRITE, *dl);
 		} else {
 			php_io_op_connect(&op, handle, fd, addr, addrlen, *dl);
@@ -1547,6 +1547,11 @@ PHPAPI int php_io_connect_ex(php_stream *stream, zend_object *handle, php_socket
 				ret = -1;
 				break;
 			}
+			continue;
+		}
+		if (result.status == PHP_IO_DONE && result.error == EALREADY) {
+			/* The connect of an earlier call whose Connect op was cancelled at its deadline */
+			started = true;
 			continue;
 		}
 		if (result.status == PHP_IO_READY || result.status == PHP_IO_UNSUPPORTED) {
