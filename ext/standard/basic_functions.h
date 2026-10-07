@@ -47,8 +47,6 @@ PHP_MINIT_FUNCTION(io_hooks);
 PHP_MINIT_FUNCTION(io_ring);
 PHP_MINIT_FUNCTION(user_filters);
 PHP_RSHUTDOWN_FUNCTION(user_filters);
-/* Whether a call of this user filter is in progress; removing it then would free it under that call. */
-bool php_user_filter_is_running(const php_stream_filter *filter);
 PHP_RSHUTDOWN_FUNCTION(browscap);
 
 PHPAPI zend_result _php_error_log(int opt_err, const zend_string *message, const zend_string *opt, const zend_string *headers);
