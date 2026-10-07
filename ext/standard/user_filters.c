@@ -123,10 +123,6 @@ static void userfilter_dtor(php_stream_filter *thisfilter)
 	zval_ptr_dtor(obj);
 }
 
-/* The calls of a user filter in progress, a Fiber suspended in one included. The u2 of the zval
- * holding the filter's object is unused, so php_stream_filter keeps its layout. */
-#define USERFILTER_CALLS(filter) Z_EXTRA((filter)->abstract)
-
 static php_stream_filter_status_t userfilter_filter(
 			php_stream *stream,
 			php_stream_filter *thisfilter,
@@ -151,7 +147,7 @@ static php_stream_filter_status_t userfilter_filter(
 	/* Make sure the stream is not closed while the filter callback executes. */
 	uint32_t orig_no_fclose = stream->flags & PHP_STREAM_FLAG_NO_FCLOSE;
 	stream->flags |= PHP_STREAM_FLAG_NO_FCLOSE;
-	USERFILTER_CALLS(thisfilter)++;
+	thisfilter->calls_in_progress++;
 
 	/* Give the userfilter class a hook back to the stream */
 	zend_class_entry *old_scope = EG(fake_scope);
@@ -176,7 +172,7 @@ static php_stream_filter_status_t userfilter_filter(
 			zend_string_release(stream_name);
 			stream->flags &= ~PHP_STREAM_FLAG_NO_FCLOSE;
 			stream->flags |= orig_no_fclose;
-			USERFILTER_CALLS(thisfilter)--;
+			thisfilter->calls_in_progress--;
 			return PSFS_ERR_FATAL;
 		}
 	}
@@ -240,7 +236,7 @@ static php_stream_filter_status_t userfilter_filter(
 
 	stream->flags &= ~PHP_STREAM_FLAG_NO_FCLOSE;
 	stream->flags |= orig_no_fclose;
-	USERFILTER_CALLS(thisfilter)--;
+	thisfilter->calls_in_progress--;
 
 	return ret;
 }
@@ -250,11 +246,6 @@ static const php_stream_filter_ops userfilter_ops = {
 	userfilter_dtor,
 	"user-filter"
 };
-
-bool php_user_filter_is_running(const php_stream_filter *filter)
-{
-	return filter->fops == &userfilter_ops && USERFILTER_CALLS(filter) > 0;
-}
 
 static php_stream_filter *user_filter_factory_create(const char *filtername,
 		zval *filterparams, uint8_t persistent)

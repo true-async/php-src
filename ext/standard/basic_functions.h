@@ -44,8 +44,6 @@ ZEND_API void php_get_highlight_struct(zend_syntax_highlighter_ini *syntax_highl
 
 PHP_MINIT_FUNCTION(user_filters);
 PHP_RSHUTDOWN_FUNCTION(user_filters);
-/* Whether a call of this user filter is in progress; removing it then would free it under that call. */
-bool php_user_filter_is_running(const php_stream_filter *filter);
 PHP_RSHUTDOWN_FUNCTION(browscap);
 
 /* Left for BC (not binary safe!) */
