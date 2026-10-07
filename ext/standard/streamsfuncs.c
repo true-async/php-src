@@ -1656,8 +1656,25 @@ PHP_FUNCTION(stream_filter_remove)
 		RETURN_THROWS();
 	}
 
+	if (php_user_filter_is_running(filter)) {
+		php_error_docref(NULL, E_WARNING, "Unable to remove a filter while it is running");
+		RETURN_FALSE;
+	}
+
 	if (php_stream_filter_flush(filter, 1) == FAILURE) {
 		php_error_docref(NULL, E_WARNING, "Unable to flush filter, not removing");
+		RETURN_FALSE;
+	}
+
+	/* The flush writes to the stream, which may run PHP code that removes this filter. */
+	if (Z_RES_TYPE_P(zfilter) != php_file_le_stream_filter()) {
+		php_error_docref(NULL, E_WARNING, "Filter has already been removed");
+		RETURN_FALSE;
+	}
+
+	/* A Fiber may have entered the filter during the flush and be suspended in it. */
+	if (php_user_filter_is_running(filter)) {
+		php_error_docref(NULL, E_WARNING, "Unable to remove a filter while it is running");
 		RETURN_FALSE;
 	}
 

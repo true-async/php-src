@@ -160,6 +160,10 @@ static zend_result userfilter_assign_stream(php_stream *stream, zval *obj,
 	return SUCCESS;
 }
 
+/* The calls of a user filter in progress, a Fiber suspended in one included. The u2 of the zval
+ * holding the filter's object is unused, so php_stream_filter keeps its layout. */
+#define USERFILTER_CALLS(filter) Z_EXTRA((filter)->abstract)
+
 static php_stream_filter_status_t userfilter_filter(
 			php_stream *stream,
 			php_stream_filter *thisfilter,
@@ -184,9 +188,11 @@ static php_stream_filter_status_t userfilter_filter(
 	/* Make sure the stream is not closed while the filter callback executes. */
 	uint32_t orig_no_fclose = stream->flags & PHP_STREAM_FLAG_NO_FCLOSE;
 	stream->flags |= PHP_STREAM_FLAG_NO_FCLOSE;
+	USERFILTER_CALLS(thisfilter)++;
 
 	zend_string *stream_name = NULL;
 	if (userfilter_assign_stream(stream, obj, &stream_name, orig_no_fclose) == FAILURE) {
+		USERFILTER_CALLS(thisfilter)--;
 		if (buckets_in->head) {
 			php_error_docref(NULL, E_WARNING, "Unprocessed filter buckets remaining on input brigade");
 		}
@@ -249,6 +255,7 @@ static php_stream_filter_status_t userfilter_filter(
 
 	stream->flags &= ~PHP_STREAM_FLAG_NO_FCLOSE;
 	stream->flags |= orig_no_fclose;
+	USERFILTER_CALLS(thisfilter)--;
 
 	return ret;
 }
@@ -318,6 +325,11 @@ static const php_stream_filter_ops userfilter_ops = {
 	userfilter_dtor,
 	"user-filter"
 };
+
+bool php_user_filter_is_running(const php_stream_filter *filter)
+{
+	return filter->fops == &userfilter_ops && USERFILTER_CALLS(filter) > 0;
+}
 
 static php_stream_filter *user_filter_factory_create(const char *filtername,
 		zval *filterparams, bool persistent)

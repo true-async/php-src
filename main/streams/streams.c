@@ -486,13 +486,14 @@ PHPAPI zend_result php_stream_fill_read_buffer(php_stream *stream, size_t size)
 	bool old_eof = stream->eof;
 
 	if (stream->readfilters.head) {
-		size_t to_read_now = MIN(size, stream->chunk_size);
+		const size_t chunk_size = stream->chunk_size;
+		size_t to_read_now = MIN(size, chunk_size);
 		char *chunk_buf;
 		php_stream_bucket_brigade brig_in = { NULL, NULL }, brig_out = { NULL, NULL };
 		php_stream_bucket_brigade *brig_inp = &brig_in, *brig_outp = &brig_out, *brig_swap;
 
 		/* allocate a buffer for reading chunks */
-		chunk_buf = emalloc(stream->chunk_size);
+		chunk_buf = emalloc(chunk_size);
 
 		while (!stream->eof && (stream->writepos - stream->readpos < (zend_off_t)to_read_now)) {
 			ssize_t justread = 0;
@@ -502,7 +503,7 @@ PHPAPI zend_result php_stream_fill_read_buffer(php_stream *stream, size_t size)
 			php_stream_filter *filter;
 
 			/* read a chunk into a bucket */
-			justread = stream->ops->read(stream, chunk_buf, stream->chunk_size);
+			justread = stream->ops->read(stream, chunk_buf, chunk_size);
 			if (justread < 0 && stream->writepos == stream->readpos) {
 				efree(chunk_buf);
 				retval = FAILURE;
@@ -1704,7 +1705,7 @@ static zend_result php_stream_copy_fallback(php_stream *src, php_stream *dest, s
 	return SUCCESS;
 }
 
-PHPAPI zend_result _php_stream_copy_to_stream_ex(php_stream *src, php_stream *dest, size_t maxlen, size_t *len STREAMS_DC)
+static zend_result php_stream_copy_to_stream_impl(php_stream *src, php_stream *dest, size_t maxlen, size_t *len)
 {
 	size_t dummy;
 
@@ -1756,6 +1757,25 @@ PHPAPI zend_result _php_stream_copy_to_stream_ex(php_stream *src, php_stream *de
 
 fallback:
 	return php_stream_copy_fallback(src, dest, maxlen, len);
+}
+
+PHPAPI zend_result _php_stream_copy_to_stream_ex(php_stream *src, php_stream *dest, size_t maxlen, size_t *len STREAMS_DC)
+{
+	/* Writing to dest or reading from src may run PHP code (a user wrapper or
+	 * filter) that would otherwise close either stream under the copy. */
+	uint32_t src_no_fclose = src->flags & PHP_STREAM_FLAG_NO_FCLOSE;
+	uint32_t dest_no_fclose = dest->flags & PHP_STREAM_FLAG_NO_FCLOSE;
+	src->flags |= PHP_STREAM_FLAG_NO_FCLOSE;
+	dest->flags |= PHP_STREAM_FLAG_NO_FCLOSE;
+
+	zend_result ret = php_stream_copy_to_stream_impl(src, dest, maxlen, len);
+
+	src->flags &= ~PHP_STREAM_FLAG_NO_FCLOSE;
+	src->flags |= src_no_fclose;
+	dest->flags &= ~PHP_STREAM_FLAG_NO_FCLOSE;
+	dest->flags |= dest_no_fclose;
+
+	return ret;
 }
 
 /* Returns the number of bytes moved.
