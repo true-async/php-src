@@ -1326,6 +1326,7 @@ void pcntl_signal_dispatch(void)
 	const zend_op *old_opline = NULL;
 	sigset_t mask;
 	sigset_t old_mask;
+	sigset_t handler_mask;
 
 	if(!PCNTL_G(pending_signals)) {
 		return;
@@ -1350,6 +1351,12 @@ void pcntl_signal_dispatch(void)
 	queue = PCNTL_G(head);
 	PCNTL_G(head) = NULL; /* simple stores are atomic */
 	PCNTL_G(tail) = NULL;
+
+	/* Signals are blocked only while the queue and the spares change: a handler runs under the
+	 * thread's own mask, so a change it makes to the mask (pcntl_sigprocmask(), the unblock of
+	 * pcntl_signal()) holds at once and stays after the dispatch, as anywhere else. What arrives
+	 * meanwhile is queued for the next dispatch. */
+	handler_mask = old_mask;
 
 	/* Dispatching can happen with an exception pending, e.g. from the interrupt check that runs
 	 * right after an internal function threw. call_user_function() does nothing in that state,
@@ -1382,7 +1389,9 @@ void pcntl_signal_dispatch(void)
 
 				/* Call php signal handler - Note that we do not report errors, and we ignore the return value */
 				/* FIXME: this is probably broken when multiple signals are handled in this while loop (retval) */
+				sigprocmask(SIG_SETMASK, &handler_mask, NULL);
 				call_user_function(NULL, NULL, handle, &retval, 2, params);
+				sigprocmask(SIG_BLOCK, &mask, &handler_mask);
 				zval_ptr_dtor(&retval);
 #ifdef HAVE_STRUCT_SIGINFO_T
 				zval_ptr_dtor(&params[1]);
@@ -1415,23 +1424,27 @@ void pcntl_signal_dispatch(void)
 	}
 
 	if (UNEXPECTED(queue)) {
-		/* Put back what the throwing handler did not get to, instead of dropping it, and ask
-		 * the engine to come back once the exception has been handled. Signals are still
-		 * blocked here, so PCNTL_G(head) cannot have been repopulated in the meantime. */
+		/* Put back what the throwing handler did not get to, instead of dropping it, ahead of
+		 * what arrived while the handlers ran. */
 		next = queue;
 
 		while (next->next) {
 			next = next->next;
 		}
 
-		PCNTL_G(head) = queue;
-		PCNTL_G(tail) = next;
-
-		if (PCNTL_G(async_signals)) {
-			zend_atomic_bool_store_ex(&EG(vm_interrupt), true);
+		next->next = PCNTL_G(head);
+		if (!PCNTL_G(head)) {
+			PCNTL_G(tail) = next;
 		}
-	} else {
-		PCNTL_G(pending_signals) = 0;
+		PCNTL_G(head) = queue;
+	}
+
+	/* A signal that arrived while the handlers ran spent its engine interrupt on a nested
+	 * dispatch, which returned at once: the engine has to come back for it, as for what a
+	 * throwing handler did not get to once its exception has been handled. */
+	PCNTL_G(pending_signals) = PCNTL_G(head) != NULL;
+	if (PCNTL_G(head) && PCNTL_G(async_signals)) {
+		zend_atomic_bool_store_ex(&EG(vm_interrupt), true);
 	}
 
 	/* Re-enable queue */
@@ -1440,8 +1453,7 @@ void pcntl_signal_dispatch(void)
 	/* Re-enable fiber switching */
 	zend_fiber_switch_unblock();
 
-	/* return signal mask to previous state */
-	sigprocmask(SIG_SETMASK, &old_mask, NULL);
+	sigprocmask(SIG_SETMASK, &handler_mask, NULL);
 }
 
 static void pcntl_signal_dispatch_tick_function(int dummy_int, void *dummy_pointer)
