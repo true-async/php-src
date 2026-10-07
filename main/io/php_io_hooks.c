@@ -1468,13 +1468,15 @@ PHPAPI php_socket_t php_io_accept(php_stream *stream, php_socket_t fd, struct so
  * EALREADY for one started before */
 #ifdef PHP_WIN32
 # define PHP_IO_IS_EALREADY(err) ((err) == EALREADY || (err) == WSAEALREADY)
+# define PHP_IO_IS_EISCONN(err) ((err) == EISCONN || (err) == WSAEISCONN)
 #else
 # define PHP_IO_IS_EALREADY(err) ((err) == EALREADY)
+# define PHP_IO_IS_EISCONN(err) ((err) == EISCONN)
 #endif
 #define PHP_IO_CONNECT_PENDING(err) ((err) == EINPROGRESS || (err) == EAGAIN || (err) == EWOULDBLOCK || PHP_IO_IS_EALREADY(err))
 
-/* The connect is started once; the wait completes as Ready and the result
- * is read from SO_ERROR, or as Done when the provider connected itself */
+/* The connect is started once, by the provider when it performs the op, else
+ * here; after our own start only its outcome is waited for, as write readiness */
 PHPAPI int php_io_connect_ex(php_stream *stream, zend_object *handle, php_socket_t fd,
 		const struct sockaddr *addr, socklen_t addrlen, php_deadline *dl)
 {
@@ -1502,22 +1504,56 @@ PHPAPI int php_io_connect_ex(php_stream *stream, zend_object *handle, php_socket
 	}
 
 	for (;;) {
-		php_io_op_connect(&op, handle, fd, addr, addrlen, *dl);
-		op.stream = stream;
 		if (started) {
+			/* Our connect is under way: only its outcome is left to wait for. A provider that
+			 * performs a Connect cannot take it over (IOCP's ConnectEx() fails with WSAEINVAL). */
+			php_io_op_poll(&op, handle, fd, PHP_POLL_WRITE, *dl);
 			op.flags |= PHP_IO_OP_F_AFTER_DRAIN;
+		} else {
+			php_io_op_connect(&op, handle, fd, addr, addrlen, *dl);
 		}
+		op.stream = stream;
 		if (php_io_op_register_wait(&op, stream, PHP_POLL_WRITE) == FAILURE
 				|| php_io_run(&op, &result) == FAILURE) {
 			php_io_set_errno(ECANCELED);
 			ret = -1;
 			break;
 		}
-		if ((result.status == PHP_IO_READY && !started)
-				|| (result.status == PHP_IO_UNSUPPORTED && direct)) {
+		if (started) {
+			if (php_io_poll_result_to_revents(&result, PHP_POLL_WRITE) <= 0) {
+				ret = -1;
+				break;
+			}
+			int error = 0;
+			socklen_t len = sizeof(error);
+			if (getsockopt(fd, SOL_SOCKET, SO_ERROR, (char *) &error, &len) != 0) {
+				ret = -1;
+				break;
+			}
+			if (error) {
+				php_io_set_errno(error);
+				ret = -1;
+				break;
+			}
+			/* A wake after a drain may come before the outcome: no error yet is not a
+			 * connection, so connect() tells, and one still under way is waited for again */
+			struct sockaddr_storage peer;
+			socklen_t peer_len = sizeof(peer);
+			if (getpeername(fd, (struct sockaddr *) &peer, &peer_len) == 0) {
+				break;
+			}
+			if (connect(fd, addr, addrlen) == 0 || PHP_IO_IS_EISCONN(php_socket_errno())) {
+				break;
+			}
+			if (!PHP_IO_CONNECT_PENDING(php_socket_errno())) {
+				ret = -1;
+				break;
+			}
+			continue;
+		}
+		if (result.status == PHP_IO_READY || result.status == PHP_IO_UNSUPPORTED) {
 			/* The provider only waited, or does not connect: start it
 			 * ourselves and wait for writability */
-			direct = false;
 			if (connect(fd, addr, addrlen) == 0) {
 				break;
 			}
@@ -1527,40 +1563,6 @@ PHPAPI int php_io_connect_ex(php_stream *stream, zend_object *handle, php_socket
 			}
 			started = true;
 			continue;
-		}
-		if (started && result.status == PHP_IO_DONE && result.res < 0 && PHP_IO_IS_EALREADY(result.error)) {
-			/* A provider that performs the op found our connect still under
-			 * way: wait for its outcome like after a readiness report */
-			php_io_op_poll(&op, handle, fd, PHP_POLL_WRITE, *dl);
-			op.flags |= PHP_IO_OP_F_AFTER_DRAIN;
-			op.stream = stream;
-			if (php_io_op_register_wait(&op, stream, PHP_POLL_WRITE) == FAILURE
-					|| php_io_run(&op, &result) == FAILURE) {
-				php_io_set_errno(ECANCELED);
-				ret = -1;
-				break;
-			}
-			int n = php_io_poll_result_to_revents(&result, PHP_POLL_WRITE);
-			if (n <= 0) {
-				ret = -1;
-				break;
-			}
-			result.status = PHP_IO_READY;
-		}
-		/* A provider that performs the op connects a socket whose connect
-		 * we started already: EISCONN then means it completed meanwhile
-		 * and the outcome is in SO_ERROR, as after a readiness report */
-		if (result.status == PHP_IO_READY
-				|| (started && result.status == PHP_IO_DONE && result.res < 0 && result.error == EISCONN)) {
-			int error = 0;
-			socklen_t len = sizeof(error);
-			if (getsockopt(fd, SOL_SOCKET, SO_ERROR, (char *) &error, &len) != 0) {
-				ret = -1;
-			} else if (error) {
-				php_io_set_errno(error);
-				ret = -1;
-			}
-			break;
 		}
 		ssize_t r;
 		if (php_io_data_result(&result, &r)) {
