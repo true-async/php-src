@@ -582,7 +582,9 @@ PHPAPI zend_result _php_stream_fill_read_buffer(php_stream *stream, size_t size)
 
 			/* read a chunk into a bucket */
 			justread = stream->ops->read(stream, chunk_buf, stream->chunk_size);
-			if (justread < 0 && stream->writepos == stream->readpos) {
+			/* With an exception pending, fail even if data is buffered, so that the caller
+			 * does not consume it into a result the exception discards */
+			if (UNEXPECTED(justread < 0 && (stream->writepos == stream->readpos || EG(exception)))) {
 				efree(chunk_buf);
 				retval = FAILURE;
 				goto out_check_eof;
@@ -729,6 +731,27 @@ out_is_eof:
 	return retval;
 }
 
+/* Puts len bytes back at the front of the read buffer, so that the next read returns them again.
+ * The caller rewinds stream->position if it has already advanced it. */
+static void php_stream_unread(php_stream *stream, const char *data, size_t len)
+{
+	if ((size_t) stream->readpos < len) {
+		const size_t buffered = stream->writepos - stream->readpos;
+
+		if (stream->readbuflen < buffered + len) {
+			stream->readbuflen = buffered + len;
+			stream->readbuf = perealloc(stream->readbuf, stream->readbuflen, stream->is_persistent);
+		}
+
+		memmove(stream->readbuf + len, stream->readbuf + stream->readpos, buffered);
+		stream->readpos = len;
+		stream->writepos = len + buffered;
+	}
+
+	stream->readpos -= len;
+	memcpy(stream->readbuf + stream->readpos, data, len);
+}
+
 PHPAPI ssize_t _php_stream_read(php_stream *stream, char *buf, size_t size)
 {
 	ssize_t toread = 0, didread = 0;
@@ -767,6 +790,11 @@ PHPAPI ssize_t _php_stream_read(php_stream *stream, char *buf, size_t size)
 				if (didread == 0) {
 					return toread;
 				}
+
+				if (UNEXPECTED(EG(exception))) {
+					goto unread;
+				}
+
 				break;
 			}
 		} else {
@@ -774,6 +802,11 @@ PHPAPI ssize_t _php_stream_read(php_stream *stream, char *buf, size_t size)
 				if (didread == 0) {
 					return -1;
 				}
+
+				if (UNEXPECTED(EG(exception))) {
+					goto unread;
+				}
+
 				break;
 			}
 
@@ -811,6 +844,12 @@ PHPAPI ssize_t _php_stream_read(php_stream *stream, char *buf, size_t size)
 	}
 
 	return didread;
+
+unread:
+	/* The exception discards the caller's result, so the data goes back to the buffer */
+	php_stream_unread(stream, buf - didread, didread);
+	stream->has_buffered_data = 0;
+	return -1;
 }
 
 /* Like php_stream_read(), but reading into a zend_string buffer. This has some similarity
@@ -1035,7 +1074,13 @@ PHPAPI char *_php_stream_get_line(php_stream *stream, char *buf, size_t maxlen,
 				}
 			}
 
-			if (php_stream_fill_read_buffer(stream, toread) == FAILURE && stream->fatal_error) {
+			if (UNEXPECTED(php_stream_fill_read_buffer(stream, toread) == FAILURE
+					&& (stream->fatal_error || EG(exception)))) {
+				if (EG(exception) && total_copied > 0) {
+					php_stream_unread(stream, bufstart, total_copied);
+					stream->position -= total_copied;
+				}
+
 				if (grow_mode) {
 					efree(bufstart);
 				}
@@ -1115,7 +1160,8 @@ PHPAPI zend_string *php_stream_get_record(php_stream *stream, size_t maxlen, con
 
 		to_read_now = MIN(maxlen - buffered_len, stream->chunk_size);
 
-		if (php_stream_fill_read_buffer(stream, buffered_len + to_read_now) == FAILURE && stream->fatal_error) {
+		if (UNEXPECTED(php_stream_fill_read_buffer(stream, buffered_len + to_read_now) == FAILURE
+				&& (stream->fatal_error || EG(exception)))) {
 			return NULL;
 		}
 
@@ -1592,6 +1638,13 @@ PHPAPI zend_string *_php_stream_copy_to_mem(php_stream *src, size_t maxlen, int 
 			len += ret;
 			ptr += ret;
 		}
+
+		if (UNEXPECTED(ret < 0 && EG(exception) && len > 0)) {
+			php_stream_unread(src, ZSTR_VAL(result), len);
+			src->position -= len;
+			len = 0;
+		}
+
 		if (len) {
 			ZSTR_LEN(result) = len;
 			ZSTR_VAL(result)[len] = '\0';
@@ -1643,6 +1696,13 @@ PHPAPI zend_string *_php_stream_copy_to_mem(php_stream *src, size_t maxlen, int 
 			ptr += ret;
 		}
 	}
+
+	if (UNEXPECTED(ret < 0 && EG(exception) && len > 0)) {
+		php_stream_unread(src, ZSTR_VAL(result), len);
+		src->position -= len;
+		len = 0;
+	}
+
 	if (len) {
 		result = zend_string_truncate(result, len, persistent);
 		ZSTR_VAL(result)[len] = '\0';
