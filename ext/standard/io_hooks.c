@@ -1229,6 +1229,11 @@ PHP_METHOD(Io_Poll_OperationQueue, waitCompletions)
 		max = 4096;
 	}
 
+	/* A handler pending before the wait runs before it, as one that interrupts it does */
+	if (php_io_interrupt_pending()) {
+		RETURN_EMPTY_ARRAY();
+	}
+
 	php_io_queue_completion *completions = safe_emalloc((size_t) max, sizeof(*completions), 0);
 	int n = intern->queue->ops->wait(intern->queue, completions, (uint32_t) max, timeout ? &dl : NULL);
 	if (n < 0) {
@@ -1443,9 +1448,20 @@ static void php_io_hooks_php_add(php_io_hooks *hooks, php_io_registration *reg)
 	php_io_hooks_php_call(&PHP_IO_HOOKS_PHP(hooks)->add_fcc, NULL, php_io_registration_get_zobj(reg));
 }
 
+/* A stream freed by an unwinding frame ends its registrations with the exception pending, which
+ * would skip the call and leave the pair in the provider's queue, as a destructor runs it */
 static void php_io_hooks_php_remove(php_io_hooks *hooks, php_io_registration *reg)
 {
+	zend_object *old_exception = EG(exception);
+	EG(exception) = NULL;
 	php_io_hooks_php_call(&PHP_IO_HOOKS_PHP(hooks)->remove_fcc, NULL, php_io_registration_get_zobj(reg));
+	if (old_exception) {
+		if (EG(exception)) {
+			zend_exception_set_previous(EG(exception), old_exception);
+		} else {
+			EG(exception) = old_exception;
+		}
+	}
 }
 
 static void php_io_hooks_php_dtor(php_io_hooks *hooks)

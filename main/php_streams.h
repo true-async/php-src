@@ -200,6 +200,9 @@ struct _php_stream_wrapper	{
 /* Set by php_stream_mark_read_lost() */
 #define PHP_STREAM_FLAG_READ_LOST					0x2000
 
+/* The IO hooks never see its operations: a file an include compiles from */
+#define PHP_STREAM_FLAG_NO_IO_HOOKS					0x4000
+
 #define PHP_STREAM_FLAG_WAS_WRITTEN					0x80000000
 
 struct _php_stream  {
@@ -569,7 +572,7 @@ END_EXTERN_C()
 #define PHP_STREAM_AS_FD_FOR_SELECT 3
 /* cast as fd/socket for copy purposes */
 #define PHP_STREAM_AS_FD_FOR_COPY   4
-/* cast as fd/socket to watch for readiness: the descriptor and nothing else, buffers untouched */
+/* cast as fd/socket for polling, buffers untouched */
 #define PHP_STREAM_AS_FD_FOR_POLL   5
 
 /* try really, really hard to make sure the cast happens (avoid using this flag if possible) */
