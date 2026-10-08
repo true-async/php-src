@@ -1243,6 +1243,12 @@ static HashTable *zend_fiber_frames_gc(zend_execute_data *ex, zend_get_gc_buffer
 			symTable = zend_unfinished_execution_gc_ex(ex, ex->func && ZEND_USER_CODE(ex->func->type) ? ex->call : NULL, buf, false);
 		}
 		if (symTable) {
+			/* A file included, or code eval'd, from a function runs in its own frame over the
+			 * function's symbol table: adding the table for both frames would count its values twice. */
+			if (symTable == lastSymTable) {
+				continue;
+			}
+
 			if (lastSymTable) {
 				zval *val;
 				ZEND_HASH_FOREACH_VAL(lastSymTable, val) {
