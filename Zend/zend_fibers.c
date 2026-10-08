@@ -202,7 +202,7 @@ ZEND_TLS uint32_t zend_fiber_switch_blocking = 0;
 #define ZEND_FIBER_DEFAULT_PAGE_SIZE 4096
 
 #ifdef ZEND_WIN32
-# define ZEND_FIBER_INITIAL_COMMIT_SIZE (32 * 1024)
+# define ZEND_FIBER_INITIAL_COMMIT_SIZE (4 * 1024)
 #endif
 
 static size_t zend_fiber_get_page_size(void)
