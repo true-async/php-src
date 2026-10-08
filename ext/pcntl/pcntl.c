@@ -1464,10 +1464,8 @@ void pcntl_signal_dispatch(void)
 	PCNTL_G(head) = NULL; /* simple stores are atomic */
 	PCNTL_G(tail) = NULL;
 
-	/* Signals are blocked only while the queue and the spares change: a handler runs under the
-	 * thread's own mask, so a change it makes to the mask (pcntl_sigprocmask(), the unblock of
-	 * pcntl_signal()) holds at once and stays after the dispatch, as anywhere else. What arrives
-	 * meanwhile is queued for the next dispatch. */
+	/* Handlers run under the thread's own mask, and the dispatch ends with the mask they left; what
+	 * arrives meanwhile is queued for the next dispatch. */
 	handler_mask = old_mask;
 
 	/* Dispatching can happen with an exception pending, e.g. from the interrupt check that runs
@@ -1497,10 +1495,9 @@ void pcntl_signal_dispatch(void)
 				/* Call php signal handler - Note that we do not report errors, and we ignore the return value */
 				sigprocmask(SIG_SETMASK, &handler_mask, NULL);
 				call_user_function(NULL, NULL, handle, &retval, 2, params);
-				sigprocmask(SIG_BLOCK, &mask, &handler_mask);
 				zval_ptr_dtor(&retval);
 				zval_ptr_dtor(&params[1]);
-
+				sigprocmask(SIG_BLOCK, &mask, &handler_mask);
 				handler_threw = NULL != EG(exception);
 			}
 		}
@@ -1529,8 +1526,10 @@ void pcntl_signal_dispatch(void)
 	}
 
 	if (UNEXPECTED(queue)) {
-		/* Put back what the throwing handler did not get to, instead of dropping it, ahead of
-		 * what arrived while the handlers ran. */
+		/* Put back what the throwing handler did not get to, instead of dropping it, and ask
+		 * the engine to come back once the exception has been handled. Signals are still
+		 * blocked here, but PCNTL_G(head) may hold what arrived while the handlers ran: it goes
+		 * after these. */
 		next = queue;
 
 		while (next->next) {
@@ -1544,9 +1543,8 @@ void pcntl_signal_dispatch(void)
 		PCNTL_G(head) = queue;
 	}
 
-	/* A signal that arrived while the handlers ran spent its engine interrupt on a nested
-	 * dispatch, which returned at once: the engine has to come back for it, as for what a
-	 * throwing handler did not get to once its exception has been handled. */
+	/* What arrived while the handlers ran is still queued, and a nested dispatch may have spent its
+	 * interrupt. */
 	PCNTL_G(pending_signals) = PCNTL_G(head) != NULL;
 	if (PCNTL_G(head) && PCNTL_G(async_signals)) {
 		atomic_store(&EG(vm_interrupt), true);
@@ -1558,6 +1556,7 @@ void pcntl_signal_dispatch(void)
 	/* Re-enable fiber switching */
 	zend_fiber_switch_unblock();
 
+	/* return signal mask to previous state */
 	sigprocmask(SIG_SETMASK, &handler_mask, NULL);
 }
 
