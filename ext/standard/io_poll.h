@@ -53,6 +53,15 @@ PHPAPI void php_io_poll_notify_handle_create_external(zval *dest, php_socket_t f
 PHPAPI void php_io_poll_signal_child_mask(sigset_t *mask);
 /* The signals watched handles take, which stay blocked whatever pcntl asks */
 PHPAPI void php_io_poll_signal_watched_mask(sigset_t *set);
+/* Unblocks done on the script's behalf while a handle keeps the signals blocked: each watched one is
+ * unblocked when the last handle watching it is removed */
+PHPAPI void php_io_poll_signal_unblock_at_removal(const sigset_t *set);
+/* The script blocked these again: takes back such an unblock of a signal it had blocked before the
+ * watch. One the handle blocked itself is still unblocked at the last removal. */
+PHPAPI void php_io_poll_signal_keep_blocked_at_removal(const sigset_t *set);
+/* Something outside pcntl unblocked these during the watch and the caller blocked them again: each is
+ * unblocked at the last removal, whatever the script asks later */
+PHPAPI void php_io_poll_signal_reblocked(const sigset_t *set);
 #endif
 /* The stream's StreamPollWeakHandle, created on the first call and kept by the stream: borrowed.
  * expose lets getStream() hand the stream out, and stays set once it was. */
