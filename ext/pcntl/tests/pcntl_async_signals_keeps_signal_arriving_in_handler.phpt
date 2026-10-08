@@ -21,7 +21,7 @@ pcntl_signal(SIGUSR1, function () {
 });
 
 posix_kill(posix_getpid(), SIGUSR1);
-// An internal call: the engine checks its interrupt when the call returns.
+// A check point for the interrupt the dispatch raised again: the return of an internal call.
 posix_getpid();
 echo "Done\n";
 

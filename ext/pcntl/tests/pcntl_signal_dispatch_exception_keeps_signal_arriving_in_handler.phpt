@@ -28,6 +28,7 @@ try {
 } catch (Exception $e) {
     echo $e->getMessage(), "\n";
 }
+posix_kill(posix_getpid(), SIGUSR2);
 pcntl_signal_dispatch();
 
 ?>
@@ -35,3 +36,4 @@ pcntl_signal_dispatch();
 USR1
 USR2
 HUP
+USR2
