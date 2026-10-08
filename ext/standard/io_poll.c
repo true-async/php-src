@@ -994,8 +994,14 @@ typedef struct php_io_poll_signal_handle_data {
 /* Watched handles per signal, and the signals the handles blocked themselves:
  * a signal is unblocked again when the last watched handle for it is removed,
  * and never when the process had it blocked before any handle */
+/* Except: a signal blocked before the watch is added too when it is unblocked during the watch, on
+ * the script's behalf (php_io_poll_signal_unblock_at_removal()) or by other code
+ * (php_io_poll_signal_reblocked()) */
 ZEND_TLS uint32_t php_io_poll_signal_handle_count[NSIG];
 ZEND_TLS sigset_t php_io_poll_signals_blocked_by_handles;
+/* Of those, the ones the script unblocked through pcntl; a later block by the script takes the
+ * unblock back */
+ZEND_TLS sigset_t php_io_poll_signals_unblocked_by_script;
 
 PHPAPI void php_io_poll_signal_child_mask(sigset_t *mask)
 {
@@ -1013,6 +1019,39 @@ PHPAPI void php_io_poll_signal_watched_mask(sigset_t *set)
 	for (int signo = 1; signo < NSIG; signo++) {
 		if (php_io_poll_signal_handle_count[signo]) {
 			sigaddset(set, signo);
+		}
+	}
+}
+
+PHPAPI void php_io_poll_signal_unblock_at_removal(const sigset_t *set)
+{
+	for (int signo = 1; signo < NSIG; signo++) {
+		if (php_io_poll_signal_handle_count[signo]
+				&& sigismember(set, signo) == 1
+				&& sigismember(&php_io_poll_signals_blocked_by_handles, signo) == 0) {
+			sigaddset(&php_io_poll_signals_blocked_by_handles, signo);
+			sigaddset(&php_io_poll_signals_unblocked_by_script, signo);
+		}
+	}
+}
+
+PHPAPI void php_io_poll_signal_keep_blocked_at_removal(const sigset_t *set)
+{
+	for (int signo = 1; signo < NSIG; signo++) {
+		if (sigismember(&php_io_poll_signals_unblocked_by_script, signo) == 1
+				&& sigismember(set, signo) == 1) {
+			sigdelset(&php_io_poll_signals_unblocked_by_script, signo);
+			sigdelset(&php_io_poll_signals_blocked_by_handles, signo);
+		}
+	}
+}
+
+PHPAPI void php_io_poll_signal_reblocked(const sigset_t *set)
+{
+	for (int signo = 1; signo < NSIG; signo++) {
+		if (php_io_poll_signal_handle_count[signo] && sigismember(set, signo) == 1) {
+			sigaddset(&php_io_poll_signals_blocked_by_handles, signo);
+			sigdelset(&php_io_poll_signals_unblocked_by_script, signo);
 		}
 	}
 }
@@ -1072,6 +1111,7 @@ static void php_io_poll_signal_handle_unblock(php_io_poll_signal_handle_data *da
 		if (--php_io_poll_signal_handle_count[signo] == 0
 				&& sigismember(&php_io_poll_signals_blocked_by_handles, signo) == 1) {
 			sigdelset(&php_io_poll_signals_blocked_by_handles, signo);
+			sigdelset(&php_io_poll_signals_unblocked_by_script, signo);
 			sigaddset(&unblock, signo);
 			any = true;
 		}

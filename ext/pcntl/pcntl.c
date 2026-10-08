@@ -707,11 +707,20 @@ static void pcntl_signal_keep_watched(int signo)
 	sigset_t one;
 	sigemptyset(&one);
 	sigaddset(&one, signo);
+	sigset_t old;
 #ifdef ZTS
-	pthread_sigmask(SIG_BLOCK, &one, NULL);
+	const int result = pthread_sigmask(SIG_BLOCK, &one, &old);
 #else
-	sigprocmask(SIG_BLOCK, &one, NULL);
+	const int result = sigprocmask(SIG_BLOCK, &one, &old);
 #endif
+	if (result != 0) {
+		return;
+	}
+
+	/* zend_sigaction() unblocked it, so unblock it at the last removal, as without a handle */
+	if (sigismember(&old, signo) == 0) {
+		php_io_poll_signal_unblock_at_removal(&one);
+	}
 }
 
 /* {{{ Executes specified program in current process space as defined by exec(2) */
@@ -1040,6 +1049,10 @@ PHP_FUNCTION(pcntl_sigprocmask)
 		RETURN_FALSE;
 	}
 
+	const sigset_t requested = set;
+	sigset_t unblock_at_removal;
+	sigemptyset(&unblock_at_removal);
+
 	/* A signal a SignalHandle is watched for stays blocked, or its source would miss it */
 	if (how != SIG_BLOCK) {
 		sigset_t watched;
@@ -1049,8 +1062,16 @@ PHP_FUNCTION(pcntl_sigprocmask)
 				continue;
 			}
 			if (how == SIG_UNBLOCK) {
+				if (sigismember(&set, signo) == 1) {
+					sigaddset(&unblock_at_removal, signo);
+				}
+
 				sigdelset(&set, signo);
 			} else {
+				if (sigismember(&set, signo) == 0) {
+					sigaddset(&unblock_at_removal, signo);
+				}
+
 				sigaddset(&set, signo);
 			}
 		}
@@ -1060,6 +1081,13 @@ PHP_FUNCTION(pcntl_sigprocmask)
 		PCNTL_G(last_error) = errno;
 		php_error_docref(NULL, E_WARNING, "%s", strerror(errno));
 		RETURN_FALSE;
+	}
+
+	/* A watched signal the script unblocks is unblocked at the last removal; blocking it again takes
+	 * that back */
+	php_io_poll_signal_unblock_at_removal(&unblock_at_removal);
+	if (how != SIG_UNBLOCK) {
+		php_io_poll_signal_keep_blocked_at_removal(&requested);
 	}
 
 	if (user_old_set != NULL) {
