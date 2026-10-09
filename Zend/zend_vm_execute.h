@@ -3210,6 +3210,8 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL zend_dispatch_try
 				zval *return_value = EX_VAR(EX(func)->op_array.opcodes[Z_OPLINE_NUM_P(fast_call)].op2.var);
 
 				zval_ptr_dtor(return_value);
+				/* A destructor may have replaced the exception and released the old one. */
+				ex = EG(exception);
 			}
 
 			/* Chain potential exception from wrapping finally block */
