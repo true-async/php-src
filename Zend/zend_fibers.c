@@ -1071,6 +1071,9 @@ ZEND_METHOD(Fiber, getReturn)
 			message = "The fiber threw an exception";
 		} else if (fiber->flags & ZEND_FIBER_FLAG_BAILOUT) {
 			message = "The fiber exited with a fatal error";
+		} else if (Z_ISUNDEF(fiber->result)) {
+			/* Destroyed while suspended, then kept alive. */
+			message = "The fiber was destroyed";
 		} else {
 			RETURN_COPY_DEREF(&fiber->result);
 		}
