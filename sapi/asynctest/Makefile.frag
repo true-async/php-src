@@ -13,3 +13,6 @@ sapi/asynctest/tests/test-listen_pause: $(PHP_GLOBAL_OBJS) $(PHP_SAPI_OBJS) $(PH
 
 sapi/asynctest/tests/test-write_resubmit: $(PHP_GLOBAL_OBJS) $(PHP_SAPI_OBJS) $(PHP_ASYNCTEST_WRITE_RESUBMIT_OBJS)
 	$(ASYNCTEST_BUILD) $(PHP_ASYNCTEST_WRITE_RESUBMIT_OBJS) -o $@
+
+sapi/asynctest/tests/test-write_refused: $(PHP_GLOBAL_OBJS) $(PHP_SAPI_OBJS) $(PHP_ASYNCTEST_WRITE_REFUSED_OBJS)
+	$(ASYNCTEST_BUILD) $(PHP_ASYNCTEST_WRITE_REFUSED_OBJS) -o $@
