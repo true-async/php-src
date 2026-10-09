@@ -431,6 +431,25 @@ static zend_always_inline bool zend_fiber_switch_refused(void)
 	return zend_fiber_switch_blocked() || (ZEND_ASYNC_ON && ZEND_ASYNC_IN_SCHEDULER_CONTEXT);
 }
 
+/* A fiber run as a coroutine is resumed through the scheduler, and the current
+ * coroutine waits for it. Once the scheduler has stopped (its last pass, then
+ * the core turning async off before the output handlers), nothing runs the
+ * fiber again; a finished coroutine has no context to wait in. */
+static const char *zend_fiber_coroutine_resume_refusal(void)
+{
+	if (UNEXPECTED(!ZEND_ASYNC_IS_ACTIVE)) {
+		return "Cannot resume a fiber after the scheduler has stopped";
+	}
+
+	const zend_coroutine_t *caller = ZEND_ASYNC_CURRENT_COROUTINE;
+
+	if (UNEXPECTED(caller == NULL || ZEND_COROUTINE_IS_FINISHED(caller))) {
+		return "Cannot switch fibers in current execution context";
+	}
+
+	return NULL;
+}
+
 ZEND_API zend_result zend_fiber_init_context(zend_fiber_context *context, void *kind, zend_fiber_coroutine coroutine, size_t stack_size)
 {
 	context->stack = zend_fiber_stack_allocate(stack_size);
@@ -1200,6 +1219,14 @@ static void zend_fiber_object_destroy(zend_object *object)
 	 * it. The legacy path below never applies (fiber->context uninitialized). */
 	if (fiber->coroutine != NULL) {
 		fiber->flags |= ZEND_FIBER_FLAG_DESTROYED;
+
+		/* Detached from its coroutine, a fiber parked in Fiber::suspend() is
+		 * dead, as the legacy path below leaves it: a destructor may keep the
+		 * object, and the legacy methods have no context to resume. */
+		if (fiber->context.status == ZEND_FIBER_STATUS_SUSPENDED) {
+			fiber->context.status = ZEND_FIBER_STATUS_DEAD;
+		}
+
 		zend_fiber_release_coroutine(fiber, true);
 		return;
 	}
@@ -1545,6 +1572,13 @@ ZEND_METHOD(Fiber, resume)
 	}
 
 	if (fiber->coroutine != NULL) {
+		const char *refusal = zend_fiber_coroutine_resume_refusal();
+
+		if (UNEXPECTED(refusal != NULL)) {
+			zend_throw_error(zend_ce_fiber_error, "%s", refusal);
+			RETURN_THROWS();
+		}
+
 		if (value != NULL) {
 			ZVAL_COPY(&fiber->transfer, value);
 		} else {
@@ -1588,6 +1622,13 @@ ZEND_METHOD(Fiber, throw)
 	}
 
 	if (fiber->coroutine != NULL) {
+		const char *refusal = zend_fiber_coroutine_resume_refusal();
+
+		if (UNEXPECTED(refusal != NULL)) {
+			zend_throw_error(zend_ce_fiber_error, "%s", refusal);
+			RETURN_THROWS();
+		}
+
 		if (UNEXPECTED(!ZEND_ASYNC_ENQUEUE_WITH_ERROR(fiber->coroutine, Z_OBJ_P(exception), false))
 			|| UNEXPECTED(zend_fiber_await(fiber, return_value) == FAILURE)) {
 			RETURN_THROWS();
