@@ -1657,7 +1657,11 @@ static pid_t async_waitpid(pid_t pid, int *status, int options)
 {
 	zend_long process_status = async_wait_process((zend_process_t) pid, 0);
 
-	*status = (int) process_status;
+	/* async_wait_process() returns a decoded exit code, or -signal / -1, while callers decode
+	 * *status with WIFEXITED()/WEXITSTATUS(); an exit code is therefore re-encoded as a raw wait
+	 * status. Negative values are never WIFEXITED, so proc_open_rsrc_dtor() passes them through
+	 * and proc_close() keeps its -signal result. */
+	*status = process_status >= 0 ? (int) ((process_status & 0xff) << 8) : (int) process_status;
 
 	if (EG(exception) != NULL) {
 		return -1;
