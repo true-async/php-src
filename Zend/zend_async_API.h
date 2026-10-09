@@ -128,11 +128,11 @@ typedef enum {
  * hands over a copy of its own and lives with two file descriptions. */
 #define ZEND_ASYNC_IO_PRESERVE_FD (1 << 5)
 #define ZEND_ASYNC_IO_OWNS_FD     (1 << 6) /* reactor owns crt_fd and must close it on dispose */
-/* A write on this handle completed with an error. The reactor sets it and
+/* A write on this stream handle completed with an error or was refused at
+ * submit. The reactor sets it before the caller's buffer is handed back and
  * never clears it, which is the only report a consumer gets for a write it did
- * not await: the completion of such a write carries no status. It says
- * nothing about the read side — a peer that shut its write half down keeps
- * reading. */
+ * not await: the completion of such a write carries no status. It says nothing
+ * about the read side — a peer that shut its write half down keeps reading. */
 #define ZEND_ASYNC_IO_WRITE_FAILED (1 << 7)
 
 typedef struct _zend_async_io_s zend_async_io_t;
