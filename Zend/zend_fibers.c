@@ -613,9 +613,7 @@ static ZEND_STACK_ALIGNED void zend_fiber_execute(zend_fiber_transfer *transfer)
 		ZVAL_UNDEF(&fiber->fci.function_name);
 
 		if (EG(exception)) {
-			if (!(fiber->flags & ZEND_FIBER_FLAG_DESTROYED)
-				|| !(zend_is_graceful_exit(EG(exception)) || zend_is_unwind_exit(EG(exception)))
-			) {
+			if (!(fiber->flags & ZEND_FIBER_FLAG_DESTROYED) || !zend_is_graceful_exit(EG(exception))) {
 				fiber->flags |= ZEND_FIBER_FLAG_THREW;
 				transfer->flags = ZEND_FIBER_TRANSFER_FLAG_ERROR;
 
@@ -794,7 +792,14 @@ static void zend_fiber_object_destroy(zend_object *object)
 			zend_rethrow_exception(EG(current_execute_data));
 		}
 
-		zend_exception_set_previous(EG(exception), exception);
+		if (zend_is_unwind_exit(EG(exception))) {
+			/* exit() in the fiber ends the script, so the pending exception is dropped. */
+			if (exception) {
+				OBJ_RELEASE(exception);
+			}
+		} else {
+			zend_exception_set_previous(EG(exception), exception);
+		}
 
 		if (!EG(current_execute_data)) {
 			zend_exception_error(EG(exception), E_ERROR);

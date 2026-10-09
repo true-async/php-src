@@ -8094,6 +8094,8 @@ ZEND_VM_HELPER(zend_dispatch_try_catch_finally_helper, ANY, ANY, uint32_t try_ca
 				zval *return_value = EX_VAR(EX(func)->op_array.opcodes[Z_OPLINE_NUM_P(fast_call)].op2.var);
 
 				zval_ptr_dtor(return_value);
+				/* A destructor may have replaced the exception and released the old one. */
+				ex = EG(exception);
 			}
 
 			/* Chain potential exception from wrapping finally block */
