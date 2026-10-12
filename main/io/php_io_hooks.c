@@ -1525,6 +1525,8 @@ PHPAPI php_socket_t php_io_accept(php_stream *stream, php_socket_t fd, struct so
 # define PHP_IO_CONNECT_PENDING(err) ((err) == EINPROGRESS || (err) == EALREADY)
 #endif
 
+/* The connect is started once; the wait completes as Ready and the result
+ * is read from SO_ERROR, or as Done when the provider connected itself */
 PHPAPI int php_io_connect_ex(php_stream *stream, zend_object *handle, php_socket_t fd,
 		const struct sockaddr *addr, socklen_t addrlen, php_deadline *dl)
 {
@@ -1568,7 +1570,9 @@ PHPAPI int php_io_connect_ex(php_stream *stream, zend_object *handle, php_socket
 			break;
 		}
 		if (started && result.status == PHP_IO_DONE && result.error == EALREADY) {
-			/* A provider that ignores the flag connected again and found ours under way */
+			/* A provider that performs the op found our connect still under
+			 * way: wait for its outcome like after a readiness report */
+			/* Only one that ignores PHP_IO_OP_F_CONNECT_STARTED connects again */
 			php_io_op_poll(&op, handle, fd, PHP_POLL_WRITE, *dl);
 			op.stream = stream;
 			if (php_io_op_register_wait(&op, stream, PHP_POLL_WRITE) == FAILURE
@@ -1584,8 +1588,10 @@ PHPAPI int php_io_connect_ex(php_stream *stream, zend_object *handle, php_socket
 			}
 			result.status = PHP_IO_READY;
 		}
-		/* Done without an error or with EISCONN: the connect finished (a provider that connected
-		 * again, or answered as a Poll); SO_ERROR has its outcome */
+		/* A provider that performs the op connects a socket whose connect
+		 * we started already: EISCONN then means it completed meanwhile
+		 * and the outcome is in SO_ERROR, as after a readiness report */
+		/* Done without an error is the same: a provider that answered the op as a Poll */
 		if (started && (result.status == PHP_IO_READY
 				|| (result.status == PHP_IO_DONE && (result.error == 0 || result.error == EISCONN)))) {
 			int error = 0;
@@ -1604,7 +1610,8 @@ PHPAPI int php_io_connect_ex(php_stream *stream, zend_object *handle, php_socket
 			continue;
 		}
 		if (!started && (result.status == PHP_IO_READY || result.status == PHP_IO_UNSUPPORTED)) {
-			/* The provider only waited, or does not connect */
+			/* The provider only waited, or does not connect: start it
+			 * ourselves and wait for writability */
 			if (connect(fd, addr, addrlen) == 0) {
 				break;
 			}
