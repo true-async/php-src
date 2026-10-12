@@ -199,6 +199,16 @@ void _php_curl_verify_handlers(php_curl *ch, bool reporterror) /* {{{ */
 }
 /* }}} */
 
+/* fclose() frees the FILE* a handler keeps whatever references the handle
+ * holds; under IO hooks another fiber may close it while curl_exec() waits.
+ * A closed one fails the transfer without running PHP code inside libcurl,
+ * and curl_exec() reports it once libcurl returned */
+static bool php_curl_stream_closed(zval *stream)
+{
+	return Z_TYPE_P(stream) == IS_RESOURCE
+		&& zend_fetch_resource2_ex(stream, NULL, php_file_le_stream(), php_file_le_pstream()) == NULL;
+}
+
 /* {{{ curl_module_entry */
 static const zend_module_dep curl_deps[] = {
 	ZEND_MOD_REQUIRED("standard")
@@ -614,6 +624,10 @@ static size_t curl_write(char *data, size_t size, size_t nmemb, void *ctx)
 			PHPWRITE(data, length);
 			break;
 		case PHP_CURL_FILE:
+			if (UNEXPECTED(php_curl_stream_closed(&write_handler->stream))) {
+				return 0;
+			}
+
 			return fwrite(data, size, nmemb, write_handler->fp);
 		case PHP_CURL_RETURN:
 			if (length > 0) {
@@ -863,6 +877,10 @@ static size_t curl_read(char *data, size_t size, size_t nmemb, void *ctx)
 
 	switch (read_handler->method) {
 		case PHP_CURL_DIRECT:
+			if (UNEXPECTED(php_curl_stream_closed(&read_handler->stream))) {
+				return CURL_READFUNC_ABORT;
+			}
+
 			if (read_handler->fp) {
 				length = fread(data, size, nmemb, read_handler->fp);
 			}
@@ -978,6 +996,10 @@ static size_t curl_write_header(char *data, size_t size, size_t nmemb, void *ctx
 			}
 			break;
 		case PHP_CURL_FILE:
+			if (UNEXPECTED(php_curl_stream_closed(&write_handler->stream))) {
+				return 0;
+			}
+
 			return fwrite(data, size, nmemb, write_handler->fp);
 		case PHP_CURL_USER: {
 			zval argv[2];
@@ -2586,8 +2608,9 @@ static bool php_curl_socket_rethrow_remove_exception(php_curl *ch)
 	return true;
 }
 
-/* CURLMOPT_SOCKETFUNCTION: bookkeeping, and on CURL_POLL_REMOVE the end of the
- * socket's registrations: libcurl may close the socket right after. */
+/* CURLMOPT_SOCKETFUNCTION: bookkeeping only, never a provider call. On
+ * CURL_POLL_REMOVE the handle is invalidated here, inside the callback,
+ * because libcurl closes the socket right after. */
 static int php_curl_socket_callback(CURL *easy, curl_socket_t s, int what, void *userp, void *socketp)
 {
 	php_curl *ch = (php_curl *)userp;
@@ -2641,9 +2664,9 @@ static uint32_t php_curl_what_to_events(int what)
 }
 
 /* The reconcile step: after libcurl returned, turn the table into provider
- * calls. Entries libcurl removed are freed, a direction newly wanted is
- * registered as Level and one dropped is unregistered. Runs outside libcurl
- * so a provider's add() or remove() may throw. */
+ * calls. Entries libcurl removed end their registrations, a direction newly
+ * wanted is registered as Level and one dropped is unregistered. Runs outside
+ * libcurl so a provider's add() or remove() may throw. */
 static zend_result php_curl_socket_reconcile(php_curl *ch)
 {
 	/* An exception a curl callback left pending does not stop the transfer */
@@ -2808,6 +2831,13 @@ static CURLcode php_curl_exec_multi(php_curl *ch)
 		zend_result rc = php_io_run(&any, &any_result);
 		ch->in_exec = false;
 
+		/* libcurl writes the FILE* of CURLOPT_STDERR itself, even while it
+		 * removes a cancelled transfer: a stream closed during the wait is
+		 * replaced without running PHP code */
+		if (php_curl_stream_closed(&ch->handlers.std_err)) {
+			curl_easy_setopt(ch->cp, CURLOPT_STDERR, stderr);
+		}
+
 		if (rc == FAILURE) {
 			/* Cancelled or the provider threw: the transfer did not finish */
 			result = CURLE_ABORTED_BY_CALLBACK;
@@ -2910,6 +2940,8 @@ PHP_FUNCTION(curl_exec)
 	SAVE_CURL_ERROR(ch, error);
 
 	if (error != CURLE_OK) {
+		/* A stream closed during the transfer failed it */
+		_php_curl_verify_handlers(ch, /* reporterror */ true);
 		smart_str_free(&ch->handlers.write->buf);
 		RETURN_FALSE;
 	}
