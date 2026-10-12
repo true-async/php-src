@@ -23,6 +23,9 @@
 # include <unistd.h>
 # include <sys/wait.h>
 #endif
+#ifdef __linux__
+# include <pthread.h>
+#endif
 #if defined(HAVE_FDATASYNC) && defined(__APPLE__)
 /* The symbol is present, the headers do not declare it */
 extern int fdatasync(int);
@@ -193,11 +196,42 @@ static void php_io_ring_list_remove(php_io_ring_req **list, uint32_t *n, php_io_
 
 ZEND_TLS php_io_ring *php_io_rings = NULL;
 
+#ifdef __linux__
+/* getpid() is a system call (glibc caches nothing since 2.25) and every op
+ * checks its ring's owner: the pid is kept, refreshed by fork() in the child.
+ * Elsewhere a fork may run no atfork handler (FreeBSD's rfork()), so getpid()
+ * stays */
+static pid_t php_io_ring_pid;
+static bool php_io_ring_pid_kept;
+static pthread_once_t php_io_ring_pid_once = PTHREAD_ONCE_INIT;
+
+static void php_io_ring_pid_refresh(void)
+{
+	php_io_ring_pid = getpid();
+}
+
+static void php_io_ring_pid_init(void)
+{
+	php_io_ring_pid_refresh();
+	php_io_ring_pid_kept = pthread_atfork(NULL, NULL, php_io_ring_pid_refresh) == 0;
+}
+#endif
+
+static zend_always_inline pid_t php_io_ring_current_pid(void)
+{
+#ifdef __linux__
+	if (EXPECTED(php_io_ring_pid_kept)) {
+		return php_io_ring_pid;
+	}
+#endif
+	return getpid();
+}
+
 /* Inherited across fork: the kernel ring is shared with the parent and the
  * worker threads do not exist here, so ior drops the child's copy */
 static bool php_io_ring_foreign(php_io_ring *ring)
 {
-	if (EXPECTED(ring->owner_pid == getpid())) {
+	if (EXPECTED(ring->owner_pid == php_io_ring_current_pid())) {
 		return false;
 	}
 #ifndef PHP_WIN32
@@ -249,7 +283,10 @@ PHPAPI php_io_ring *php_io_ring_create(uint32_t entries, bool fd_nonblock)
 	php_io_rings = ring;
 	ring->ctx = ctx;
 	ring->features = params.features;
-	ring->owner_pid = getpid();
+#ifdef __linux__
+	pthread_once(&php_io_ring_pid_once, php_io_ring_pid_init);
+#endif
+	ring->owner_pid = php_io_ring_current_pid();
 	ring->fd_nonblock = fd_nonblock;
 	ring->cqes_cap = 64;
 	ring->cqes = safe_emalloc(ring->cqes_cap, sizeof(*ring->cqes), 0);
