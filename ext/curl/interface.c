@@ -2586,8 +2586,9 @@ static bool php_curl_socket_rethrow_remove_exception(php_curl *ch)
 	return true;
 }
 
-/* CURLMOPT_SOCKETFUNCTION: bookkeeping, and on CURL_POLL_REMOVE the end of the
- * socket's registrations: libcurl may close the socket right after. */
+/* CURLMOPT_SOCKETFUNCTION: bookkeeping only, never a provider call. On
+ * CURL_POLL_REMOVE the handle is invalidated here, inside the callback,
+ * because libcurl closes the socket right after. */
 static int php_curl_socket_callback(CURL *easy, curl_socket_t s, int what, void *userp, void *socketp)
 {
 	php_curl *ch = (php_curl *)userp;
@@ -2641,9 +2642,9 @@ static uint32_t php_curl_what_to_events(int what)
 }
 
 /* The reconcile step: after libcurl returned, turn the table into provider
- * calls. Entries libcurl removed are freed, a direction newly wanted is
- * registered as Level and one dropped is unregistered. Runs outside libcurl
- * so a provider's add() or remove() may throw. */
+ * calls. Entries libcurl removed end their registrations, a direction newly
+ * wanted is registered as Level and one dropped is unregistered. Runs outside
+ * libcurl so a provider's add() or remove() may throw. */
 static zend_result php_curl_socket_reconcile(php_curl *ch)
 {
 	/* An exception a curl callback left pending does not stop the transfer */
