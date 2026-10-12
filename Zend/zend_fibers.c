@@ -853,6 +853,22 @@ static void zend_fiber_release_coroutine(zend_fiber *fiber, bool cancel_unfinish
 	ZEND_COROUTINE_RELEASE(coroutine);
 }
 
+/* The body has ended: a fiber its destructor kept for it (zend_fiber_keep_until_body_ends)
+ * goes now. Unlinked first, so that its free does not cancel this coroutine, which is still
+ * running. */
+static void zend_fiber_release_held(zend_fiber *fiber)
+{
+	if (EXPECTED(fiber == NULL || !(fiber->flags & ZEND_FIBER_FLAG_HELD_BY_BODY))) {
+		return;
+	}
+
+	fiber->flags &= ~ZEND_FIBER_FLAG_HELD_BY_BODY;
+	zend_fiber_release_coroutine(fiber, false);
+	OBJ_RELEASE(&fiber->std);
+}
+
+static void zend_fiber_coroutine_hand_back(zend_coroutine_t *coroutine, zend_fiber *fiber);
+
 static void zend_fiber_coroutine_entry(void)
 {
 	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
@@ -906,6 +922,7 @@ static void zend_fiber_coroutine_entry(void)
 			fiber->handoff_coroutine = NULL;
 		}
 
+		zend_fiber_release_held(fiber);
 		zend_bailout();
 	}
 
@@ -913,6 +930,14 @@ static void zend_fiber_coroutine_entry(void)
 	 * the coroutine that owns the body, not the object. */
 	fiber = coroutine->extended_data;
 
+	zend_fiber_coroutine_hand_back(coroutine, fiber);
+	zend_fiber_release_held(fiber);
+}
+
+/* The body's outcome goes to the fiber and to the coroutine waiting in start(),
+ * resume() or throw(), if any. */
+static void zend_fiber_coroutine_hand_back(zend_coroutine_t *coroutine, zend_fiber *fiber)
+{
 	zend_coroutine_t *caller = NULL;
 
 	if (fiber != NULL) {
@@ -964,7 +989,21 @@ static void zend_fiber_coroutine_entry(void)
 		GC_ADDREF(exception);
 		zend_clear_exception();
 
-		ZEND_ASYNC_ENQUEUE_WITH_ERROR(caller, exception, true);
+		/* A refused wake leaves the body's error to the coroutine, under the
+		 * refusal, as when nobody is waiting. An exit stays the coroutine's
+		 * own: chained, it would be dropped and the exit lost. */
+		if (UNEXPECTED(!ZEND_ASYNC_ENQUEUE_WITH_ERROR(caller, exception, false))) {
+			if (UNEXPECTED(zend_is_unwind_exit(exception) || zend_is_graceful_exit(exception))) {
+				OBJ_RELEASE(EG(exception));
+				EG(exception) = exception;
+			} else {
+				zend_exception_set_previous(EG(exception), exception);
+			}
+
+			return;
+		}
+
+		OBJ_RELEASE(exception);
 		return;
 	}
 
@@ -983,6 +1022,14 @@ static void zend_fiber_coroutine_yield(zend_fiber *fiber, zval *value, zval *ret
 	 * accepted. A body its cancellation ran meanwhile yields to nobody and
 	 * leaves that value alone. */
 	zend_coroutine_t *caller = fiber->caller_coroutine;
+
+	/* Refused, the wake throws here and the body goes on instead of parking
+	 * with the error pending, which the next coroutine to run would meet. The
+	 * caller stays parked until the body yields or ends again. */
+	if (EXPECTED(caller != NULL) && UNEXPECTED(!ZEND_ASYNC_ENQUEUE_COROUTINE(caller))) {
+		return;
+	}
+
 	zval untaken;
 
 	ZVAL_UNDEF(&untaken);
@@ -1006,10 +1053,6 @@ static void zend_fiber_coroutine_yield(zend_fiber *fiber, zval *value, zval *ret
 	 * in between, and it must end at our own root frame. */
 	if (fiber->stack_bottom != NULL) {
 		fiber->stack_bottom->prev_execute_data = NULL;
-	}
-
-	if (caller != NULL) {
-		ZEND_ASYNC_ENQUEUE_COROUTINE(caller);
 	}
 
 	zval_ptr_dtor(&untaken);
@@ -1209,13 +1252,23 @@ static void zend_fiber_coroutine_start(zend_fiber *fiber, zval *return_value)
 
 	fiber->coroutine->fcall = fcall;
 
-	if (UNEXPECTED(!ZEND_ASYNC_ENQUEUE_COROUTINE(fiber->coroutine))) {
+	/* Without the handler a body cancelled before it runs would leave this
+	 * caller parked for good: a refused one fails the start, as a refused
+	 * enqueue does. */
+	fiber->start_handler_id =
+			ZEND_ASYNC_ADD_FINISH_HANDLER(fiber->coroutine, zend_fiber_coroutine_finished, NULL, NULL);
+
+	if (UNEXPECTED(fiber->start_handler_id == 0)) {
+		zend_throw_error(zend_ce_fiber_error, "Cannot start the fiber: the scheduler refused to report its end");
+	}
+
+	if (UNEXPECTED(fiber->start_handler_id == 0 || !ZEND_ASYNC_ENQUEUE_COROUTINE(fiber->coroutine))) {
+		ZEND_ASYNC_REMOVE_FINISH_HANDLER(fiber->coroutine, fiber->start_handler_id);
+		fiber->start_handler_id = 0;
 		zend_fiber_release_coroutine(fiber, false);
 		return;
 	}
 
-	fiber->start_handler_id =
-			ZEND_ASYNC_ADD_FINISH_HANDLER(fiber->coroutine, zend_fiber_coroutine_finished, NULL, NULL);
 	zend_fiber_await(fiber, return_value);
 }
 
@@ -1276,20 +1329,6 @@ static zend_object *zend_fiber_object_create(zend_class_entry *ce)
 	return &fiber->std;
 }
 
-static bool zend_fiber_release_after_body(
-		zend_coroutine_t *coroutine, zend_coroutine_t *waiter, void *data, bool is_bailout)
-{
-	(void) coroutine;
-	(void) waiter;
-	(void) is_bailout;
-
-	zend_fiber *const fiber = data;
-
-	OBJ_RELEASE(&fiber->std);
-
-	return false;
-}
-
 /* A body parked outside Fiber::suspend() (an await, a delay), or running on
  * this very stack, saved EG(active_fiber) pointing at the fiber, and gets it
  * back on its next switch in. The object outlives the destructor until the
@@ -1303,10 +1342,9 @@ static bool zend_fiber_keep_until_body_ends(zend_fiber *fiber)
 		return false;
 	}
 
-	if (UNEXPECTED(ZEND_ASYNC_ADD_FINISH_HANDLER(coroutine, zend_fiber_release_after_body, NULL, fiber) == 0)) {
-		return false;
-	}
-
+	/* zend_fiber_release_held() at the body's end lets it go: no handler the
+	 * scheduler could refuse. */
+	fiber->flags |= ZEND_FIBER_FLAG_HELD_BY_BODY;
 	GC_ADDREF(&fiber->std);
 
 	/* The scheduler cancels the running coroutine only from its own tick. */

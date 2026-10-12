@@ -715,6 +715,54 @@ static void gc_adjust_threshold(int count)
 	}
 }
 
+/* zend_objects_destroy_object()'s hold of a pending exception, without its
+ * move of the frame back to the throwing opline: nothing runs on this stack
+ * meanwhile, and the GC's TMPVAR walks would take the live ranges an unwind
+ * already freed as live. The cost: on the exception op the walks skip the
+ * frame, so a TMPVAR it still holds is not shielded from the run, and a
+ * cycle only it kept waits for the request's end. */
+static void gc_hold_exception(const zend_op **opline_before_exception)
+{
+	zend_execute_data *const execute_data = EG(current_execute_data);
+
+	if (EXPECTED(execute_data != NULL)) {
+		if (EXPECTED(execute_data->func != NULL && ZEND_USER_CODE(execute_data->func->common.type))) {
+			zend_rethrow_exception(execute_data);
+		}
+
+		*opline_before_exception = EG(opline_before_exception);
+	}
+
+	EG(exception) = NULL;
+}
+
+/* A delivered error (a cancellation of the waiting coroutine) is thrown over
+ * the held exception. An exit wins either way: it ends the request whatever
+ * else is pending, and an exit marker carries no $previous. */
+static void gc_restore_exception(zend_object *exception, const zend_op *opline_before_exception)
+{
+	zend_execute_data *const execute_data = EG(current_execute_data);
+
+	if (EXPECTED(execute_data != NULL)) {
+		if (EXPECTED(execute_data->func != NULL && ZEND_USER_CODE(execute_data->func->common.type))) {
+			execute_data->opline = EG(exception_op);
+		}
+
+		EG(opline_before_exception) = opline_before_exception;
+	}
+
+	if (EXPECTED(EG(exception) == NULL)) {
+		EG(exception) = exception;
+	} else if (UNEXPECTED(zend_is_unwind_exit(exception) || zend_is_graceful_exit(exception))) {
+		OBJ_RELEASE(EG(exception));
+		EG(exception) = exception;
+	} else if (UNEXPECTED(zend_is_unwind_exit(EG(exception)) || zend_is_graceful_exit(EG(exception)))) {
+		OBJ_RELEASE(exception);
+	} else {
+		zend_exception_set_previous(EG(exception), exception);
+	}
+}
+
 /* Perform a GC run and then add a node as a possible root. */
 static zend_never_inline void ZEND_FASTCALL gc_possible_root_when_full(zend_refcounted *ref)
 {
@@ -731,12 +779,31 @@ static zend_never_inline void ZEND_FASTCALL gc_possible_root_when_full(zend_refc
 			 * would add a step each: the GC coroutine adjusts once, after the run.
 			 * Set before the call, as the run reads it before the await returns. */
 			GC_G(adjust_threshold) = true;
+
+			/* An unwind may have dropped the reference, and the run parks this
+			 * frame: the exception and its throw position are held across it,
+			 * as zend_objects_destroy_object() holds them across a destructor,
+			 * or the code that runs meanwhile overwrites the position. */
+			zend_object *const held_exception = EG(exception);
+			const zend_op *held_opline_before_exception = NULL;
+
+			if (UNEXPECTED(held_exception != NULL)) {
+				gc_hold_exception(&held_opline_before_exception);
+			}
+
 			const int count = gc_collect_cycles();
 
-			/* No GC coroutine took the step: it could not be created. */
+			/* No GC coroutine took the step: it could not be created. The
+			 * refusal's error belongs to no caller, as this code only dropped
+			 * a reference. */
 			if (UNEXPECTED(GC_G(adjust_threshold) && GC_G(gc_coroutine) == NULL)) {
 				GC_G(adjust_threshold) = false;
+				zend_clear_exception();
 				gc_adjust_threshold(count);
+			}
+
+			if (UNEXPECTED(held_exception != NULL)) {
+				gc_restore_exception(held_exception, held_opline_before_exception);
 			}
 		} else {
 			gc_adjust_threshold(gc_collect_cycles());
@@ -2088,8 +2155,14 @@ static bool gc_destructors_finish_handler(
 	if (GC_G(dtor_pending) == 0) {
 		GC_G(dtor_coroutine) = NULL;
 
-		if (!is_bailout && GC_G(gc_coroutine) != NULL) {
-			ZEND_ASYNC_ENQUEUE_COROUTINE(GC_G(gc_coroutine));
+		/* A refused wake's error belongs to no caller, as a refused
+		 * iterator's does. The GC coroutine stays parked inside its run, so
+		 * the collector is off for the rest of the request, and whoever waits
+		 * for the run stays parked: the scheduler reports a deadlock only
+		 * once nothing else can run. */
+		if (EXPECTED(!is_bailout && GC_G(gc_coroutine) != NULL)
+				&& UNEXPECTED(!ZEND_ASYNC_ENQUEUE_COROUTINE(GC_G(gc_coroutine)))) {
+			zend_clear_exception();
 		}
 	}
 
@@ -2123,8 +2196,11 @@ static void gc_arm_iterator_microtask(void)
 	GC_G(microtask)->is_cancelled = 0;
 	ZEND_ASYNC_MICROTASK_ADDREF(GC_G(microtask));
 
+	/* Refused, no hand-off: a destructor that waits holds up the rest until it
+	 * returns. The error belongs to no caller, as a refused iterator's. */
 	if (UNEXPECTED(!ZEND_ASYNC_DEFER(GC_G(microtask)))) {
 		ZEND_ASYNC_MICROTASK_RELEASE(GC_G(microtask));
+		zend_clear_exception();
 	}
 }
 
@@ -2166,8 +2242,6 @@ static zend_coroutine_t *gc_spawn_destructors_coroutine(void)
 	}
 
 	coroutine->internal_entry = gc_destructors_coroutine;
-	GC_G(dtor_coroutine) = coroutine;
-	GC_G(dtor_pending)++;
 
 	/* waiter is diagnostic only; the handler works off GC_G. */
 	const uint32_t handler_id = ZEND_ASYNC_ADD_FINISH_HANDLER(
@@ -2181,11 +2255,14 @@ static zend_coroutine_t *gc_spawn_destructors_coroutine(void)
 	 * the destructors wait for the next collection. */
 	if (UNEXPECTED(handler_id == 0 || !ZEND_ASYNC_ENQUEUE_COROUTINE(coroutine))) {
 		ZEND_ASYNC_REMOVE_FINISH_HANDLER(coroutine, handler_id);
-		GC_G(dtor_coroutine) = NULL;
-		GC_G(dtor_pending)--;
 		zend_clear_exception();
 		return NULL;
 	}
+
+	/* Set after the hand-off succeeds: a refused one leaves the parked
+	 * iterator in charge, the one that disarms the microtask when it ends. */
+	GC_G(dtor_coroutine) = coroutine;
+	GC_G(dtor_pending)++;
 
 	return coroutine;
 }
@@ -2301,8 +2378,16 @@ ZEND_API int zend_gc_collect_cycles(void)
 		 * scheduler's own work): start the run without waiting for it. It
 		 * collects when the scheduler next picks the GC coroutine. */
 		if (UNEXPECTED(zend_fiber_switch_blocked() || ZEND_ASYNC_IN_SCHEDULER_CONTEXT)) {
+			/* A refused run's error belongs to no caller here: left pending, it
+			 * would surface in the tick function or the scheduler's own work.
+			 * One that wraps an exception the caller had stays, or the clear
+			 * would take that exception with it. */
 			if (GC_G(gc_coroutine) == NULL) {
-				new_gc_coroutine();
+				const bool had_exception = EG(exception) != NULL;
+
+				if (UNEXPECTED(new_gc_coroutine() == NULL) && EXPECTED(!had_exception)) {
+					zend_clear_exception();
+				}
 			}
 
 			return 0;
@@ -2314,6 +2399,9 @@ ZEND_API int zend_gc_collect_cycles(void)
 
 		/* The run executes on the GC coroutine and cannot see this stack:
 		 * shield the caller's live TMPVARs from it for the duration. */
+		zend_execute_data *const frame = EG(current_execute_data);
+		const zend_op *const shielded_at = frame != NULL ? frame->opline : NULL;
+
 		if (GC_G(num_roots)) {
 			zend_gc_remove_root_tmpvars();
 		}
@@ -2337,7 +2425,19 @@ ZEND_API int zend_gc_collect_cycles(void)
 		 * it from here, and that run's release would start another. */
 		bool was_active = GC_G(gc_active);
 		GC_G(gc_active) = 1;
-		zend_gc_check_root_tmpvars();
+
+		/* A cancellation thrown at the await puts the frame on the exception
+		 * op, where the walk finds no live range: it walks where the shield
+		 * did. Nothing between the two frees a TMPVAR. With no frame there is
+		 * nothing to walk. */
+		if (EXPECTED(frame != NULL)) {
+			const zend_op *const resumed_at = frame->opline;
+
+			frame->opline = shielded_at;
+			zend_gc_check_root_tmpvars();
+			frame->opline = resumed_at;
+		}
+
 		ZEND_COROUTINE_RELEASE(run);
 		GC_G(gc_active) = was_active;
 
