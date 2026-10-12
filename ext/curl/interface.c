@@ -2829,9 +2829,8 @@ static CURLcode php_curl_exec_multi(php_curl *ch)
 		zend_result rc = php_io_run(&any, &any_result);
 		ch->in_exec = false;
 
-		/* libcurl writes the FILE* of CURLOPT_STDERR itself, even while it
-		 * removes a cancelled transfer: a stream closed during the wait is
-		 * replaced without running PHP code */
+		/* libcurl writes CURLOPT_STDERR's FILE* itself, even while it removes a
+		 * cancelled transfer: swap a closed one before libcurl runs again */
 		if (php_curl_stream_closed(&ch->handlers.std_err)) {
 			curl_easy_setopt(ch->cp, CURLOPT_STDERR, stderr);
 		}
