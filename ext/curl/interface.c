@@ -199,10 +199,8 @@ void _php_curl_verify_handlers(php_curl *ch, bool reporterror) /* {{{ */
 }
 /* }}} */
 
-/* fclose() frees the FILE* a handler keeps whatever references the handle
- * holds; under IO hooks another fiber may close it while curl_exec() waits.
- * A closed one fails the transfer without running PHP code inside libcurl,
- * and curl_exec() reports it once libcurl returned */
+/* fclose() frees the FILE* even while the handle holds the stream; under
+ * IO hooks another fiber may close it while curl_exec() waits */
 static bool php_curl_stream_closed(zval *stream)
 {
 	return Z_TYPE_P(stream) == IS_RESOURCE
@@ -1210,7 +1208,7 @@ void init_curl_handle(php_curl *ch)
 	ZVAL_UNDEF(&ch->postfields);
 	ch->io_sockets = NULL;
 	ch->io_removed = NULL;
-	ch->io_remove_exception = NULL;
+	ch->callback_exception = NULL;
 	php_deadline_init_infinite(&ch->io_timer);
 	ch->multi = NULL;
 	ch->in_exec = false;
@@ -2566,10 +2564,10 @@ static void php_curl_socket_entry_unregister(php_curl *ch, php_curl_socket_entry
 	if (thrown != NULL && !zend_is_unwind_exit(thrown) && !zend_is_graceful_exit(thrown)) {
 		GC_ADDREF(thrown);
 		zend_clear_exception();
-		if (ch->io_remove_exception) {
-			zend_exception_set_previous(thrown, ch->io_remove_exception);
+		if (ch->callback_exception) {
+			zend_exception_set_previous(thrown, ch->callback_exception);
 		}
-		ch->io_remove_exception = thrown;
+		ch->callback_exception = thrown;
 	}
 
 	if (pending) {
@@ -2595,15 +2593,15 @@ static void php_curl_socket_table_unregister(php_curl *ch)
 
 /* Throws the exception a remove() inside libcurl kept; a transfer that
  * completed in that same libcurl call keeps its result */
-static bool php_curl_socket_rethrow_remove_exception(php_curl *ch)
+static bool php_curl_rethrow_callback_exception(php_curl *ch)
 {
-	zend_object *thrown = ch->io_remove_exception;
+	zend_object *thrown = ch->callback_exception;
 
 	if (thrown == NULL) {
 		return false;
 	}
 
-	ch->io_remove_exception = NULL;
+	ch->callback_exception = NULL;
 	zend_throw_exception_internal(thrown);
 	return true;
 }
@@ -2672,7 +2670,7 @@ static zend_result php_curl_socket_reconcile(php_curl *ch)
 	/* An exception a curl callback left pending does not stop the transfer */
 	zend_object *pending = EG(exception);
 
-	if (php_curl_socket_rethrow_remove_exception(ch)) {
+	if (php_curl_rethrow_callback_exception(ch)) {
 		return FAILURE;
 	}
 
@@ -2715,9 +2713,9 @@ static zend_result php_curl_socket_reconcile(php_curl *ch)
 static void php_curl_socket_table_free(php_curl *ch)
 {
 	/* Left only by a bailout before the reconcile: the request has ended */
-	if (ch->io_remove_exception) {
-		OBJ_RELEASE(ch->io_remove_exception);
-		ch->io_remove_exception = NULL;
+	if (ch->callback_exception) {
+		OBJ_RELEASE(ch->callback_exception);
+		ch->callback_exception = NULL;
 	}
 	while (ch->io_removed) {
 		php_curl_socket_entry *e = ch->io_removed;
@@ -2831,9 +2829,8 @@ static CURLcode php_curl_exec_multi(php_curl *ch)
 		zend_result rc = php_io_run(&any, &any_result);
 		ch->in_exec = false;
 
-		/* libcurl writes the FILE* of CURLOPT_STDERR itself, even while it
-		 * removes a cancelled transfer: a stream closed during the wait is
-		 * replaced without running PHP code */
+		/* libcurl writes CURLOPT_STDERR's FILE* itself, even while it removes a
+		 * cancelled transfer: swap a closed one before libcurl runs again */
 		if (php_curl_stream_closed(&ch->handlers.std_err)) {
 			curl_easy_setopt(ch->cp, CURLOPT_STDERR, stderr);
 		}
