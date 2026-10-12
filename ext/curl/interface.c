@@ -199,10 +199,8 @@ void _php_curl_verify_handlers(php_curl *ch, bool reporterror) /* {{{ */
 }
 /* }}} */
 
-/* fclose() frees the FILE* a handler keeps whatever references the handle
- * holds; under IO hooks another fiber may close it while curl_exec() waits.
- * A closed one fails the transfer without running PHP code inside libcurl,
- * and curl_exec() reports it once libcurl returned */
+/* fclose() frees the FILE* even while the handle holds the stream; under
+ * IO hooks another fiber may close it while curl_exec() waits */
 static bool php_curl_stream_closed(zval *stream)
 {
 	return Z_TYPE_P(stream) == IS_RESOURCE
