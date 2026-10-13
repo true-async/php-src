@@ -14,7 +14,7 @@ Io\Hooks\set_hooks(new class implements Io\Hooks\Hooks {
     public function remove(Io\Registration $registration): void {}
     public function run(Io\Operation $op): Io\Completion {
         return match (true) {
-            $op instanceof Io\Operation\Connect => $op->completeReady($op->getEvents()),
+            $op instanceof Io\Operation\Connect, $op instanceof Io\Operation\Poll => $op->completeReady($op->getEvents()),
             $op instanceof Io\Operation\Send => $op->complete(Io\CompletionStatus::Unsupported),
             default => throw new RuntimeException("cancelled " . $op::class),
         };
