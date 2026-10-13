@@ -61,6 +61,4 @@ ServerClientTestCase::getInstance()->run($clientCode, $serverCode);
 --EXPECTF--
 
 Warning: stream_socket_client(): Failed to enable crypto in %s on line %d
-
-Warning: stream_socket_client(): Unable to connect to %s in %s on line %d
 Type error thrown: session_data must be an Openssl\Session instance
