@@ -2,7 +2,7 @@
 A pipe read with stream_set_timeout() returns the bytes already buffered without waiting
 --SKIPIF--
 <?php
-if (PHP_OS_FAMILY === 'Windows') die('skip a pipe read on Windows takes no timeout');
+if (PHP_OS_FAMILY === 'Windows') die('skip an anonymous pipe on Windows takes no timeout');
 if (!function_exists('proc_open')) die('skip no proc_open');
 ?>
 --FILE--
