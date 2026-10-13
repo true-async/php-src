@@ -201,7 +201,7 @@ PHPAPI int php_network_getaddresses(const char *host, int socktype, struct socka
 			}
 			*error_string = strpprintf(0, "php_network_getaddresses: getaddrinfo for %s failed: %s", host, gai_error);
 		}
-		if (!EG(exception)) {
+		if (EXPECTED(!EG(exception))) {
 			php_error_docref(NULL, E_WARNING, "php_network_getaddresses: getaddrinfo for %s failed: %s", host, gai_error);
 		}
 # ifdef PHP_WIN32
@@ -641,7 +641,7 @@ PHPAPI zend_result php_network_parse_network_address_with_port(const char *addr,
 
 	if (n == 0) {
 		if (errstr) {
-			if (!EG(exception)) {
+			if (EXPECTED(!EG(exception))) {
 				php_error_docref(NULL, E_WARNING, "Failed to resolve `%s': %s", tmp, ZSTR_VAL(errstr));
 			}
 			zend_string_release_ex(errstr, 0);
@@ -1092,8 +1092,8 @@ php_socket_t php_network_connect_socket_to_host_stream(php_stream *stream, php_s
 			*current = SOCK_ERR;
 		}
 
-		/* An exception from the connect's operation ends the attempts */
-		if (EG(exception)) {
+		/* No next address after an exception, e.g. a cancellation */
+		if (UNEXPECTED(EG(exception))) {
 			fatal = 1;
 		}
 

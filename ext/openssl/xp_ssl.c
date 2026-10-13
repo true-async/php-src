@@ -3197,8 +3197,8 @@ static int php_openssl_enable_crypto(php_stream *stream,
 				break;
 			}
 			retry = php_openssl_handle_ssl_error(stream, n, blocked);
-			if (sslsock->io_cancelled) {
-				/* The wait was cancelled behind a retry, which would spin to the deadline */
+			if (UNEXPECTED(sslsock->io_cancelled)) {
+				/* A cancelled wait comes back as a retry; retrying would spin until the deadline */
 				sslsock->deadline = NULL;
 				return -1;
 			}
@@ -3557,7 +3557,7 @@ static inline int php_openssl_tcp_sockop_accept(php_stream *stream, php_openssl_
 			if (php_stream_xport_crypto_setup(xparam->outputs.client, clisockdata->method,
 					sock->ctx ? stream : NULL) < 0 || php_stream_xport_crypto_enable(
 					xparam->outputs.client, 1) < 0) {
-				if (!EG(exception)) {
+				if (EXPECTED(!EG(exception))) {
 					php_stream_warn(stream, ProtocolError, "Failed to enable crypto");
 				}
 
@@ -3773,7 +3773,7 @@ static int php_openssl_sockop_set_option(php_stream *stream, int option, int val
 
 						if (php_stream_xport_crypto_setup(stream, sslsock->method, session_stream) < 0 ||
 								php_stream_xport_crypto_enable(stream, 1) < 0) {
-							if (!EG(exception)) {
+							if (EXPECTED(!EG(exception))) {
 								php_stream_warn(stream, ProtocolError, "Failed to enable crypto");
 							}
 							xparam->outputs.returncode = -1;
