@@ -23,8 +23,8 @@ try {
     echo $e->getMessage(), "\n";
 }
 Io\Hooks\set_hooks(null);
-/* Each attempt's own connect() reaches the listener whatever the provider does; the first one's
- * handshake may not complete before the socket is closed */
+/* Each attempt's connect() reaches the listener even when the provider throws, so a second attempt
+ * would show as a second connection; the first may close before it is accepted */
 $accepted = 0;
 while (@stream_socket_accept($server, 0.2)) {
     $accepted++;

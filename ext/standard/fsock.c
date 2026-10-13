@@ -117,7 +117,7 @@ static void php_fsockopen_stream(INTERNAL_FUNCTION_PARAMETERS, int persistent)
 	if (port > 0) {
 		efree(hostname);
 	}
-	if (stream == NULL && !EG(exception)) {
+	if (stream == NULL && EXPECTED(!EG(exception))) {
 		php_error_docref(NULL, E_WARNING, "Unable to connect to %s:" ZEND_LONG_FMT " (%s)", host, port, errstr == NULL ? "Unknown error" : ZSTR_VAL(errstr));
 	}
 
