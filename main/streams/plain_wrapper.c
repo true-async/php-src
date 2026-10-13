@@ -698,13 +698,53 @@ static ssize_t php_stdiop_read(php_stream *stream, char *buf, size_t count)
 #ifdef PHP_WIN32
 		if (data->is_overlapped_pipe) {
 			php_deadline deadline;
+			data->timeout_event = 0;
 			if (data->overlapped_pipe_nonblock) {
 				php_deadline_init_nonblock(&deadline);
 			} else {
 				php_deadline_init_infinite(&deadline);
 			}
 
-			ret = php_io_pipe_read(stream, data->fd, buf, PLAIN_WRAP_BUF_SIZE(count), &deadline, data->is_handed_out);
+			if (data->timeout_set && !data->overlapped_pipe_nonblock) {
+				/* As on Unix: wait for data up to the timeout, then read only what is there, since a READ
+				 * op cancelled at the timeout could lose the bytes it took; with data already buffered or
+				 * a zero timeout only look */
+				const bool dont_wait = stream->has_buffered_data
+						|| (data->timeout.tv_sec == 0 && data->timeout.tv_usec == 0);
+				php_deadline wait_until = php_io_deadline_from_timeval(&data->timeout);
+				php_deadline_init_nonblock(&deadline);
+				for (;;) {
+					int revents = PHP_POLL_READ;
+					if (!dont_wait) {
+						revents = php_io_pipe_poll(stream, data->fd, &wait_until, data->is_handed_out);
+					}
+
+					if (revents == 0) {
+						data->timeout_event = 1;
+						return -1;
+					}
+
+					if (UNEXPECTED(revents < 0) && (errno == EINTR || errno == ECANCELED)) {
+						return -1;
+					}
+
+					ret = php_io_pipe_read(stream, data->fd, buf, PLAIN_WRAP_BUF_SIZE(count), &deadline,
+							data->is_handed_out);
+					/* EAGAIN after a readiness: another process took the bytes, or the provider woke early */
+					if (dont_wait || revents < 0 || ret >= 0 || errno != EAGAIN) {
+						break;
+					}
+
+					if (!php_deadline_is_infinite(&wait_until)
+							&& php_io_deadline_remaining(&wait_until, zend_hrtime()) == 0) {
+						data->timeout_event = 1;
+						return -1;
+					}
+				}
+			} else {
+				ret = php_io_pipe_read(stream, data->fd, buf, PLAIN_WRAP_BUF_SIZE(count), &deadline,
+						data->is_handed_out);
+			}
 		} else if (data->is_overlapped) {
 			php_deadline deadline;
 			php_deadline_init_infinite(&deadline);
@@ -1120,19 +1160,22 @@ static int php_stdiop_set_option(php_stream *stream, int option, int value, void
 
 		case PHP_STREAM_OPTION_READ_TIMEOUT:
 #ifdef PHP_WIN32
-			/* A pipe read on Windows cannot stop at a deadline yet */
-			return PHP_STREAM_OPTION_RETURN_NOTIMPL;
+			/* Only a read of an overlapped pipe can stop at a deadline: an anonymous one blocks the thread */
+			if (fd == -1 || !data->is_overlapped_pipe
+					|| (!strchr(stream->mode, 'r') && !strchr(stream->mode, '+'))) {
+				return PHP_STREAM_OPTION_RETURN_NOTIMPL;
+			}
 #else
 			/* Only a read of a pipe, FIFO or tty waits for data */
 			if (fd == -1 || !(stream->flags & PHP_STREAM_FLAG_NO_SEEK)
 					|| (!strchr(stream->mode, 'r') && !strchr(stream->mode, '+'))) {
 				return PHP_STREAM_OPTION_RETURN_NOTIMPL;
 			}
+#endif
 			data->timeout = *(struct timeval *) ptrparam;
 			data->timeout_set = 1;
 			data->timeout_event = 0;
 			return PHP_STREAM_OPTION_RETURN_OK;
-#endif
 
 		case PHP_STREAM_OPTION_WRITE_BUFFER:
 
@@ -1443,6 +1486,14 @@ static int php_stdiop_set_option(php_stream *stream, int option, int value, void
 		case PHP_STREAM_OPTION_META_DATA_API:
 			if (fd == -1)
 				return -1;
+#ifdef PHP_WIN32
+			if (data->is_overlapped_pipe) {
+				add_assoc_bool((zval*)ptrparam, "timed_out", data->timeout_event);
+				add_assoc_bool((zval*)ptrparam, "blocked", !data->overlapped_pipe_nonblock);
+				add_assoc_bool((zval*)ptrparam, "eof", stream->eof);
+				return PHP_STREAM_OPTION_RETURN_OK;
+			}
+#endif
 #ifdef O_NONBLOCK
 			flags = fcntl(fd, F_GETFL, 0);
 

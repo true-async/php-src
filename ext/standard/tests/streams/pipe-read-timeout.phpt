@@ -2,9 +2,10 @@
 stream_set_timeout() bounds a read of a proc_open() pipe
 --SKIPIF--
 <?php
-if (PHP_OS_FAMILY === 'Windows') die('skip a pipe read on Windows takes no timeout');
 if (!function_exists('proc_open')) die('skip no proc_open');
 ?>
+--ENV--
+PHP_IO_OVERLAPPED_PIPES=1
 --FILE--
 <?php
 /* The child writes nothing until its stdin closes */

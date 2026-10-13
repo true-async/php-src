@@ -2,9 +2,10 @@
 A pipe read with a zero stream_set_timeout() only looks for data, as a socket read does
 --SKIPIF--
 <?php
-if (PHP_OS_FAMILY === 'Windows') die('skip a pipe read on Windows takes no timeout');
 if (!function_exists('proc_open')) die('skip no proc_open');
 ?>
+--ENV--
+PHP_IO_OVERLAPPED_PIPES=1
 --FILE--
 <?php
 $process = proc_open([PHP_BINARY, '-r', 'fgets(STDIN);'], [0 => ['pipe', 'r'], 1 => ['pipe', 'w']], $pipes);
