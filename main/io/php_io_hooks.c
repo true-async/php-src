@@ -1900,12 +1900,11 @@ PHPAPI int php_io_pipe_poll(php_stream *stream, int fd, const php_deadline *dl, 
 		php_io_op_result results[2];
 		php_io_op_result any_result;
 
-		if (php_io_frame_begin(&f, stream) == FAILURE) {
+		if (UNEXPECTED(php_io_frame_begin(&f, stream) == FAILURE)) {
 			return -1;
 		}
 
-		/* As stream_select() waits for a pipe: an Any with a Timer, whose cancelled zero-byte read the
-		 * provider keeps and drains (PHP_IO_OP_F_PIPE); no registration, no provider polls a pipe */
+		/* The ops stream_select() uses for a pipe: a Poll with PHP_IO_OP_F_PIPE raced against a Timer */
 		php_io_op_poll(&pipe_poll, NULL, fd, PHP_POLL_READ, php_io_deadline_infinite());
 		pipe_poll.flags |= PHP_IO_OP_F_PIPE;
 		pipe_poll.stream = stream;
@@ -1955,7 +1954,7 @@ PHPAPI int php_io_pipe_poll(php_stream *stream, int fd, const php_deadline *dl, 
 		}
 	}
 
-	/* No provider waits for this pipe: the thread peeks, as php_select() does */
+	/* Without a provider, peek in a loop as php_select() does for a pipe */
 	php_deadline wait_until = *dl;
 	while (!php_io_pipe_readable(fd)) {
 		if (!php_deadline_is_infinite(&wait_until) && php_io_deadline_remaining(&wait_until, zend_hrtime()) == 0) {

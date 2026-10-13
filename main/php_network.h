@@ -402,7 +402,7 @@ struct _php_netstream_data_t	{
 	php_socket_t socket;
 	bool is_blocked;
 	bool timeout_event;
-	/* stream_set_timeout() was called: the timeout also bounds a transport call */
+	/* stream_set_timeout() was called: the timeout also bounds stream_socket_recvfrom() and sendto() */
 	bool timeout_set;
 	struct timeval timeout;
 	size_t ownsize;

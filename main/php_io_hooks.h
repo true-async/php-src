@@ -332,9 +332,8 @@ PHPAPI ssize_t php_io_pipe_read(php_stream *stream, int fd, void *buf, size_t le
 		const php_deadline *dl, bool no_provider);
 PHPAPI ssize_t php_io_pipe_write(php_stream *stream, int fd, const void *buf, size_t len,
 		bool no_provider);
-/* Waits until a read of an overlapped pipe would not wait, or dl passes: as php_io_poll() returns.
- * Without a provider, or when it answers Unsupported, the thread peeks until dl. The bytes may be
- * gone by the read: a handed-out pipe has another reader. */
+/* Waits until an overlapped pipe has data or dl passes; returns as php_io_poll() does. The data may
+ * be gone by the read: another process can read a handed-out pipe */
 PHPAPI int php_io_pipe_poll(php_stream *stream, int fd, const php_deadline *dl, bool no_provider);
 /* What a select reports for a pipe in its read set: bytes in it, or a peek failure (the writer's
  * close, a write end) that the read reports */

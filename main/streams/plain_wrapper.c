@@ -147,8 +147,8 @@ typedef struct {
 	unsigned is_overlapped_pipe:1;	/* Windows: proc_open()'s overlapped named pipe (php_io_pipe_read) */
 	unsigned overlapped_pipe_nonblock:1;	/* Windows overlapped pipe: stream_set_blocking(false) */
 	unsigned is_handed_out:1;	/* Windows overlapped pipe: another process got it, the provider never sees it again */
-	unsigned timeout_set:1;		/* stream_set_timeout() bounds a read of a pipe, FIFO or tty */
-	unsigned timeout_event:1;	/* the last read ended at that timeout */
+	unsigned timeout_set:1;		/* stream_set_timeout() was called */
+	unsigned timeout_event:1;	/* the last read timed out: "timed_out" of stream_get_meta_data() */
 	unsigned _reserved:19;
 	struct timeval timeout;
 #ifdef PHP_WIN32
@@ -650,7 +650,7 @@ static ssize_t php_stdiop_write(php_stream *stream, const char *buf, size_t coun
 }
 
 #ifndef PHP_WIN32
-/* The O_NONBLOCK set for the IO hooks still reads as blocking to the script */
+/* Blocking for the script: the O_NONBLOCK the IO hooks set (nonblock_ours) does not count */
 static bool php_stdiop_is_blocking(php_stdio_stream_data *data)
 {
 	int flags = fcntl(data->fd, F_GETFL);
@@ -706,9 +706,8 @@ static ssize_t php_stdiop_read(php_stream *stream, char *buf, size_t count)
 			}
 
 			if (data->timeout_set && !data->overlapped_pipe_nonblock) {
-				/* As on Unix: wait for data up to the timeout, then read only what is there, since a READ
-				 * op cancelled at the timeout could lose the bytes it took; with data already buffered or
-				 * a zero timeout only look */
+				/* Wait for data first, then read only what is there: a READ cancelled at the timeout could
+				 * lose the bytes it took */
 				const bool dont_wait = stream->has_buffered_data
 						|| (data->timeout.tv_sec == 0 && data->timeout.tv_usec == 0);
 				php_deadline wait_until = php_io_deadline_from_timeval(&data->timeout);
@@ -730,7 +729,7 @@ static ssize_t php_stdiop_read(php_stream *stream, char *buf, size_t count)
 
 					ret = php_io_pipe_read(stream, data->fd, buf, PLAIN_WRAP_BUF_SIZE(count), &deadline,
 							data->is_handed_out);
-					/* EAGAIN after a readiness: another process took the bytes, or the provider woke early */
+					/* EAGAIN after data was reported: another process read it first, or the provider woke early */
 					if (dont_wait || revents < 0 || ret >= 0 || errno != EAGAIN) {
 						break;
 					}
@@ -766,8 +765,7 @@ static ssize_t php_stdiop_read(php_stream *stream, char *buf, size_t count)
 		php_deadline deadline = php_stdiop_io_deadline(stream, data);
 		data->timeout_event = 0;
 		if (data->timeout_set && php_stdiop_is_blocking(data)) {
-			/* Wait for data up to the timeout first, so it holds with and without a provider; with
-			 * data already buffered or a zero timeout only look, as a socket read does */
+			/* Wait for data with a poll first: the read's deadline holds only under a provider */
 			const struct timeval no_wait = {0, 0};
 			const bool dont_wait = stream->has_buffered_data
 					|| (data->timeout.tv_sec == 0 && data->timeout.tv_usec == 0);
@@ -780,7 +778,7 @@ static ssize_t php_stdiop_read(php_stream *stream, char *buf, size_t count)
 				data->timeout_event = 1;
 				return -1;
 			}
-			if (revents < 0 && (errno == EINTR || errno == ECANCELED)) {
+			if (UNEXPECTED(revents < 0) && (errno == EINTR || errno == ECANCELED)) {
 				return -1;
 			}
 		}
@@ -1160,13 +1158,13 @@ static int php_stdiop_set_option(php_stream *stream, int option, int value, void
 
 		case PHP_STREAM_OPTION_READ_TIMEOUT:
 #ifdef PHP_WIN32
-			/* Only a read of an overlapped pipe can stop at a deadline: an anonymous one blocks the thread */
+			/* Only an overlapped pipe can wait with a timeout: a read of an anonymous one blocks the thread */
 			if (fd == -1 || !data->is_overlapped_pipe
 					|| (!strchr(stream->mode, 'r') && !strchr(stream->mode, '+'))) {
 				return PHP_STREAM_OPTION_RETURN_NOTIMPL;
 			}
 #else
-			/* Only a read of a pipe, FIFO or tty waits for data */
+			/* A timeout only matters where a read waits: a pipe, FIFO or tty */
 			if (fd == -1 || !(stream->flags & PHP_STREAM_FLAG_NO_SEEK)
 					|| (!strchr(stream->mode, 'r') && !strchr(stream->mode, '+'))) {
 				return PHP_STREAM_OPTION_RETURN_NOTIMPL;
