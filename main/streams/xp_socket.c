@@ -250,13 +250,18 @@ static inline int sock_sendto(php_stream *stream, php_netstream_data_t *sock, co
 }
 
 /* A blocking stream's transport call waits without a timeout, like the
- * blocking syscall did; NULL for a non-blocking stream, which never waits */
+ * blocking syscall did, unless stream_set_timeout() set one; NULL for a
+ * non-blocking stream, which never waits */
 static inline php_deadline *sock_xport_deadline(php_netstream_data_t *sock, php_deadline *dl)
 {
 	if (!sock->is_blocked) {
 		return NULL;
 	}
-	php_deadline_init_infinite(dl);
+	if (sock->timeout_set) {
+		*dl = php_io_deadline_from_timeval(&sock->timeout);
+	} else {
+		php_deadline_init_infinite(dl);
+	}
 	return dl;
 }
 
@@ -279,7 +284,8 @@ static inline int sock_recvfrom(php_stream *stream, php_netstream_data_t *sock, 
 			ret = buflen;
 		}
 #endif
-		if (sl) {
+		/* A failed call, a timeout included, leaves the address unset */
+		if (ret >= 0 && sl) {
 			php_network_populate_name_from_sockaddr((struct sockaddr*)&sa, sl,
 					textaddr, addr, addrlen);
 		} else {
@@ -368,6 +374,7 @@ static int php_sockop_set_option(php_stream *stream, int option, int value, void
 
 		case PHP_STREAM_OPTION_READ_TIMEOUT:
 			sock->timeout = *(struct timeval*)ptrparam;
+			sock->timeout_set = true;
 			sock->timeout_event = false;
 			return PHP_STREAM_OPTION_RETURN_OK;
 
@@ -402,6 +409,7 @@ static int php_sockop_set_option(php_stream *stream, int option, int value, void
 					return PHP_STREAM_OPTION_RETURN_OK;
 
 				case STREAM_XPORT_OP_SEND:
+					sock->timeout_event = false;
 					flags = 0;
 					if ((xparam->inputs.flags & STREAM_OOB) == STREAM_OOB) {
 						flags |= MSG_OOB;
@@ -413,6 +421,7 @@ static int php_sockop_set_option(php_stream *stream, int option, int value, void
 							xparam->inputs.addrlen,
 							sock_xport_deadline(sock, &xport_dl));
 					if (xparam->outputs.returncode == -1) {
+						sock->timeout_event = php_socket_errno() == PHP_IO_SOCK_ETIMEDOUT;
 						char *err = php_socket_strerror(php_socket_errno(), NULL, 0);
 						php_stream_warn(stream, NetworkSendFailed, "%s", err);
 						efree(err);
@@ -420,6 +429,7 @@ static int php_sockop_set_option(php_stream *stream, int option, int value, void
 					return PHP_STREAM_OPTION_RETURN_OK;
 
 				case STREAM_XPORT_OP_RECV:
+					sock->timeout_event = false;
 					flags = 0;
 					if ((xparam->inputs.flags & STREAM_OOB) == STREAM_OOB) {
 						flags |= MSG_OOB;
@@ -434,6 +444,9 @@ static int php_sockop_set_option(php_stream *stream, int option, int value, void
 							xparam->want_addr ? &xparam->outputs.addr : NULL,
 							xparam->want_addr ? &xparam->outputs.addrlen : NULL,
 							sock_xport_deadline(sock, &xport_dl));
+					if (xparam->outputs.returncode == -1) {
+						sock->timeout_event = php_socket_errno() == PHP_IO_SOCK_ETIMEDOUT;
+					}
 					return PHP_STREAM_OPTION_RETURN_OK;
 
 
