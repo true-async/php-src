@@ -490,7 +490,7 @@ static zend_always_inline unsigned php_io_ring_io_len(php_io_op *op)
 }
 
 /* What one directory change wait takes at most: ior counts in unsigned */
-static zend_always_inline unsigned php_io_ring_dir_changes_len(php_io_op *op)
+static zend_always_inline unsigned php_io_ring_dir_changes_len(const php_io_op *op)
 {
 	return (unsigned) MIN(op->u.dir_changes.len, UINT32_MAX);
 }
