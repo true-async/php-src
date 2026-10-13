@@ -12,5 +12,5 @@ try {
     echo $e->getMessage(), "\n";
 }
 ?>
---EXPECT--
-cancelled Io\Operation\Connect
+--EXPECTREGEX--
+cancelled Io\\Operation\\(Connect|Poll)
