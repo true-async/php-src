@@ -402,6 +402,8 @@ struct _php_netstream_data_t	{
 	php_socket_t socket;
 	bool is_blocked;
 	bool timeout_event;
+	/* stream_set_timeout() was called: the timeout also bounds a transport call */
+	bool timeout_set;
 	struct timeval timeout;
 	size_t ownsize;
 	/* the descriptor was blocking before the stream made it non-blocking */
