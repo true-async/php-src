@@ -200,8 +200,9 @@ PHPAPI int php_network_getaddresses(const char *host, int socktype, struct socka
 				zend_string_release_ex(*error_string, 0);
 			}
 			*error_string = strpprintf(0, "php_network_getaddresses: getaddrinfo for %s failed: %s", host, gai_error);
-			php_error_docref(NULL, E_WARNING, "%s", ZSTR_VAL(*error_string));
-		} else {
+		}
+		/* An exception from the lookup's operation reports the failure itself */
+		if (!EG(exception)) {
 			php_error_docref(NULL, E_WARNING, "php_network_getaddresses: getaddrinfo for %s failed: %s", host, gai_error);
 		}
 # ifdef PHP_WIN32
@@ -641,7 +642,10 @@ PHPAPI zend_result php_network_parse_network_address_with_port(const char *addr,
 
 	if (n == 0) {
 		if (errstr) {
-			php_error_docref(NULL, E_WARNING, "Failed to resolve `%s': %s", tmp, ZSTR_VAL(errstr));
+			/* An exception from the lookup's operation reports the failure itself */
+			if (!EG(exception)) {
+				php_error_docref(NULL, E_WARNING, "Failed to resolve `%s': %s", tmp, ZSTR_VAL(errstr));
+			}
 			zend_string_release_ex(errstr, 0);
 		}
 		goto out;
@@ -1088,6 +1092,11 @@ php_socket_t php_network_connect_socket_to_host_stream(php_stream *stream, php_s
 		}
 		if (current) {
 			*current = SOCK_ERR;
+		}
+
+		/* An exception from the connect's operation ends the attempts */
+		if (EG(exception)) {
+			fatal = 1;
 		}
 
 		/* adjust timeout for next attempt */
