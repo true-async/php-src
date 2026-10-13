@@ -1347,7 +1347,7 @@ static void php_io_hooks_php_call(zend_fcall_info_cache *fcc, zval *retval, zend
 }
 
 /* A Done that hands data to the caller: bytes in its buffer, a descriptor,
- * an exited child, a taken signal, a resolved name */
+ * an exited child, a taken signal, a resolved name, directory changes */
 static bool php_io_op_result_is_data(php_io_op *op, const php_io_completion_obj *c)
 {
 	if (c->status != PHP_IO_DONE || c->error) {
@@ -1356,6 +1356,7 @@ static bool php_io_op_result_is_data(php_io_op *op, const php_io_completion_obj 
 	switch (op->type) {
 		case PHP_IO_OP_READ:
 		case PHP_IO_OP_RECV:
+		case PHP_IO_OP_DIR_CHANGES:
 			return c->res != 0;
 		case PHP_IO_OP_ACCEPT:
 		case PHP_IO_OP_WAITPID:

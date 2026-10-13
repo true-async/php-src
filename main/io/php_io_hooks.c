@@ -126,15 +126,6 @@ PHPAPI void php_io_op_sigwait(php_io_op *op, zend_object *handle, const php_sigs
 	op->u.sigwait.taken = 0;
 }
 
-PHPAPI void php_io_op_dir_changes(php_io_op *op, php_socket_t dir, void *buf, size_t len, bool subtree)
-{
-	/* No readiness: a queue that only polls answers Unsupported */
-	php_io_op_init(op, PHP_IO_OP_DIR_CHANGES, NULL, dir, 0, php_io_deadline_infinite());
-	op->u.dir_changes.buf = buf;
-	op->u.dir_changes.len = len;
-	op->u.dir_changes.subtree = subtree;
-}
-
 PHPAPI void php_io_op_read(php_io_op *op, zend_object *handle, php_socket_t fd, void *buf, size_t len, int64_t off, php_deadline dl)
 {
 	php_io_op_init(op, PHP_IO_OP_READ, handle, fd, PHP_POLL_READ, dl);
@@ -208,6 +199,15 @@ PHPAPI void php_io_op_fsync(php_io_op *op, zend_object *handle, php_socket_t fd,
 {
 	php_io_op_init(op, PHP_IO_OP_FSYNC, handle, fd, 0, php_io_deadline_infinite());
 	op->u.fsync.data_only = data_only;
+}
+
+PHPAPI void php_io_op_dir_changes(php_io_op *op, php_socket_t fd, void *buf, size_t len, bool subtree)
+{
+	ZEND_ASSERT(((uintptr_t) buf & 3) == 0);
+	php_io_op_init(op, PHP_IO_OP_DIR_CHANGES, NULL, fd, 0, php_io_deadline_infinite());
+	op->u.dir_changes.buf = buf;
+	op->u.dir_changes.len = len;
+	op->u.dir_changes.subtree = subtree;
 }
 
 PHPAPI void php_io_op_any(php_io_op *op, php_io_op **members, uint32_t n, php_io_op_result *results)
@@ -1031,6 +1031,8 @@ static bool php_io_result_valid(const php_io_op *op, const php_io_op_result *res
 		case PHP_IO_OP_RECV:
 		case PHP_IO_OP_SEND:
 			return result->res >= 0 && (uint64_t) result->res <= op->u.io.len;
+		case PHP_IO_OP_DIR_CHANGES:
+			return result->res >= 0 && (uint64_t) result->res <= op->u.dir_changes.len;
 		case PHP_IO_OP_ACCEPT:
 			return result->res >= 0;
 		case PHP_IO_OP_WAITPID:
