@@ -3188,6 +3188,7 @@ static int php_openssl_enable_crypto(php_stream *stream,
 					sslsock->is_client ? &sslsock->connect_timeout : &sslsock->s.timeout));
 		}
 		sslsock->deadline = blocked ? &deadline : NULL;
+		sslsock->io_cancelled = 0;
 
 		do {
 			ERR_clear_error();
@@ -3196,6 +3197,11 @@ static int php_openssl_enable_crypto(php_stream *stream,
 				break;
 			}
 			retry = php_openssl_handle_ssl_error(stream, n, blocked);
+			if (sslsock->io_cancelled) {
+				/* The wait was cancelled behind a retry, which would spin to the deadline */
+				sslsock->deadline = NULL;
+				return -1;
+			}
 			if (retry && php_deadline_to_timeout_ms(&deadline) == 0) {
 				sslsock->deadline = NULL;
 				php_stream_warn(stream, TimeOut, "SSL: Handshake timed out");
@@ -3551,7 +3557,10 @@ static inline int php_openssl_tcp_sockop_accept(php_stream *stream, php_openssl_
 			if (php_stream_xport_crypto_setup(xparam->outputs.client, clisockdata->method,
 					sock->ctx ? stream : NULL) < 0 || php_stream_xport_crypto_enable(
 					xparam->outputs.client, 1) < 0) {
-				php_stream_warn(stream, ProtocolError, "Failed to enable crypto");
+				/* An exception from the handshake's operation reports the failure itself */
+				if (!EG(exception)) {
+					php_stream_warn(stream, ProtocolError, "Failed to enable crypto");
+				}
 
 				php_stream_close(xparam->outputs.client);
 				xparam->outputs.client = NULL;
@@ -3765,7 +3774,10 @@ static int php_openssl_sockop_set_option(php_stream *stream, int option, int val
 
 						if (php_stream_xport_crypto_setup(stream, sslsock->method, session_stream) < 0 ||
 								php_stream_xport_crypto_enable(stream, 1) < 0) {
-							php_stream_warn(stream, ProtocolError, "Failed to enable crypto");
+							/* An exception from the handshake's operation reports the failure itself */
+							if (!EG(exception)) {
+								php_stream_warn(stream, ProtocolError, "Failed to enable crypto");
+							}
 							xparam->outputs.returncode = -1;
 						}
 					}
