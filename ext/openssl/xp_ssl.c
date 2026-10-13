@@ -3557,7 +3557,6 @@ static inline int php_openssl_tcp_sockop_accept(php_stream *stream, php_openssl_
 			if (php_stream_xport_crypto_setup(xparam->outputs.client, clisockdata->method,
 					sock->ctx ? stream : NULL) < 0 || php_stream_xport_crypto_enable(
 					xparam->outputs.client, 1) < 0) {
-				/* An exception from the handshake's operation reports the failure itself */
 				if (!EG(exception)) {
 					php_stream_warn(stream, ProtocolError, "Failed to enable crypto");
 				}
@@ -3774,7 +3773,6 @@ static int php_openssl_sockop_set_option(php_stream *stream, int option, int val
 
 						if (php_stream_xport_crypto_setup(stream, sslsock->method, session_stream) < 0 ||
 								php_stream_xport_crypto_enable(stream, 1) < 0) {
-							/* An exception from the handshake's operation reports the failure itself */
 							if (!EG(exception)) {
 								php_stream_warn(stream, ProtocolError, "Failed to enable crypto");
 							}

@@ -176,7 +176,6 @@ PHP_FUNCTION(stream_socket_client)
 
 	php_stream_error_operation_end(context);
 
-	/* An exception from the connect's operation reports the failure itself */
 	if (stream == NULL && !EG(exception)) {
 		/* host might contain binary characters */
 		zend_string *quoted_host = php_addslashes(host);
@@ -249,7 +248,6 @@ PHP_FUNCTION(stream_socket_server)
 
 	php_stream_error_operation_end(context);
 
-	/* An exception from the lookup's operation reports the failure itself */
 	if (stream == NULL && !EG(exception)) {
 		php_error_docref(NULL, E_WARNING, "Unable to connect to %s (%s)", host, errstr == NULL ? "Unknown error" : ZSTR_VAL(errstr));
 	}
@@ -331,7 +329,6 @@ PHP_FUNCTION(stream_socket_accept)
 		if (peername) {
 			zend_string_release(peername);
 		}
-		/* An exception from the accept's operation reports the failure itself */
 		if (!EG(exception)) {
 			php_stream_warn(stream, AcceptFailed, "Accept failed: %s", errstr ? ZSTR_VAL(errstr) : "Unknown error");
 		}
@@ -398,7 +395,6 @@ PHP_FUNCTION(stream_socket_sendto)
 		/* parse the address */
 		if (FAILURE == php_network_parse_network_address_with_port(target_addr, target_addr_len, (struct sockaddr*)&sa, &sl)) {
 			php_stream_error_operation_end_for_stream(stream);
-			/* An exception from the lookup's operation reports the failure itself */
 			if (!EG(exception)) {
 				php_error_docref(NULL, E_WARNING, "Failed to parse `%s' into a valid network address", target_addr);
 			}
