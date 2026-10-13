@@ -1899,6 +1899,90 @@ PHPAPI ssize_t php_io_pipe_read(php_stream *stream, int fd, void *buf, size_t le
 	return ret;
 }
 
+PHPAPI int php_io_pipe_poll(php_stream *stream, int fd, const php_deadline *dl, bool no_provider)
+{
+	if (php_io_pipe_readable(fd)) {
+		return PHP_POLL_READ;
+	}
+
+	if (!no_provider && FG(io_hooks)) {
+		php_io_frame f;
+		php_io_op pipe_poll;
+		php_io_op timer;
+		php_io_op any;
+		php_io_op *members[2] = {&pipe_poll, &timer};
+		php_io_op_result results[2];
+		php_io_op_result any_result;
+
+		if (php_io_frame_begin(&f, stream) == FAILURE) {
+			return -1;
+		}
+
+		/* As stream_select() waits for a pipe: an Any with a Timer, whose cancelled zero-byte read the
+		 * provider keeps and drains (PHP_IO_OP_F_PIPE); no registration, no provider polls a pipe */
+		php_io_op_poll(&pipe_poll, NULL, fd, PHP_POLL_READ, php_io_deadline_infinite());
+		pipe_poll.flags |= PHP_IO_OP_F_PIPE;
+		pipe_poll.stream = stream;
+		php_io_op_timer(&timer, *dl);
+		php_io_op_any(&any, members, 2, results);
+		const zend_result rc = php_io_run(&any, &any_result);
+		php_io_frame_end(&f, &pipe_poll);
+
+		if (UNEXPECTED(rc == FAILURE)) {
+			php_io_set_errno(ECANCELED);
+			return -1;
+		}
+
+		if (UNEXPECTED(any_result.status == PHP_IO_INTERRUPTED)) {
+			php_io_set_errno(EINTR);
+			return -1;
+		}
+
+		if (UNEXPECTED(any_result.status != PHP_IO_DONE || any_result.error)) {
+			php_io_set_errno(any_result.error ? any_result.error : ECANCELED);
+			return -1;
+		}
+
+		const uint32_t pipe_index = 0;
+		bool unsupported = false;
+		bool readable = false;
+		for (uint32_t i = 0; i < any.u.any.n_results; i++) {
+			if (results[i].index != pipe_index) {
+				continue;
+			}
+
+			if (UNEXPECTED(results[i].status == PHP_IO_DONE && results[i].error)) {
+				php_io_set_errno(results[i].error);
+				return -1;
+			}
+
+			unsupported |= results[i].status == PHP_IO_UNSUPPORTED;
+			readable |= results[i].status == PHP_IO_DONE || results[i].status == PHP_IO_READY;
+		}
+
+		if (EXPECTED(!unsupported)) {
+			if (!readable) {
+				php_io_set_errno(ETIMEDOUT);
+			}
+
+			return readable ? PHP_POLL_READ : 0;
+		}
+	}
+
+	/* No provider waits for this pipe: the thread peeks, as php_select() does */
+	php_deadline wait_until = *dl;
+	while (!php_io_pipe_readable(fd)) {
+		if (!php_deadline_is_infinite(&wait_until) && php_io_deadline_remaining(&wait_until, zend_hrtime()) == 0) {
+			php_io_set_errno(ETIMEDOUT);
+			return 0;
+		}
+
+		Sleep(1);
+	}
+
+	return PHP_POLL_READ;
+}
+
 PHPAPI ssize_t php_io_pipe_write(php_stream *stream, int fd, const void *buf, size_t len,
 		bool no_provider)
 {
