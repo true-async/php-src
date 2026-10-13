@@ -454,6 +454,12 @@ static zend_always_inline unsigned php_io_ring_io_len(php_io_op *op)
 	return (unsigned) MIN(op->u.io.len, UINT32_MAX);
 }
 
+/* What one directory change wait takes at most: ior counts in unsigned */
+static zend_always_inline unsigned php_io_ring_dir_changes_len(php_io_op *op)
+{
+	return (unsigned) MIN(op->u.dir_changes.len, UINT32_MAX);
+}
+
 /* The inputs are copied and the outputs get slots of their own, so that a
  * record outliving the op's frame never touches it */
 static void php_io_ring_req_capture(php_io_ring_req *req, php_io_op *op)
@@ -515,6 +521,9 @@ static void php_io_ring_req_capture(php_io_ring_req *req, php_io_op *op)
 			req->u.io.buf = pemalloc(MAX(php_io_ring_io_len(op), 1), 1);
 			memcpy(req->u.io.buf, op->u.io.buf, php_io_ring_io_len(op));
 			break;
+		case PHP_IO_OP_DIR_CHANGES:
+			req->u.io.buf = pemalloc(MAX(php_io_ring_dir_changes_len(op), 1), 1);
+			break;
 		default:
 			break;
 	}
@@ -569,6 +578,11 @@ static void php_io_ring_req_output(php_io_ring_req *req, php_io_op *op)
 				memcpy(op->u.io.buf, req->u.io.buf, res);
 			}
 			break;
+		case PHP_IO_OP_DIR_CHANGES:
+			if (res > 0) {
+				memcpy(op->u.dir_changes.buf, req->u.io.buf, res);
+			}
+			break;
 		default:
 			break;
 	}
@@ -615,6 +629,7 @@ static void php_io_ring_req_discard(php_io_ring_req *req)
 		case PHP_IO_OP_RECV:
 		case PHP_IO_OP_WRITE:
 		case PHP_IO_OP_SEND:
+		case PHP_IO_OP_DIR_CHANGES:
 			if (req->u.io.buf) {
 				pefree(req->u.io.buf, 1);
 			}
@@ -1026,6 +1041,13 @@ static zend_result php_io_ring_submit_one(php_io_ring *ring, php_io_ring_req *re
 		case PHP_IO_OP_WAITPID:
 		case PHP_IO_OP_SIGWAIT:
 			break;
+		case PHP_IO_OP_DIR_CHANGES:
+#ifdef IOR_FEAT_DIR_CHANGES
+			if (ring->features & IOR_FEAT_DIR_CHANGES) {
+				break;
+			}
+#endif
+			ZEND_FALLTHROUGH;
 		default:
 			errno = ENOTSUP;
 			return FAILURE;
@@ -1106,6 +1128,15 @@ static zend_result php_io_ring_submit_one(php_io_ring *ring, php_io_ring_req *re
 			err = rc < 0 ? -rc : 0;
 			break;
 		}
+#ifdef IOR_FEAT_DIR_CHANGES
+		case PHP_IO_OP_DIR_CHANGES: {
+			int rc = ior_prep_dir_changes(ctx, sqe, (ior_fd_t) op->fd, req->u.io.buf, php_io_ring_dir_changes_len(op),
+					op->u.dir_changes.subtree ? IOR_DIR_CHANGES_SUBTREE : 0);
+			err = rc < 0 ? -rc : 0;
+			uses_caller = true;
+			break;
+		}
+#endif
 		default:
 			ZEND_UNREACHABLE();
 	}

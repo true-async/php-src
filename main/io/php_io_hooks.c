@@ -126,6 +126,15 @@ PHPAPI void php_io_op_sigwait(php_io_op *op, zend_object *handle, const php_sigs
 	op->u.sigwait.taken = 0;
 }
 
+PHPAPI void php_io_op_dir_changes(php_io_op *op, php_socket_t dir, void *buf, size_t len, bool subtree)
+{
+	/* No readiness: a queue that only polls answers Unsupported */
+	php_io_op_init(op, PHP_IO_OP_DIR_CHANGES, NULL, dir, 0, php_io_deadline_infinite());
+	op->u.dir_changes.buf = buf;
+	op->u.dir_changes.len = len;
+	op->u.dir_changes.subtree = subtree;
+}
+
 PHPAPI void php_io_op_read(php_io_op *op, zend_object *handle, php_socket_t fd, void *buf, size_t len, int64_t off, php_deadline dl)
 {
 	php_io_op_init(op, PHP_IO_OP_READ, handle, fd, PHP_POLL_READ, dl);
