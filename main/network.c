@@ -201,7 +201,6 @@ PHPAPI int php_network_getaddresses(const char *host, int socktype, struct socka
 			}
 			*error_string = strpprintf(0, "php_network_getaddresses: getaddrinfo for %s failed: %s", host, gai_error);
 		}
-		/* An exception from the lookup's operation reports the failure itself */
 		if (!EG(exception)) {
 			php_error_docref(NULL, E_WARNING, "php_network_getaddresses: getaddrinfo for %s failed: %s", host, gai_error);
 		}
@@ -642,7 +641,6 @@ PHPAPI zend_result php_network_parse_network_address_with_port(const char *addr,
 
 	if (n == 0) {
 		if (errstr) {
-			/* An exception from the lookup's operation reports the failure itself */
 			if (!EG(exception)) {
 				php_error_docref(NULL, E_WARNING, "Failed to resolve `%s': %s", tmp, ZSTR_VAL(errstr));
 			}
