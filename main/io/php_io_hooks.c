@@ -1552,6 +1552,25 @@ PHPAPI php_socket_t php_io_accept(php_stream *stream, php_socket_t fd, struct so
 # define PHP_IO_CONNECT_PENDING(err) ((err) == EINPROGRESS || (err) == EALREADY)
 #endif
 
+/* A userland provider cannot see PHP_IO_OP_F_CONNECT_STARTED and may answer Ready without a wait:
+ * a connect still under way has no peer yet. A failed one has none either, and the Poll then
+ * returns at once. */
+static bool php_io_connect_unfinished(php_socket_t fd)
+{
+	struct sockaddr_storage peer;
+	socklen_t len = sizeof(peer);
+
+	if (getpeername(fd, (struct sockaddr *) &peer, &len) == 0) {
+		return false;
+	}
+
+#ifdef PHP_WIN32
+	return WSAGetLastError() == WSAENOTCONN;
+#else
+	return errno == ENOTCONN;
+#endif
+}
+
 PHPAPI int php_io_connect_ex(php_stream *stream, zend_object *handle, php_socket_t fd,
 		const struct sockaddr *addr, socklen_t addrlen, php_deadline *dl)
 {
@@ -1594,8 +1613,10 @@ PHPAPI int php_io_connect_ex(php_stream *stream, zend_object *handle, php_socket
 			ret = -1;
 			break;
 		}
-		if (started && result.status == PHP_IO_DONE && result.error == EALREADY) {
-			/* A provider that ignores the flag connected again and found ours under way */
+		if (started && ((result.status == PHP_IO_DONE && result.error == EALREADY)
+				|| (result.status == PHP_IO_READY && php_io_connect_unfinished(fd)))) {
+			/* A provider that ignores the flag connected again and found ours under way, or did
+			 * not wait */
 			php_io_op_poll(&op, handle, fd, PHP_POLL_WRITE, *dl);
 			op.stream = stream;
 			if (php_io_op_register_wait(&op, stream, PHP_POLL_WRITE) == FAILURE
