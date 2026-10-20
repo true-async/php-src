@@ -1505,7 +1505,10 @@ static HashTable *zend_fiber_object_gc(zend_object *object, zval **table, int *n
 		zend_execute_data *ex = ZEND_ASYNC_COROUTINE_GET_EXECUTE_DATA(fiber->coroutine);
 		if (ex != NULL && ZEND_COROUTINE_IS_YIELD(fiber->coroutine)) {
 			HashTable *lastSymTable = NULL;
-			for (; ex; ex = ex->prev_execute_data) {
+			/* coroutine_entry_point() links stack_bottom to the caller's frames
+			 * for backtraces; those frames belong to the caller, and the main
+			 * script's symbol table must not reach the scan as the fiber's. */
+			for (; ex; ex = ex == fiber->stack_bottom ? NULL : ex->prev_execute_data) {
 				HashTable *symTable;
 				if (ZEND_CALL_INFO(ex) & ZEND_CALL_GENERATOR) {
 					zend_generator *generator = (zend_generator *) ex->return_value;
