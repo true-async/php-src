@@ -358,9 +358,11 @@ void shutdown_destructors(void) /* {{{ */
 			zend_objects_store_call_destructors_async(&EG(objects_store));
 		}
 	} zend_catch {
+		/* if we couldn't destruct cleanly, mark all objects as destructed anyway */
 		EG(symbol_table).pDestructor = zend_unclean_zval_ptr_dtor;
 		shutdown_context->is_started = false;
-		shutdown_destructors();
+		shutdown_context->coroutine = NULL;
+		zend_objects_store_mark_destructed(&EG(objects_store));
 		zend_bailout();
 	} zend_end_try();
 
