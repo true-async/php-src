@@ -1142,6 +1142,13 @@ static void coroutine_entry_point(void)
 		coroutine->fcall->fci.retval = &coroutine->result;
 		zend_call_function(&coroutine->fcall->fci, &coroutine->fcall->fci_cache);
 		coroutine->fcall->fci.retval = NULL;
+
+		fiber = coroutine->extended_data;
+		if (fiber != NULL && fiber->fci.object != NULL) {
+			zend_object *object = fiber->fci.object;
+			fiber->fci.object = NULL;
+			OBJ_RELEASE(object);
+		}
 	}
 	zend_catch
 	{
@@ -1481,6 +1488,10 @@ static HashTable *zend_fiber_object_gc(zend_object *object, zval **table, int *n
 			zend_get_gc_buffer_add_zval(buf, &fiber->fcall->fci.function_name);
 		}
 
+		if (fiber->fci.object != NULL) {
+			zend_get_gc_buffer_add_obj(buf, fiber->fci.object);
+		}
+
 		/* Expose finished coroutine to GC so Fiber→Coroutine ref is visible
 		 * for cycle collection. While running, the scheduler holds an extra
 		 * ref that GC can't track, so we only add it after completion. */
@@ -1494,7 +1505,10 @@ static HashTable *zend_fiber_object_gc(zend_object *object, zval **table, int *n
 		zend_execute_data *ex = ZEND_ASYNC_COROUTINE_GET_EXECUTE_DATA(fiber->coroutine);
 		if (ex != NULL && ZEND_COROUTINE_IS_YIELD(fiber->coroutine)) {
 			HashTable *lastSymTable = NULL;
-			for (; ex; ex = ex->prev_execute_data) {
+			/* coroutine_entry_point() links stack_bottom to the caller's frames
+			 * for backtraces; those frames belong to the caller, and the main
+			 * script's symbol table must not reach the scan as the fiber's. */
+			for (; ex; ex = ex == fiber->stack_bottom ? NULL : ex->prev_execute_data) {
 				HashTable *symTable;
 				if (ZEND_CALL_INFO(ex) & ZEND_CALL_GENERATOR) {
 					zend_generator *generator = (zend_generator *) ex->return_value;
@@ -1619,6 +1633,13 @@ ZEND_METHOD(Fiber, __construct)
 
 		/* Keep a reference to closures or callable objects */
 		Z_TRY_ADDREF(fiber->fcall->fci.function_name);
+
+		/* zend_fcall_t does not hold fci.object, the caller's $this for
+		 * [A::class, 'm'] or "A::m"; the fiber holds it until the call returns. */
+		if (fci.object != NULL) {
+			fiber->fci.object = fci.object;
+			GC_ADDREF(fci.object);
+		}
 	} else {
 		/* Non-coroutine path: store directly in fiber */
 		fiber->fci = fci;

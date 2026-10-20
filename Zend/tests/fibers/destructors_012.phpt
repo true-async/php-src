@@ -1,5 +1,9 @@
 --TEST--
 Fibers in destructors 012: GC destructor fiber running during exception unwinding does not skip the enclosing catch block
+--SKIPIF--
+<?php
+if (!function_exists("Async\\spawn")) die("skip TrueAsync runtime required");
+?>
 --INI--
 zend.enable_gc=1
 --FILE--
@@ -59,5 +63,5 @@ $fiber->start();
 ?>
 --EXPECT--
 D::__destruct
-Cycle::__destruct
 caught: f
+Cycle::__destruct

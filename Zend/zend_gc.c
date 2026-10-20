@@ -2166,12 +2166,12 @@ static void gc_scope_callback(zend_async_event_t *event,
 	zend_coroutine_t *coroutine = ((zend_coroutine_event_callback_t *) callback)->coroutine;
 	ZEND_ASSERT(coroutine == GC_G(gc_coroutine) && "GC coroutine mismatch");
 
-	// Ignore exceptions in the scope.
-	if (exception == NULL) {
-		// Only when scope is finished without exceptions,
-		// we can resume the GC coroutine.
-		ZEND_ASYNC_RESUME(coroutine);
-	}
+	/* A destructor that threw ends its coroutine with the exception, which the
+	 * scope reports as unhandled on its own. The GC run must still finish:
+	 * left suspended, the GC coroutine keeps its waker on the scope, and the
+	 * garbage of this run is never freed. */
+	(void) exception;
+	ZEND_ASYNC_RESUME(coroutine);
 }
 
 /**
@@ -2251,6 +2251,8 @@ static zend_always_inline void start_gc_in_coroutine(void)
 {
 	GC_TRACE("Try to start GC in coroutine");
 
+	bool scope_created = false;
+
 	if (GC_G(gc_scope) == NULL) {
 		GC_G(gc_scope) = ZEND_ASYNC_NEW_SCOPE(NULL);
 
@@ -2259,9 +2261,17 @@ static zend_always_inline void start_gc_in_coroutine(void)
 		}
 
 		ZEND_ASYNC_SCOPE_CLR_DISPOSE_SAFELY(GC_G(gc_scope));
+		scope_created = true;
 	}
 
 	if (UNEXPECTED(new_gc_coroutine() == NULL)) {
+		/* Spawning fails while an exception unwinds. A scope with no coroutine
+		 * is disposed by nobody, and the next GC run would drop the pointer. */
+		if (scope_created) {
+			zend_async_scope_t *scope = GC_G(gc_scope);
+			GC_G(gc_scope) = NULL;
+			ZEND_ASYNC_SCOPE_RELEASE(scope);
+		}
 		return;
 	}
 }

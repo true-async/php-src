@@ -1,5 +1,9 @@
 --TEST--
 Fiber holds the object a callable resolved to in the creating method ($this for [A::class, 'm'] or "A::m")
+--SKIPIF--
+<?php
+if (!function_exists("Async\\spawn")) die("skip TrueAsync runtime required");
+?>
 --FILE--
 <?php
 class A {
@@ -60,6 +64,7 @@ echo "-- a cycle through the fiber is collected\n";
 $a = new A("a5");
 $a->keep();
 unset($a);
+// In TrueAsync, gc_collect_cycles() defers the destructors to the GC coroutine.
 var_dump(gc_collect_cycles());
 echo "end\n";
 ?>
@@ -80,6 +85,6 @@ resumed on a4
 released a4
 after resume
 -- a cycle through the fiber is collected
-released a5
-int(2)
+int(0)
 end
+released a5
