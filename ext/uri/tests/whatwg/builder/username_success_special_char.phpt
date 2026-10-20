@@ -7,8 +7,8 @@ $builder = new Uri\WhatWg\UrlBuilder();
 $builder->setScheme("https");
 $builder->setHost("example.com");
 $builder->setUsername("~%#");
-$errors = [];
-$url = $builder->build(null, $errors);
+$softErrors = [];
+$url = $builder->build(null, $softErrors);
 
 var_dump($url->toAsciiString());
 var_dump($url);

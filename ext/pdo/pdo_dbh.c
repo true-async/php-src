@@ -591,7 +591,7 @@ options:
 				}
 
 				/* TODO: Should the constructor fail when the attribute cannot be set? */
-				pdo_dbh_attribute_set(dbh, long_key, attr_value, 3);
+				pdo_dbh_attribute_set(dbh, long_key, attr_value, 4);
 			} ZEND_HASH_FOREACH_END();
 
 			/* Initialize connection pool if enabled (and not persistent).
@@ -721,7 +721,7 @@ PHP_METHOD(PDO, prepare)
 		if ((item = zend_hash_index_find(Z_ARRVAL_P(value), 1)) != NULL) {
 			if (Z_TYPE_P(item) != IS_ARRAY) {
 				zend_type_error("PDO::ATTR_STATEMENT_CLASS constructor_args must be of type ?array, %s given",
-					zend_zval_value_name(value));
+					zend_zval_value_name(item));
 				RETURN_THROWS();
 			}
 			ZVAL_COPY_VALUE(&ctor_args, item);
@@ -1059,7 +1059,6 @@ static bool pdo_dbh_attribute_set(pdo_dbh_t *dbh, zend_long attr, zval *value, u
 				pdo_raise_impl_error(dbh, NULL, "HY000",
 					"PDO::ATTR_STATEMENT_CLASS cannot be used with persistent PDO instances"
 					);
-				PDO_HANDLE_DBH_ERR();
 				return false;
 			}
 			if (Z_TYPE_P(value) != IS_ARRAY) {
@@ -1084,17 +1083,18 @@ static bool pdo_dbh_attribute_set(pdo_dbh_t *dbh, zend_long attr, zval *value, u
 				zend_argument_type_error(value_arg_num, "User-supplied statement class cannot have a public constructor");
 				return false;
 			}
+			item = zend_hash_index_find(Z_ARRVAL_P(value), 1);
+			if (item != NULL && Z_TYPE_P(item) != IS_ARRAY) {
+				zend_argument_type_error(value_arg_num, "PDO::ATTR_STATEMENT_CLASS constructor_args must be of type ?array, %s given",
+					zend_zval_value_name(item));
+				return false;
+			}
 			dbh->def_stmt_ce = pce;
 			if (!Z_ISUNDEF(dbh->def_stmt_ctor_args)) {
 				zval_ptr_dtor(&dbh->def_stmt_ctor_args);
 				ZVAL_UNDEF(&dbh->def_stmt_ctor_args);
 			}
-			if ((item = zend_hash_index_find(Z_ARRVAL_P(value), 1)) != NULL) {
-				if (Z_TYPE_P(item) != IS_ARRAY) {
-					zend_argument_type_error(value_arg_num, "PDO::ATTR_STATEMENT_CLASS constructor_args must be of type ?array, %s given",
-						zend_zval_value_name(value));
-					return false;
-				}
+			if (item != NULL) {
 				ZVAL_COPY(&dbh->def_stmt_ctor_args, item);
 			}
 			return true;
@@ -1853,12 +1853,14 @@ static void pdo_dbh_free_storage(zend_object *std)
 		return;
 	}
 
-	if (dbh->driver_data && dbh->methods && dbh->methods->rollback && dbh->in_txn) {
+	/* The persistent list holds one reference, other objects may hold the rest */
+	if (dbh->driver_data && dbh->methods && dbh->methods->rollback
+			&& (!dbh->is_persistent || dbh->refcount <= 2) && dbh->in_txn) {
 		dbh->methods->rollback(dbh);
 		dbh->in_txn = false;
 	}
 
-	if (dbh->is_persistent && dbh->methods && dbh->methods->persistent_shutdown) {
+	if (dbh->is_persistent && dbh->driver_data && dbh->methods && dbh->methods->persistent_shutdown) {
 		dbh->methods->persistent_shutdown(dbh);
 	}
 	zend_object_std_dtor(std);

@@ -2273,6 +2273,57 @@ static void curl_async_write_user_complete(
 #endif /* LIBCURL_VERSION_NUM >= 0x080B01 */
 
 /**
+ * @brief Runs the PHP write callback in the calling context and returns its verdict to libcurl.
+ *
+ * Used where CURL_WRITEFUNC_PAUSE is not available: libcurl below 8.11.1 and the
+ * file:// protocol.
+ */
+static size_t curl_async_write_user_sync(
+	char *data, const size_t length, php_curl *ch, curl_async_event_t *curl_event, const bool is_header)
+{
+	const php_curl_write * write_handler = is_header ? ch->handlers.write_header : ch->handlers.write;
+	zval argv[2];
+	zval retval;
+
+	GC_ADDREF(&ch->std);
+	ZVAL_OBJ(&argv[0], &ch->std);
+	ZVAL_STRINGL(&argv[1], data, length);
+
+	ZEND_ASYNC_ACT_AS_START(curl_event->coroutine);
+	ch->in_callback = true;
+	zend_call_known_fcc(&write_handler->fcc, &retval, 2, argv, NULL);
+	ch->in_callback = false;
+	ZEND_ASYNC_ACT_AS_END();
+
+	if (EG(exception)) {
+		if (curl_event != NULL) {
+			zend_object *ex = EG(exception);
+			GC_ADDREF(ex);
+			curl_async_event_set_callback_exception(curl_event, ex, CURLE_WRITE_ERROR);
+			zend_clear_exception();
+		}
+		SAVE_CURL_ERROR(ch, CURLE_WRITE_ERROR);
+		zval_ptr_dtor(&retval);
+		zval_ptr_dtor(&argv[0]);
+		zval_ptr_dtor(&argv[1]);
+		return (size_t) -1;
+	}
+
+	size_t result = length;
+	if (!Z_ISUNDEF(retval)) {
+		ZEND_ASYNC_ACT_AS_START(curl_event->coroutine);
+		_php_curl_verify_handlers(ch, true);
+		result = (size_t) zval_get_long(&retval);
+		zval_ptr_dtor(&retval);
+		ZEND_ASYNC_ACT_AS_END();
+	}
+
+	zval_ptr_dtor(&argv[0]);
+	zval_ptr_dtor(&argv[1]);
+	return result;
+}
+
+/**
  * @brief Async write callback for PHP_CURL_USER mode (body and headers).
  *
  * Spawns a high-priority coroutine that executes the PHP write callback
@@ -2296,49 +2347,17 @@ size_t curl_async_write_user(char *data, const size_t size, const size_t nmemb, 
 	 * Call the PHP callback synchronously instead.
 	 * See: https://github.com/curl/curl/pull/15627
 	 */
-	{
-		const php_curl_write * write_handler = is_header ? ch->handlers.write_header : ch->handlers.write;
-		zval argv[2];
-		zval retval;
-
-		GC_ADDREF(&ch->std);
-		ZVAL_OBJ(&argv[0], &ch->std);
-		ZVAL_STRINGL(&argv[1], data, length);
-
-		ZEND_ASYNC_ACT_AS_START(curl_event->coroutine);
-		ch->in_callback = true;
-		zend_call_known_fcc(&write_handler->fcc, &retval, 2, argv, NULL);
-		ch->in_callback = false;
-		ZEND_ASYNC_ACT_AS_END();
-
-		if (EG(exception)) {
-			if (curl_event != NULL) {
-				zend_object *ex = EG(exception);
-				GC_ADDREF(ex);
-				curl_async_event_set_callback_exception(curl_event, ex, CURLE_WRITE_ERROR);
-				zend_clear_exception();
-			}
-			SAVE_CURL_ERROR(ch, CURLE_WRITE_ERROR);
-			zval_ptr_dtor(&retval);
-			zval_ptr_dtor(&argv[0]);
-			zval_ptr_dtor(&argv[1]);
-			return (size_t) -1;
-		}
-
-		size_t result = length;
-		if (!Z_ISUNDEF(retval)) {
-			ZEND_ASYNC_ACT_AS_START(curl_event->coroutine);
-			_php_curl_verify_handlers(ch, true);
-			result = (size_t) zval_get_long(&retval);
-			zval_ptr_dtor(&retval);
-			ZEND_ASYNC_ACT_AS_END();
-		}
-
-		zval_ptr_dtor(&argv[0]);
-		zval_ptr_dtor(&argv[1]);
-		return result;
-	}
+	return curl_async_write_user_sync(data, length, ch, curl_event, is_header);
 #else
+	/* The file:// protocol cannot be paused: libcurl fails the transfer on
+	 * CURL_WRITEFUNC_PAUSE, so the callback runs synchronously, as for reads. */
+	char *scheme = NULL;
+	curl_easy_getinfo(curl_event->curl, CURLINFO_SCHEME, &scheme);
+
+	if (scheme == NULL || strcasecmp(scheme, "file") == 0) {
+		return curl_async_write_user_sync(data, length, ch, curl_event, is_header);
+	}
+
 	/* curl >= 8.11.1: use async PAUSE/unpause pattern */
 
 	curl_async_write_state_t *state = is_header ? curl_event->header_write_state : curl_event->write_state;

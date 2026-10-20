@@ -424,7 +424,7 @@ PHPAPI zend_result php_get_uid_by_name(const char *name, uid_t *uid)
 try_again:
 		err = getpwnam_r(name, &pw, pwbuf, pwbuflen, &retpwptr);
 		if (err != 0 || retpwptr == NULL) {
-			if (err == EAGAIN) {
+			if (err == ERANGE) {
 				pwbuflen *= 2;
 				pwbuf = erealloc(pwbuf, pwbuflen);
 				goto try_again;
@@ -935,7 +935,8 @@ PHPAPI void php_stat(zend_string *filename, int type, zval *return_value)
 		};
 		size_t i, size_stat_sb = sizeof(stat_sb_addresses) / sizeof(*stat_sb_addresses);
 
-		array_init(return_value);
+		array_init_size(return_value, 2 * size_stat_sb);
+		zend_hash_real_init_mixed(Z_ARRVAL_P(return_value));
 
 		ZVAL_LONG(&stat_dev, stat_sb->st_dev);
 		ZVAL_LONG(&stat_ino, stat_sb->st_ino);
@@ -964,7 +965,7 @@ PHPAPI void php_stat(zend_string *filename, int type, zval *return_value)
 #endif
 		for (i = 0; i < size_stat_sb; i++) {
 			/* Store numeric indexes in proper order */
-			zend_hash_next_index_insert(Z_ARRVAL_P(return_value), stat_sb_addresses[i]);
+			zend_hash_next_index_insert_new(Z_ARRVAL_P(return_value), stat_sb_addresses[i]);
 		}
 
 		for (i = 0; i < size_stat_sb; i++) {

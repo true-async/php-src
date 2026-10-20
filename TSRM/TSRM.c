@@ -305,6 +305,7 @@ TSRM_API ts_rsrc_id ts_allocate_id(ts_rsrc_id *rsrc_id, size_t size, ts_allocate
 		_tmp = (tsrm_resource_type *) realloc(resource_types_table, sizeof(tsrm_resource_type)*id_count);
 		if (!_tmp) {
 			TSRM_ERROR((TSRM_ERROR_LEVEL_ERROR, "Unable to allocate storage for resource"));
+			id_count--;
 			*rsrc_id = 0;
 			tsrm_mutex_unlock(tsmm_mutex);
 			return 0;
@@ -384,6 +385,7 @@ TSRM_API ts_rsrc_id ts_allocate_fast_id_at(ts_rsrc_id *rsrc_id, size_t *offset, 
 		_tmp = (tsrm_resource_type *) realloc(resource_types_table, sizeof(tsrm_resource_type)*id_count);
 		if (!_tmp) {
 			TSRM_ERROR((TSRM_ERROR_LEVEL_ERROR, "Unable to allocate storage for resource"));
+			id_count--;
 			*rsrc_id = 0;
 			tsrm_mutex_unlock(tsmm_mutex);
 			return 0;
@@ -419,6 +421,7 @@ TSRM_API ts_rsrc_id ts_allocate_tls_id(ts_rsrc_id *rsrc_id, void *(*tls_addr)(vo
 		_tmp = (tsrm_resource_type *) realloc(resource_types_table, sizeof(tsrm_resource_type)*id_count);
 		if (!_tmp) {
 			TSRM_ERROR((TSRM_ERROR_LEVEL_ERROR, "Unable to allocate storage for resource"));
+			id_count--;
 			*rsrc_id = 0;
 			tsrm_mutex_unlock(tsmm_mutex);
 			return 0;
@@ -852,7 +855,10 @@ TSRM_API void *tsrm_get_ls_cache(void)
 /* Returns offset of tsrm_ls_cache slot from Thread Control Block address */
 TSRM_API size_t tsrm_get_ls_cache_tcb_offset(void)
 {/*{{{*/
-#if defined(__APPLE__) && defined(__x86_64__)
+#if defined(TSRM_TLS_MODEL_USE_DEFAULT) && defined(__PIC__) && !defined(__PIE__)
+	/* The compiler may use dynamic TLS. Do not force a static TLS relocation. */
+	return 0;
+#elif defined(__APPLE__) && defined(__x86_64__)
     // TODO: Implement support for fast JIT ZTS code ???
 	return 0;
 #elif defined(__x86_64__) && defined(__GNUC__) && !defined(__FreeBSD__) && \

@@ -2806,11 +2806,11 @@ static zend_always_inline zend_result _zend_update_type_info(
 						 * null will be returned. */
 						tmp |= MAY_BE_NULL;
 					}
-					if (t2 & (MAY_BE_ARRAY | MAY_BE_OBJECT)) {
+					if (OP2_INFO() & (MAY_BE_ARRAY | MAY_BE_OBJECT)) {
 						/* Arrays and objects cannot be used as keys. */
 						tmp |= MAY_BE_NULL;
 					}
-					if (t1 & (MAY_BE_ANY - (MAY_BE_NULL | MAY_BE_FALSE | MAY_BE_STRING | MAY_BE_ARRAY))) {
+					if (OP1_INFO() & (MAY_BE_ANY - (MAY_BE_NULL | MAY_BE_FALSE | MAY_BE_STRING | MAY_BE_ARRAY))) {
 						/* null and false are implicitly converted to array, anything else
 						 * results in a null return value. */
 						tmp |= MAY_BE_NULL;
@@ -3451,7 +3451,11 @@ static zend_always_inline zend_result _zend_update_type_info(
 		case ZEND_ADD_ARRAY_UNPACK:
 			tmp = ssa_var_info[ssa_op->result_use].type;
 			ZEND_ASSERT(tmp & MAY_BE_ARRAY);
-			tmp |= t1 & (MAY_BE_ARRAY_KEY_ANY|MAY_BE_ARRAY_OF_ANY|MAY_BE_ARRAY_OF_REF);
+			if (t1 & MAY_BE_ARRAY_KEY_LONG) {
+				/* Integer keys are appended without copying the hash/packed layout of the source array. */
+				tmp |= MAY_BE_HASH_ONLY(tmp) ? MAY_BE_ARRAY_NUMERIC_HASH : MAY_BE_ARRAY_KEY_LONG;
+			}
+			tmp |= t1 & (MAY_BE_ARRAY_KEY_STRING|MAY_BE_ARRAY_OF_ANY|MAY_BE_ARRAY_OF_REF);
 			if (t1 & MAY_BE_OBJECT) {
 				tmp |= MAY_BE_ARRAY_KEY_ANY | MAY_BE_ARRAY_OF_ANY;
 			}
@@ -5024,7 +5028,6 @@ ZEND_API bool zend_may_throw_ex(const zend_op *opline, const zend_ssa_op *ssa_op
 		case ZEND_SWITCH_STRING:
 		case ZEND_MATCH:
 		case ZEND_ISSET_ISEMPTY_VAR:
-		case ZEND_ISSET_ISEMPTY_CV:
 		case ZEND_FUNC_NUM_ARGS:
 		case ZEND_FUNC_GET_ARGS:
 		case ZEND_COPY_TMP:
@@ -5112,7 +5115,14 @@ ZEND_API bool zend_may_throw_ex(const zend_op *opline, const zend_ssa_op *ssa_op
 		case ZEND_JMPZ_EX:
 		case ZEND_JMPNZ_EX:
 		case ZEND_JMP_SET:
-			return (t1 & MAY_BE_OBJECT);
+			/* NAN cast to bool will warn */
+			return (t1 & (MAY_BE_OBJECT|MAY_BE_DOUBLE));
+		case ZEND_ISSET_ISEMPTY_CV:
+			if (!(opline->extended_value & ZEND_ISEMPTY)) {
+				return 0;
+			}
+			/* empty() casts to bool: objects may have a cast handler, and NAN will warn */
+			return (t1 & (MAY_BE_OBJECT|MAY_BE_DOUBLE));
 		case ZEND_BOOL:
 		case ZEND_BOOL_NOT:
 			/* NAN Cast to bool will warn, but if we have a range it is fine */

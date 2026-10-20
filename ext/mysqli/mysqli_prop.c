@@ -35,19 +35,25 @@
 MYSQL *p; \
 if (!obj->ptr || !(MY_MYSQL *)((MYSQLI_RESOURCE *)(obj->ptr))->ptr) { \
 	if (!quiet) { \
-		zend_throw_error(NULL, "%s object is already closed", ZSTR_VAL(obj->zo.ce->name)); \
+		zend_throw_error(NULL, "%pS object is already closed", obj->zo.ce->name); \
 	} \
 	return FAILURE; \
 } else { \
 	CHECK_STATUS(statusval, quiet);\
 	p = (MYSQL *)((MY_MYSQL *)((MYSQLI_RESOURCE *)(obj->ptr))->ptr)->mysql;\
+	if (!p) { \
+		if (!quiet) { \
+			zend_throw_error(NULL, "%pS object is not fully initialized", obj->zo.ce->name); \
+		} \
+		return FAILURE; \
+	} \
 }
 
 #define MYSQLI_GET_RESULT(statusval) \
 MYSQL_RES *p; \
 if (!obj->ptr) { \
 	if (!quiet) { \
-		zend_throw_error(NULL, "%s object is already closed", ZSTR_VAL(obj->zo.ce->name)); \
+		zend_throw_error(NULL, "%pS object is already closed", obj->zo.ce->name); \
 	} \
 	return FAILURE; \
 } else { \
@@ -59,7 +65,7 @@ if (!obj->ptr) { \
 MYSQL_STMT *p; \
 if (!obj->ptr) { \
 	if (!quiet) { \
-		zend_throw_error(NULL, "%s object is already closed", ZSTR_VAL(obj->zo.ce->name)); \
+		zend_throw_error(NULL, "%pS object is already closed", obj->zo.ce->name); \
 	} \
 	return FAILURE; \
 } else { \

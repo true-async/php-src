@@ -607,6 +607,9 @@ static void zend_print_zval_r_to_buf(smart_str *buf, zval *expr, int indent) /* 
 		case IS_LONG:
 			smart_str_append_long(buf, Z_LVAL_P(expr));
 			break;
+		case IS_DOUBLE:
+			smart_str_append_double(buf, Z_DVAL_P(expr), EG(precision), false);
+			break;
 		case IS_REFERENCE:
 			zend_print_zval_r_to_buf(buf, Z_REFVAL_P(expr), indent);
 			break;
@@ -1236,6 +1239,7 @@ void zend_shutdown(void) /* {{{ */
 #endif
 	zend_map_ptr_static_last = 0;
 	zend_map_ptr_static_size = 0;
+	global_map_ptr_last = 0;
 
 	zend_destroy_rsrc_list_dtors();
 

@@ -476,8 +476,7 @@ static bool php_openssl_x509_fingerprint_match(php_stream *stream, X509 *peer, c
 static bool php_openssl_matches_wildcard_name(const char *subjectname, const char *certname) /* {{{ */
 {
 	const char *wildcard = NULL;
-	ptrdiff_t prefix_len;
-	size_t suffix_len, subject_len;
+	size_t prefix_len, suffix_len, subject_len;
 
 	if (strcasecmp(subjectname, certname) == 0) {
 		return true;
@@ -496,7 +495,7 @@ static bool php_openssl_matches_wildcard_name(const char *subjectname, const cha
 
 	suffix_len = strlen(wildcard + 1);
 	subject_len = strlen(subjectname);
-	if (suffix_len <= subject_len) {
+	if (suffix_len + prefix_len <= subject_len) {
 		/* 2) suffix must match
 		 * 3) no . between prefix and suffix
 		 **/
@@ -508,7 +507,8 @@ static bool php_openssl_matches_wildcard_name(const char *subjectname, const cha
 }
 /* }}} */
 
-static bool php_openssl_matches_san_list(X509 *peer, const char *subject_name) /* {{{ */
+static bool php_openssl_matches_san_list(
+		X509 *peer, const char *subject_name, bool *has_service_id)
 {
 	int i, len;
 	unsigned char *cert_name = NULL;
@@ -516,6 +516,8 @@ static bool php_openssl_matches_san_list(X509 *peer, const char *subject_name) /
 
 	GENERAL_NAMES *alt_names = X509_get_ext_d2i(peer, NID_subject_alt_name, 0, 0);
 	int alt_name_count = sk_GENERAL_NAME_num(alt_names);
+
+	*has_service_id = false;
 
 #ifdef HAVE_IPV6_SAN
 	/* detect if subject name is an IPv6 address and expand once if required */
@@ -534,6 +536,8 @@ static bool php_openssl_matches_san_list(X509 *peer, const char *subject_name) /
 		GENERAL_NAME *san = sk_GENERAL_NAME_value(alt_names, i);
 
 		if (san->type == GEN_DNS) {
+			*has_service_id = true;
+
 			if (ASN1_STRING_to_UTF8(&cert_name, san->d.dNSName) < 0) {
 				/* TODO: warn ? */
 				continue;
@@ -582,6 +586,16 @@ static bool php_openssl_matches_san_list(X509 *peer, const char *subject_name) /
 				}
 			}
 #endif
+		} else if (san->type == GEN_URI) {
+			*has_service_id = true;
+		} else if (san->type == GEN_OTHERNAME) {
+			char oid[32];
+
+			/* SRV-ID, matched by OID because NID_SRVName needs OpenSSL 3.0 */
+			if (OBJ_obj2txt(oid, sizeof(oid), san->d.otherName->type_id, 1) > 0
+					&& strcmp(oid, "1.3.6.1.5.5.7.8.7") == 0) {
+				*has_service_id = true;
+			}
 		}
 	}
 
@@ -589,7 +603,6 @@ static bool php_openssl_matches_san_list(X509 *peer, const char *subject_name) /
 
 	return false;
 }
-/* }}} */
 
 static bool php_openssl_matches_common_name(php_stream *stream, const X509 *peer, const char *subject_name) /* {{{ */
 {
@@ -716,8 +729,16 @@ static zend_result php_openssl_apply_peer_verification_policy(SSL *ssl, X509 *pe
 		}
 
 		if (peer_name) {
-			if (php_openssl_matches_san_list(peer, peer_name)) {
+			bool has_service_id = false;
+
+			if (php_openssl_matches_san_list(peer, peer_name, &has_service_id)) {
 				return SUCCESS;
+			} else if (has_service_id) {
+				/* CN must be ignored if the certificate presents a service identity. */
+				php_stream_warn(stream, AuthFailed,
+					"Peer certificate subjectAltName did not match expected name `%s'",
+					peer_name);
+				return FAILURE;
 			} else if (php_openssl_matches_common_name(stream, peer, peer_name)) {
 				return SUCCESS;
 			} else {
@@ -2224,7 +2245,7 @@ static SSL_SESSION *php_openssl_session_get_cb(SSL *ssl, const unsigned char *se
 			session = obj->session;
 		}
 	} else if (Z_TYPE(retval) != IS_NULL) {
-		zend_type_error("session_get_cb return type must be null or OpenSSLSession");
+		zend_type_error("session_get_cb return type must be null or Openssl\\Session");
 	}
 
 	zval_ptr_dtor(&retval);
@@ -2345,7 +2366,7 @@ static zend_result php_openssl_setup_client_session(php_stream *stream,
 		if (php_openssl_is_session_ce(val)) {
 			enable_client_cache = true;
 		} else if (Z_TYPE_P(val) != IS_NULL) {
-			zend_type_error("session_data must be an OpenSSLSession instance");
+			zend_type_error("session_data must be an Openssl\\Session instance");
 			return FAILURE;
 		}
 	}
@@ -2526,13 +2547,13 @@ static zend_result php_openssl_apply_client_session_data(php_stream *stream,
 			if (!session) {
 				// TODO: Should this be a TypeError?
 				php_stream_warn(stream, Generic,
-						"Invalid OpenSSLSession object, falling back to full handshake");
+						"Invalid Openssl\\Session object, falling back to full handshake");
 				return FAILURE;
 			}
 			/* Object owns the session, we just borrow it */
 			needs_free = false;
 		} else if (Z_TYPE_P(val) != IS_NULL) {
-			zend_type_error("session_data must be an OpenSSLSession instance");
+			zend_type_error("session_data must be an Openssl\\Session instance");
 			return FAILURE;
 		}
 
@@ -3040,6 +3061,7 @@ static int php_openssl_enable_crypto(php_stream *stream,
 				elapsed_time = php_openssl_subtract_timeval(cur_time, start_time);
 
 				if (php_openssl_compare_timeval( elapsed_time, *timeout) > 0) {
+					php_openssl_set_blocking(sslsock, blocked);
 					php_stream_warn(stream, TimeOut, "SSL: Handshake timed out");
 					return -1;
 				}
@@ -3222,9 +3244,11 @@ static ssize_t php_openssl_sockop_io(int read, php_stream *stream, char *buf, si
 					retry = 1;
 				}
 
-				/* Also, on reads, we may get this condition on an EOF. We should check properly. */
 				if (read) {
-					stream->eof = (retry == 0 && errno != EAGAIN && !SSL_pending(sslsock->ssl_handle));
+					/* EOF unless the SSL layer just needs to wait. */
+					stream->eof = (retry == 0
+						&& err != SSL_ERROR_WANT_READ && err != SSL_ERROR_WANT_WRITE
+						&& !SSL_pending(sslsock->ssl_handle));
 				}
 
 				/* Don't loop indefinitely in non-blocking mode if no data is available */
@@ -3916,6 +3940,13 @@ static int php_openssl_sockop_cast(php_stream *stream, int castas, void **ret)  
 							: stream->chunk_size);
 				}
 
+				*(php_socket_t *)ret = sslsock->s.socket;
+			}
+			return SUCCESS;
+
+		case PHP_STREAM_AS_FD_FOR_POLL:
+			/* Descriptor only, OpenSSL pending bytes stay put */
+			if (ret) {
 				*(php_socket_t *)ret = sslsock->s.socket;
 			}
 			return SUCCESS;

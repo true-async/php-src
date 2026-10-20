@@ -1279,7 +1279,7 @@ void fcgi_close(fcgi_request *req, int force, int destroy)
 		if (!force) {
 			char buf[8];
 
-			shutdown(req->fd, 1);
+			shutdown(req->fd, SHUT_WR);
 			/* read any remaining data, it may be omitted */
 			while (recv(req->fd, buf, sizeof(buf), 0) > 0) {}
 		}
@@ -1320,7 +1320,7 @@ static int fcgi_is_allowed(void) {
 	if (client_sa.sa.sa_family == AF_INET6) {
 		for (i = 0; allowed_clients[i].sa.sa_family ; i++) {
 			if (allowed_clients[i].sa.sa_family == AF_INET6
-				&& !memcmp(&client_sa.sa_inet6.sin6_addr, &allowed_clients[i].sa_inet6.sin6_addr, 12)) {
+				&& !memcmp(&client_sa.sa_inet6.sin6_addr, &allowed_clients[i].sa_inet6.sin6_addr, sizeof(client_sa.sa_inet6.sin6_addr))) {
 				return 1;
 			}
 #ifdef IN6_IS_ADDR_V4MAPPED

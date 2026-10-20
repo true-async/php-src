@@ -4,6 +4,7 @@ GH-19983 (GC Assertion Failure with fibers, generators and destructors)
 <?php
 if (PHP_INT_SIZE < 8) die("skip 64-bit only - fiber stacks exhaust 32-bit address space");
 if (getenv("SKIP_SLOW_TESTS")) die("skip slow test");
+if (extension_loaded("true_async")) die("skip TrueAsync collects the suspended fibers, so the destructor chain never exhausts memory; see gh19983_async.phpt");
 ?>
 --INI--
 memory_limit=16M

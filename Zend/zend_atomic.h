@@ -619,6 +619,23 @@ static zend_always_inline int zend_atomic_int_fetch_sub(zend_atomic_int *obj, in
 #define zend_atomic_int_inc(obj) zend_atomic_int_fetch_add((obj), 1)
 #define zend_atomic_int_dec(obj) zend_atomic_int_fetch_sub((obj), 1)
 
+#if defined(HAVE_C11_ATOMICS)
+# define ZEND_ATOMIC_FENCE_RELEASE() __c11_atomic_thread_fence(__ATOMIC_RELEASE)
+# define ZEND_ATOMIC_FENCE_ACQUIRE() __c11_atomic_thread_fence(__ATOMIC_ACQUIRE)
+#elif defined(HAVE_GNUC_ATOMICS)
+# define ZEND_ATOMIC_FENCE_RELEASE() __atomic_thread_fence(__ATOMIC_RELEASE)
+# define ZEND_ATOMIC_FENCE_ACQUIRE() __atomic_thread_fence(__ATOMIC_ACQUIRE)
+#elif defined(HAVE_SYNC_ATOMICS)
+# define ZEND_ATOMIC_FENCE_RELEASE() __sync_synchronize()
+# define ZEND_ATOMIC_FENCE_ACQUIRE() __sync_synchronize()
+#elif defined(ZEND_WIN32)
+# define ZEND_ATOMIC_FENCE_RELEASE() MemoryBarrier()
+# define ZEND_ATOMIC_FENCE_ACQUIRE() MemoryBarrier()
+#else
+# define ZEND_ATOMIC_FENCE_RELEASE() ((void)0)
+# define ZEND_ATOMIC_FENCE_ACQUIRE() ((void)0)
+#endif
+
 END_EXTERN_C()
 
 #endif

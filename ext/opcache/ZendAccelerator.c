@@ -202,10 +202,10 @@ static time_t zend_accel_get_time(void)
 # define zend_accel_get_time() time(NULL)
 #endif
 
-static inline bool is_cacheable_stream_path(const char *filename)
+static inline bool is_cacheable_stream_path(const zend_string *filename)
 {
-	return memcmp(filename, "file://", sizeof("file://") - 1) == 0 ||
-	       memcmp(filename, "phar://", sizeof("phar://") - 1) == 0;
+	return zend_string_starts_with_literal(filename, "file://") ||
+	       zend_string_starts_with_literal(filename, "phar://");
 }
 
 /* O+ overrides PHP chdir() function and remembers the current working directory
@@ -585,6 +585,13 @@ static zend_string* ZEND_FASTCALL accel_new_interned_string_for_php(zend_string 
 			return ret;
 		}
 	}
+#if ZEND_RC_DEBUG
+	/* PHP shouldn't create persistent strings during request, but at least
+	 * dl() may do this. They belong to the temporary module and are not shared. */
+	if (!zend_rc_debug && !ZSTR_IS_INTERNED(str) && (GC_FLAGS(str) & GC_PERSISTENT)) {
+		GC_MAKE_PERSISTENT_LOCAL(str);
+	}
+#endif
 	return str;
 }
 
@@ -608,19 +615,31 @@ static zend_always_inline zend_string *accel_find_interned_string_ex(zend_ulong 
 
 static zend_string* ZEND_FASTCALL accel_init_interned_string_for_php(const char *str, size_t size, bool permanent)
 {
+	zend_string *ret;
+
 	if (ZCG(counted)) {
 	    zend_ulong h = zend_inline_hash_func(str, size);
-		zend_string *ret = accel_find_interned_string_ex(h, str, size);
+		ret = accel_find_interned_string_ex(h, str, size);
 
-		if (!ret) {
-			ret = zend_string_init(str, size, permanent);
-			ZSTR_H(ret) = h;
+		if (ret) {
+			return ret;
 		}
 
-		return ret;
+		ret = zend_string_init(str, size, permanent);
+		ZSTR_H(ret) = h;
+	} else {
+		ret = zend_string_init(str, size, permanent);
 	}
 
-	return zend_string_init(str, size, permanent);
+#if ZEND_RC_DEBUG
+	/* PHP shouldn't create persistent strings during request, but at least
+	 * dl() may do this. They belong to the temporary module and are not shared. */
+	if (!zend_rc_debug && permanent) {
+		GC_MAKE_PERSISTENT_LOCAL(ret);
+	}
+#endif
+
+	return ret;
 }
 
 static inline void accel_copy_permanent_list_types(
@@ -1230,7 +1249,7 @@ zend_string *accel_make_persistent_key(zend_string *str)
 	if (IS_ABSOLUTE_PATH(path, path_length)) {
 		/* pass */
 	} else if (UNEXPECTED(php_is_stream_path(path))) {
-		if (!is_cacheable_stream_path(path)) {
+		if (!is_cacheable_stream_path(str)) {
 			return NULL;
 		}
 		/* pass */
@@ -1907,7 +1926,7 @@ static zend_op_array *file_cache_compile_file(zend_file_handle *file_handle, int
 	bool from_memory; /* if the script we've got is stored in SHM */
 
 	if (php_is_stream_path(ZSTR_VAL(file_handle->filename)) &&
-	    !is_cacheable_stream_path(ZSTR_VAL(file_handle->filename))) {
+	    !is_cacheable_stream_path(file_handle->filename)) {
 		return accelerator_orig_compile_file(file_handle, type);
 	}
 
@@ -2121,6 +2140,8 @@ zend_op_array *zend_accel_compile_pfa(zend_ast *ast,
 		zend_bailout();
 	} zend_end_try();
 
+	zend_ast_destroy(ast);
+
 	ZEND_ASSERT(op_array->num_dynamic_func_defs == 1);
 
 	zend_string_release(op_array->dynamic_func_defs[0]->function_name);
@@ -2265,7 +2286,7 @@ zend_op_array *persistent_compile_file(zend_file_handle *file_handle, int type)
 				return accelerator_orig_compile_file(file_handle, type);
 			}
 			persistent_script = zend_accel_hash_find(&ZCSG(hash), key);
-		} else if (UNEXPECTED(php_is_stream_path(ZSTR_VAL(file_handle->filename)) && !is_cacheable_stream_path(ZSTR_VAL(file_handle->filename)))) {
+		} else if (UNEXPECTED(php_is_stream_path(ZSTR_VAL(file_handle->filename)) && !is_cacheable_stream_path(file_handle->filename))) {
 			ZCG(cache_opline) = NULL;
 			ZCG(cache_persistent_script) = NULL;
 			return accelerator_orig_compile_file(file_handle, type);
@@ -2538,6 +2559,10 @@ static zend_class_entry* zend_accel_inheritance_cache_get(zend_class_entry *ce, 
 	bool needs_autoload;
 	zend_inheritance_cache_entry *entry = ce->inheritance_cache;
 
+	if (entry) {
+		ZEND_ATOMIC_FENCE_ACQUIRE();
+	}
+
 	while (entry) {
 		entry = zend_accel_inheritance_cache_find(entry, ce, parent, traits_and_interfaces, &needs_autoload);
 		if (entry) {
@@ -2700,9 +2725,10 @@ static zend_class_entry* zend_accel_inheritance_cache_add(zend_class_entry *ce, 
 	entry->num_warnings = EG(errors).size;
 	entry->warnings = zend_persist_warnings(EG(errors).size, EG(errors).errors);
 	entry->next = proto->inheritance_cache;
-	proto->inheritance_cache = entry;
 
 	ZCSG(map_ptr_last) = CG(map_ptr_last);
+	ZEND_ATOMIC_FENCE_RELEASE();
+	proto->inheritance_cache = entry;
 
 	zend_shared_alloc_destroy_xlat_table();
 

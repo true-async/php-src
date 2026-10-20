@@ -581,6 +581,7 @@ void shutdown_executor(void) /* {{{ */
 		zend_hash_discard(EG(class_table), EG(persistent_classes_count));
 	} else {
 		zend_vm_stack_destroy();
+		zend_vm_stack_destroy_caches();
 
 		if (EG(full_tables_cleanup)) {
 			zend_hash_reverse_apply(EG(function_table), clean_non_persistent_function_full);
@@ -684,11 +685,18 @@ ZEND_API const char *get_active_function_name(void) /* {{{ */
 		return NULL;
 	}
 
-	/* When acting on behalf of a suspended coroutine, use its execute_data */
+	/* When acting on behalf of a suspended coroutine with no user frame of our
+	 * own, use its execute_data. User code running inside the acting window, such
+	 * as a callback, reports its own function, as zend_get_executed_filename_ex() does. */
 	const zend_function *func = NULL;
 	zend_coroutine_t *acting = ZEND_ASYNC_ACTING_COROUTINE;
+	const zend_execute_data *user_ex = EG(current_execute_data);
 
-	if (acting != NULL) {
+	while (user_ex && (!user_ex->func || !ZEND_USER_CODE(user_ex->func->type))) {
+		user_ex = user_ex->prev_execute_data;
+	}
+
+	if (acting != NULL && user_ex == NULL) {
 		const zend_execute_data *ex = ZEND_ASYNC_COROUTINE_GET_EXECUTE_DATA(acting);
 		if (ex && ex->func) {
 			func = ex->func;
@@ -961,6 +969,7 @@ zend_result zend_call_function(zend_fcall_info *fci, zend_fcall_info_cache *fci_
 	zend_function *func;
 	uint32_t call_info;
 	void *object_or_called_scope;
+	zend_object *pinned_this = NULL;
 
 	ZVAL_UNDEF(fci->retval);
 
@@ -985,6 +994,12 @@ zend_result zend_call_function(zend_fcall_info *fci, zend_fcall_info_cache *fci_
 		}
 
 		if (!zend_is_callable_ex(&fci->function_name, fci->object, 0, NULL, fci_cache, &error)) {
+			if (EG(exception)) {
+				if (error) {
+					efree(error);
+				}
+				return SUCCESS;
+			}
 			ZEND_ASSERT(error && "Should have error if not callable");
 			zend_string *callable_name
 				= zend_get_callable_name_ex(&fci->function_name, fci->object);
@@ -1004,12 +1019,18 @@ zend_result zend_call_function(zend_fcall_info *fci, zend_fcall_info_cache *fci_
 	} else {
 		object_or_called_scope = fci_cache->object;
 		call_info = ZEND_CALL_TOP_FUNCTION | ZEND_CALL_DYNAMIC | ZEND_CALL_HAS_THIS;
+		pinned_this = fci_cache->object;
+		GC_ADDREF(pinned_this);
 	}
 
 	if (UNEXPECTED(func->common.fn_flags & ZEND_ACC_DEPRECATED)) {
 		zend_deprecated_function(func);
 
 		if (UNEXPECTED(EG(exception))) {
+			zend_release_fcall_info_cache(fci_cache);
+			if (pinned_this) {
+				OBJ_RELEASE(pinned_this);
+			}
 			return SUCCESS;
 		}
 	}
@@ -1018,6 +1039,9 @@ zend_result zend_call_function(zend_fcall_info *fci, zend_fcall_info_cache *fci_
 	if (UNEXPECTED(zend_call_stack_overflowed(EG(stack_limit)))) {
 		zend_call_stack_size_error();
 		zend_release_fcall_info_cache(fci_cache);
+		if (pinned_this) {
+			OBJ_RELEASE(pinned_this);
+		}
 		return SUCCESS;
 	}
 #endif
@@ -1055,6 +1079,9 @@ cleanup_args:
 						}
 						zend_vm_stack_free_call_frame(call);
 						zend_release_fcall_info_cache(fci_cache);
+						if (pinned_this) {
+							OBJ_RELEASE(pinned_this);
+						}
 						return SUCCESS;
 					}
 				}
@@ -1148,6 +1175,10 @@ cleanup_args:
 		if (zend_handle_undef_args(call) == FAILURE) {
 			zend_vm_stack_free_args(call);
 			zend_vm_stack_free_call_frame(call);
+			zend_release_fcall_info_cache(fci_cache);
+			if (pinned_this) {
+				OBJ_RELEASE(pinned_this);
+			}
 			return SUCCESS;
 		}
 	}
@@ -1233,6 +1264,10 @@ cleanup_args:
 		}
 	}
 	EG(fake_scope) = orig_fake_scope;
+
+	if (pinned_this) {
+		OBJ_RELEASE(pinned_this);
+	}
 
 	zend_vm_stack_free_call_frame(call);
 
