@@ -253,9 +253,7 @@ static void  shutdown_destructors_coroutine_dtor(zend_coroutine_t *coroutine) /*
 	if (shutdown_context->is_started && shutdown_context->coroutine == coroutine) {
 		shutdown_context->coroutine = NULL;
 		shutdown_context->is_started = false;
-		zend_error(E_CORE_ERROR, "Shutdown destructors coroutine was not finished property");
-		EG(symbol_table).pDestructor = zend_unclean_zval_ptr_dtor;
-		shutdown_destructors();
+		zend_error(E_CORE_ERROR, "Shutdown destructors coroutine was not finished properly");
 	}
 }
 
@@ -337,6 +335,7 @@ void shutdown_destructors(void) /* {{{ */
 				
 				if (Z_TYPE_P(zv) == IS_OBJECT && Z_REFCOUNT_P(zv) == 1) {
 					zend_hash_del_bucket(symbol_table, p);
+					zend_exception_shutdown_destructor();
 				}
 				
 				// If the coroutine has changed

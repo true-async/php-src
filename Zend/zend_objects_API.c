@@ -22,6 +22,7 @@
 #include "zend_variables.h"
 #include "zend_API.h"
 #include "zend_objects_API.h"
+#include "zend_exceptions.h"
 
 #include "zend_async_API.h"
 #include "zend_fibers.h"
@@ -70,8 +71,7 @@ static void  store_call_destructors_coroutine_dtor(zend_coroutine_t *coroutine)
 	if (shutdown_context->coroutine == coroutine) {
 		shutdown_context->coroutine = NULL;
 		shutdown_context->is_started = false;
-		zend_error(E_CORE_ERROR, "Shutdown destructors coroutine was not finished property");
-		shutdown_destructors();
+		zend_error(E_CORE_ERROR, "Shutdown destructors coroutine was not finished properly");
 	}
 }
 
@@ -143,6 +143,7 @@ ZEND_API void ZEND_FASTCALL zend_objects_store_call_destructors_async(zend_objec
 					GC_ADDREF(obj);
 					obj->handlers->dtor_obj(obj);
 					GC_DELREF(obj);
+					zend_exception_shutdown_destructor();
 
 					if (coroutine != ZEND_ASYNC_CURRENT_COROUTINE) {
 						return;
