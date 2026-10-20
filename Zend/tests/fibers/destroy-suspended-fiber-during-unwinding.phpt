@@ -1,5 +1,9 @@
 --TEST--
 Destroying a suspended fiber during exception unwinding does not skip the enclosing catch block
+--SKIPIF--
+<?php
+if (!function_exists("Async\\spawn")) die("skip TrueAsync runtime required");
+?>
 --FILE--
 <?php
 
@@ -74,7 +78,7 @@ foreach (['destructor_first', 'fiber_first', 'throw_in_fiber_finally'] as $f) {
 }
 
 ?>
---EXPECT--
+--EXPECTF--
 -- destructor_first
 D::__destruct
 caught: destructor_first
@@ -89,7 +93,13 @@ finally
 caught: fiber_first
 -- throw_in_fiber_finally
 D::__destruct
-caught: fiber finally, previous: throw_in_fiber_finally
+caught: throw_in_fiber_finally
 D::__destruct
 finally
-caught: fiber finally
+escaped: Graceful shutdown
+
+Fatal error: Uncaught Exception: fiber finally in %s:%d
+Stack trace:
+#0 [internal function]: {closure:throw_in_fiber_finally():%d}()
+#1 {main}
+  thrown in %s on line %d
