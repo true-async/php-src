@@ -586,6 +586,38 @@ static void zend_fiber_cleanup(zend_fiber_context *context)
 	fiber->caller = NULL;
 }
 
+static void zend_fiber_addref_callable(zend_fiber *fiber)
+{
+	// Keep a reference to closures or callable objects while the fiber is running.
+	Z_TRY_ADDREF(fiber->fci.function_name);
+
+	/* For [A::class, 'm'] or "A::m" inside a method of A, fci.object is the caller's $this. */
+	if (fiber->fci.object != NULL) {
+		GC_ADDREF(fiber->fci.object);
+	}
+}
+
+static void zend_fiber_get_gc_callable(zend_fiber *fiber, zend_get_gc_buffer *buf)
+{
+	zend_get_gc_buffer_add_zval(buf, &fiber->fci.function_name);
+
+	if (fiber->fci.object != NULL) {
+		zend_get_gc_buffer_add_obj(buf, fiber->fci.object);
+	}
+}
+
+static void zend_fiber_release_callable(zend_fiber *fiber)
+{
+	zval_ptr_dtor(&fiber->fci.function_name);
+	ZVAL_UNDEF(&fiber->fci.function_name);
+	fiber->fci_cache = empty_fcall_info_cache;
+
+	if (fiber->fci.object != NULL) {
+		zend_object *object = fiber->fci.object;
+		fiber->fci.object = NULL;
+		OBJ_RELEASE(object);
+	}
+}
 
 static ZEND_STACK_ALIGNED void zend_fiber_execute(zend_fiber_transfer *transfer)
 {
@@ -594,12 +626,9 @@ static ZEND_STACK_ALIGNED void zend_fiber_execute(zend_fiber_transfer *transfer)
 
 	zend_fiber *fiber = EG(active_fiber);
 
-	/* Determine the current error_reporting ini setting. */
+	/* We cannot rely on EG(error_reporting) as a silence operator @ may modify the executor global error_reporting
+	 * value without changing the underlying INI value */
 	zend_long error_reporting = zend_ini_long_literal("error_reporting");
-	/* If error_reporting is 0 and not explicitly set to 0, zend_ini_str returns a null pointer. */
-	if (!error_reporting && !zend_ini_str_literal("error_reporting")) {
-		error_reporting = E_ALL;
-	}
 
 	EG(vm_stack) = NULL;
 
@@ -632,8 +661,7 @@ static ZEND_STACK_ALIGNED void zend_fiber_execute(zend_fiber_transfer *transfer)
 		zend_call_function(&fiber->fci, &fiber->fci_cache);
 
 		/* Cleanup callback and unset field to prevent GC / duplicate dtor issues. */
-		zval_ptr_dtor(&fiber->fci.function_name);
-		ZVAL_UNDEF(&fiber->fci.function_name);
+		zend_fiber_release_callable(fiber);
 
 		if (EG(exception)) {
 			if (!(fiber->flags & ZEND_FIBER_FLAG_DESTROYED)
@@ -1390,6 +1418,7 @@ static void zend_fiber_object_destroy(zend_object *object)
 	}
 
 	zend_object *exception = EG(exception);
+	const zend_op *opline_before_exception = EG(opline_before_exception);
 	EG(exception) = NULL;
 
 	zval graceful_exit;
@@ -1398,6 +1427,8 @@ static void zend_fiber_object_destroy(zend_object *object)
 	fiber->flags |= ZEND_FIBER_FLAG_DESTROYED;
 
 	zend_fiber_transfer transfer = zend_fiber_resume_internal(fiber, &graceful_exit, true);
+
+	EG(opline_before_exception) = opline_before_exception;
 
 	zval_ptr_dtor(&graceful_exit);
 
@@ -1426,7 +1457,7 @@ static void zend_fiber_object_free(zend_object *object)
 
 	zend_fiber_release_coroutine(fiber);
 
-	zval_ptr_dtor(&fiber->fci.function_name);
+	zend_fiber_release_callable(fiber);
 	if (fiber->coroutine == NULL) {
 		zval_ptr_dtor(&fiber->result);
 	}
@@ -1500,7 +1531,7 @@ static HashTable *zend_fiber_object_gc(zend_object *object, zval **table, int *n
 	}
 
 	/* Non-coroutine path: add fci and result to GC */
-	zend_get_gc_buffer_add_zval(buf, &fiber->fci.function_name);
+	zend_fiber_get_gc_callable(fiber, buf);
 	zend_get_gc_buffer_add_zval(buf, &fiber->result);
 
 	if (fiber->context.status != ZEND_FIBER_STATUS_SUSPENDED || fiber->caller != NULL) {
@@ -1593,8 +1624,7 @@ ZEND_METHOD(Fiber, __construct)
 		fiber->fci = fci;
 		fiber->fci_cache = fcc;
 
-		/* Keep a reference to closures or callable objects */
-		Z_TRY_ADDREF(fiber->fci.function_name);
+		zend_fiber_addref_callable(fiber);
 	}
 }
 

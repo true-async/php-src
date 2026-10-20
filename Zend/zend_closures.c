@@ -74,6 +74,7 @@ ZEND_METHOD(Closure, __invoke) /* {{{ */
 	zend_closure_get_closure(Z_OBJ_P(ZEND_THIS), &fcc.calling_scope, &fcc.function_handler, &fcc.object, false);
 	fcc.called_scope = fcc.calling_scope;
 	zend_call_known_fcc(&fcc, return_value, num_args, args, named_args);
+	zend_return_unwrap_ref(execute_data, return_value);
 
 	/* destruct the function also, then - we have allocated it in get_method */
 	zend_string_release_ex(func->internal_function.function_name, 0);
@@ -168,7 +169,7 @@ ZEND_METHOD(Closure, call)
 	}
 
 	fci_cache.called_scope = newclass;
-	fci_cache.object = fci.object = new_this;
+	fci_cache.object = new_this;
 
 	fci.size = sizeof(fci);
 	fci.consumed_args = 0;
@@ -384,7 +385,7 @@ static ZEND_NAMED_FUNCTION(zend_closure_call_magic) /* {{{ */ {
 		ZVAL_EMPTY_ARRAY(&fci.params[1]);
 	}
 
-	fcc.object = fci.object = Z_OBJ_P(ZEND_THIS);
+	fcc.object = Z_OBJ_P(ZEND_THIS);
 	fcc.called_scope = zend_get_called_scope(EG(current_execute_data));
 
 	zend_call_function(&fci, &fcc);

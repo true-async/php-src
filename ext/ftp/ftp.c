@@ -1752,7 +1752,7 @@ static databuf_t* data_accept(databuf_t *data, ftpbuf_t *ftp)
 	data->listener = -1;
 
 	if (data->fd == -1) {
-		efree(data);
+		/* data is still owned by ftp->data, the caller's data_close() frees it */
 		return NULL;
 	}
 
@@ -1782,7 +1782,10 @@ data_accepted:
 		/* get the session from the control connection so we can re-use it */
 		session = ftp->last_ssl_session;
 		if (session == NULL) {
-			php_error_docref(NULL, E_WARNING, "data_accept: failed to retrieve the existing SSL session");
+			php_error_docref(NULL, E_WARNING, "data_accept: failed to retrieve the existing SSL session from the control connection. "
+											  "The server does not support TLS session resumption on the data connection, "
+											  "which is necessary to protect against session data stealing. "
+											  "PHP does not support such configuration.");
 			SSL_free(data->ssl_handle);
 			return 0;
 		}

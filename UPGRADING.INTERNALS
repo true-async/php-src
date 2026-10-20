@@ -182,6 +182,8 @@ PHP 8.6 INTERNALS UPGRADE NOTES
     instead of a zval*. Accordingly, zend_get_closure_this_ptr() now returns
     that zend_object*, or NULL when the closure is unbound, instead of a
     zval* that is IS_UNDEF when the closure is unbound.
+  . object_properties_load() now verifies that the given value is assignable
+    to typed properties. The check is performed in strict mode.
 
 - Added:
   . New zend_class_entry.ce_flags2 and zend_function.fn_flags2 fields were
@@ -213,6 +215,7 @@ PHP 8.6 INTERNALS UPGRADE NOTES
   . Added zend_argument_error_ex(), zend_argument_type_error_ex(),
     zend_argument_value_error_ex().
   . Added zend_ast_dup().
+  . Added zend_cannot_pass_by_reference_ex().
   . Added zend_compile_ast().
   . Added zend_check_type_ex().
   . Added zend_create_partial_closure().
@@ -264,6 +267,10 @@ PHP 8.6 INTERNALS UPGRADE NOTES
     HAVE_STRUCT_STAT_ST_BLOCKS).
   . Added a new configure option --disable-apache2-conf to prevent apxs from
     editing httpd.conf during installation.
+  . Apache ZTS builds now use the compiler's default TLS model. To opt into
+    initial-exec, add -ftls-model=initial-exec to CFLAGS (and CXXFLAGS for C++
+    code). This may require increasing the host processes static TLS surplus,
+    e.g. by setting GLIBC_TUNABLES=glibc.rtld.optional_static_tls=8192.
 
 - Windows build system changes:
   . Function SETUP_OPENSSL() doesn't accept 6th argument anymore and doesn't

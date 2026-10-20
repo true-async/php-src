@@ -299,6 +299,8 @@ namespace {
 
     function zend_delref(mixed $variable): void {}
 
+    function zend_test_erealloc_block_size(int $old_size, int $new_size): array {}
+
 	function zend_bool(bool $param): bool {}
 	function zend_bool_or_null(bool|null $param): bool|null {}
 	function zend_bool_slow_zpp(bool $param): bool {}
@@ -422,6 +424,8 @@ namespace {
     function zend_get_map_ptr_last(): int {}
 
     function zend_test_crash(?string $message = null): void {}
+
+    function zend_test_raise_and_throw(int $signal): void {}
 
     function zend_test_fill_packed_array(array &$array): void {}
 

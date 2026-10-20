@@ -1,5 +1,5 @@
 /* This is a generated file, edit test.stub.php instead.
- * Stub hash: 4d728e740122add9d4c91f5c1abb5f5017690636
+ * Stub hash: 0d233e99eed49cad1bb8e52c28d14ba2a6054b03
  * Has decl header: yes */
 
 #include "zend_constants.h"
@@ -53,6 +53,11 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_zend_leak_bytes, 0, 0, 0)
 ZEND_END_ARG_INFO()
 
 #define arginfo_zend_delref arginfo_zend_leak_variable
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_zend_test_erealloc_block_size, 0, 0, 2)
+	ZEND_ARG_INFO(0, old_size)
+	ZEND_ARG_INFO(0, new_size)
+ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_zend_bool, 0, 0, 1)
 	ZEND_ARG_INFO(0, param)
@@ -227,6 +232,10 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_zend_test_crash, 0, 0, 0)
 	ZEND_ARG_INFO(0, message)
 ZEND_END_ARG_INFO()
 
+ZEND_BEGIN_ARG_INFO_EX(arginfo_zend_test_raise_and_throw, 0, 0, 1)
+	ZEND_ARG_INFO(0, signal)
+ZEND_END_ARG_INFO()
+
 ZEND_BEGIN_ARG_INFO_EX(arginfo_zend_test_fill_packed_array, 0, 0, 1)
 	ZEND_ARG_INFO(1, array)
 ZEND_END_ARG_INFO()
@@ -361,6 +370,7 @@ static ZEND_FUNCTION(zend_terminate_string);
 static ZEND_FUNCTION(zend_leak_variable);
 static ZEND_FUNCTION(zend_leak_bytes);
 static ZEND_FUNCTION(zend_delref);
+static ZEND_FUNCTION(zend_test_erealloc_block_size);
 static ZEND_FUNCTION(zend_bool);
 static ZEND_FUNCTION(zend_bool_or_null);
 static ZEND_FUNCTION(zend_bool_slow_zpp);
@@ -431,6 +441,7 @@ static ZEND_FUNCTION(zend_test_zend_call_stack_use_all);
 static ZEND_FUNCTION(zend_test_is_string_marked_as_valid_utf8);
 static ZEND_FUNCTION(zend_get_map_ptr_last);
 static ZEND_FUNCTION(zend_test_crash);
+static ZEND_FUNCTION(zend_test_raise_and_throw);
 static ZEND_FUNCTION(zend_test_fill_packed_array);
 static ZEND_FUNCTION(zend_test_create_throwing_resource);
 static ZEND_FUNCTION(get_open_basedir);
@@ -509,6 +520,7 @@ static const zend_function_entry ext_functions[] = {
 	ZEND_FE(zend_leak_variable, arginfo_zend_leak_variable)
 	ZEND_FE(zend_leak_bytes, arginfo_zend_leak_bytes)
 	ZEND_FE(zend_delref, arginfo_zend_delref)
+	ZEND_FE(zend_test_erealloc_block_size, arginfo_zend_test_erealloc_block_size)
 	ZEND_FE(zend_bool, arginfo_zend_bool)
 	ZEND_FE(zend_bool_or_null, arginfo_zend_bool_or_null)
 	ZEND_FE(zend_bool_slow_zpp, arginfo_zend_bool_slow_zpp)
@@ -579,6 +591,7 @@ static const zend_function_entry ext_functions[] = {
 	ZEND_FE(zend_test_is_string_marked_as_valid_utf8, arginfo_zend_test_is_string_marked_as_valid_utf8)
 	ZEND_FE(zend_get_map_ptr_last, arginfo_zend_get_map_ptr_last)
 	ZEND_FE(zend_test_crash, arginfo_zend_test_crash)
+	ZEND_FE(zend_test_raise_and_throw, arginfo_zend_test_raise_and_throw)
 	ZEND_FE(zend_test_fill_packed_array, arginfo_zend_test_fill_packed_array)
 	ZEND_FE(zend_test_create_throwing_resource, arginfo_zend_test_create_throwing_resource)
 	ZEND_FE(get_open_basedir, arginfo_get_open_basedir)

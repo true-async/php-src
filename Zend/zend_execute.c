@@ -71,9 +71,9 @@
 #endif
 
 #if defined(ZEND_VM_FP_GLOBAL_REG) && ((ZEND_VM_KIND == ZEND_VM_KIND_CALL) || (ZEND_VM_KIND == ZEND_VM_KIND_HYBRID))
-# pragma GCC diagnostic ignored "-Wvolatile-register-var"
+ZEND_DIAGNOSTIC_IGNORED_START("-Wvolatile-register-var")
   register zend_execute_data* volatile execute_data __asm__(ZEND_VM_FP_GLOBAL_REG);
-# pragma GCC diagnostic warning "-Wvolatile-register-var"
+ZEND_DIAGNOSTIC_IGNORED_END
 #endif
 
 #if defined(ZEND_VM_FP_GLOBAL_REG) && ((ZEND_VM_KIND == ZEND_VM_KIND_CALL) || (ZEND_VM_KIND == ZEND_VM_KIND_HYBRID))
@@ -103,9 +103,9 @@
 #endif
 
 #if defined(ZEND_VM_IP_GLOBAL_REG) && ((ZEND_VM_KIND == ZEND_VM_KIND_CALL) || (ZEND_VM_KIND == ZEND_VM_KIND_HYBRID))
-# pragma GCC diagnostic ignored "-Wvolatile-register-var"
+ZEND_DIAGNOSTIC_IGNORED_START("-Wvolatile-register-var")
   register const zend_op* volatile opline __asm__(ZEND_VM_IP_GLOBAL_REG);
-# pragma GCC diagnostic warning "-Wvolatile-register-var"
+ZEND_DIAGNOSTIC_IGNORED_END
 #else
 #endif
 
@@ -191,6 +191,10 @@ ZEND_API const zend_internal_function zend_pass_function = {
 ZEND_API void zend_vm_stack_init(void)
 {
 	EG(vm_stack_page_size) = ZEND_VM_STACK_PAGE_SIZE;
+	EG(vm_stack_page_cache) = NULL;
+	EG(vm_stack_page_cache_count) = 0;
+	EG(fiber_vm_stack_page_cache) = NULL;
+	EG(fiber_vm_stack_page_cache_count) = 0;
 	EG(vm_stack) = zend_vm_stack_new_page(ZEND_VM_STACK_PAGE_SIZE, NULL);
 	EG(vm_stack_top) = EG(vm_stack)->top;
 	EG(vm_stack_end) = EG(vm_stack)->end;
@@ -201,6 +205,10 @@ ZEND_API void zend_vm_stack_init_ex(size_t page_size)
 	/* page_size must be a power of 2 */
 	ZEND_ASSERT(page_size > 0 && (page_size & (page_size - 1)) == 0);
 	EG(vm_stack_page_size) = page_size;
+	EG(vm_stack_page_cache) = NULL;
+	EG(vm_stack_page_cache_count) = 0;
+	EG(fiber_vm_stack_page_cache) = NULL;
+	EG(fiber_vm_stack_page_cache_count) = 0;
 	EG(vm_stack) = zend_vm_stack_new_page(page_size, NULL);
 	EG(vm_stack_top) = EG(vm_stack)->top;
 	EG(vm_stack_end) = EG(vm_stack)->end;
@@ -215,6 +223,23 @@ ZEND_API void zend_vm_stack_destroy(void)
 		efree(stack);
 		stack = p;
 	}
+}
+
+ZEND_API void zend_vm_stack_destroy_caches(void)
+{
+	while (EG(vm_stack_page_cache) != NULL) {
+		zend_vm_stack cached = EG(vm_stack_page_cache);
+		EG(vm_stack_page_cache) = cached->prev;
+		efree(cached);
+	}
+	EG(vm_stack_page_cache_count) = 0;
+
+	while (EG(fiber_vm_stack_page_cache) != NULL) {
+		zend_vm_stack cached = EG(fiber_vm_stack_page_cache);
+		EG(fiber_vm_stack_page_cache) = cached->prev;
+		efree(cached);
+	}
+	EG(fiber_vm_stack_page_cache_count) = 0;
 }
 
 ZEND_API void* zend_vm_stack_extend(size_t size)
@@ -599,17 +624,22 @@ static zend_never_inline ZEND_COLD zval *zend_wrong_assign_to_variable_reference
 	return zend_assign_to_variable_ex(variable_ptr, value_ptr, IS_TMP_VAR, EX_USES_STRICT_TYPES(), garbage_ptr);
 }
 
-ZEND_API zend_never_inline ZEND_COLD void ZEND_FASTCALL zend_cannot_pass_by_reference(uint32_t arg_num)
+ZEND_API ZEND_COLD void ZEND_FASTCALL zend_cannot_pass_by_reference_ex(const zend_function *func, uint32_t arg_num)
 {
-	const zend_execute_data *execute_data = EG(current_execute_data);
-	zend_string *func_name = get_function_or_method_name(EX(call)->func);
-	const char *param_name = get_function_arg_name(EX(call)->func, arg_num);
+	zend_string *func_name = get_function_or_method_name(func);
+	const char *param_name = get_function_arg_name(func, arg_num);
 
 	zend_throw_error(NULL, "%s(): Argument #%d%s%s%s could not be passed by reference",
 		ZSTR_VAL(func_name), arg_num, param_name ? " ($" : "", param_name ? param_name : "", param_name ? ")" : ""
 	);
 
 	zend_string_release(func_name);
+}
+
+ZEND_API zend_never_inline ZEND_COLD void ZEND_FASTCALL zend_cannot_pass_by_reference(uint32_t arg_num)
+{
+	const zend_execute_data *execute_data = EG(current_execute_data);
+	zend_cannot_pass_by_reference_ex(EX(call)->func, arg_num);
 }
 
 static zend_never_inline ZEND_COLD void zend_throw_auto_init_in_prop_error(const zend_property_info *prop) {
@@ -1080,8 +1110,7 @@ static zend_never_inline zval* zend_assign_to_typed_prop(const zend_property_inf
 		}
 	}
 
-	ZVAL_DEREF(value);
-	ZVAL_COPY(&tmp, value);
+	ZVAL_COPY_DEREF(&tmp, value);
 
 	if (UNEXPECTED(!i_zend_verify_property_type(info, &tmp, EX_USES_STRICT_TYPES()))) {
 		zval_ptr_dtor(&tmp);

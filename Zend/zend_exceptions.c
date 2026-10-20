@@ -149,6 +149,8 @@ void zend_exception_set_previous(zend_object *exception, zend_object *add_previo
 		}
 		ex = previous;
 	} while (Z_OBJ_P(ex) != add_previous);
+
+	OBJ_RELEASE(add_previous);
 }
 /* }}} */
 
@@ -474,8 +476,7 @@ ZEND_METHOD(Exception, getCode)
 	ZEND_PARSE_PARAMETERS_NONE();
 
 	prop = GET_PROPERTY(ZEND_THIS, ZEND_STR_CODE);
-	ZVAL_DEREF(prop);
-	ZVAL_COPY(return_value, prop);
+	ZVAL_COPY_DEREF(return_value, prop);
 }
 /* }}} */
 
@@ -487,8 +488,7 @@ ZEND_METHOD(Exception, getTrace)
 	ZEND_PARSE_PARAMETERS_NONE();
 
 	prop = GET_PROPERTY(ZEND_THIS, ZEND_STR_TRACE);
-	ZVAL_DEREF(prop);
-	ZVAL_COPY(return_value, prop);
+	ZVAL_COPY_DEREF(return_value, prop);
 }
 /* }}} */
 
@@ -500,8 +500,7 @@ ZEND_METHOD(ErrorException, getSeverity)
 	ZEND_PARSE_PARAMETERS_NONE();
 
 	prop = GET_PROPERTY(ZEND_THIS, ZEND_STR_SEVERITY);
-	ZVAL_DEREF(prop);
-	ZVAL_COPY(return_value, prop);
+	ZVAL_COPY_DEREF(return_value, prop);
 }
 /* }}} */
 

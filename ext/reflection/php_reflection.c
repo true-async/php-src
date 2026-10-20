@@ -594,6 +594,10 @@ static void _const_string(smart_str *str, const zend_string *name, const zval *v
 		smart_str_append(str, Z_STR_P(value));
 	} else if (Z_TYPE_P(value) == IS_DOUBLE) {
 		smart_str_append_double(str, Z_DVAL_P(value), (int) EG(precision), false);
+	} else if (Z_TYPE_P(value) == IS_FALSE) {
+		smart_str_append(str, ZSTR_KNOWN(ZEND_STR_FALSE));
+	} else if (Z_TYPE_P(value) == IS_TRUE) {
+		smart_str_append(str, ZSTR_KNOWN(ZEND_STR_TRUE));
 	} else {
 		zend_string *tmp_value_str;
 		zend_string *value_str = zval_get_tmp_string(value, &tmp_value_str);
@@ -630,6 +634,10 @@ static void _class_const_string(smart_str *str, const zend_string *name, zend_cl
 		smart_str_appends(str, "Object");
 	} else if (Z_TYPE(c->value) == IS_DOUBLE) {
 		smart_str_append_double(str, Z_DVAL(c->value), (int) EG(precision), false);
+	} else if (Z_TYPE(c->value) == IS_FALSE) {
+		smart_str_append(str, ZSTR_KNOWN(ZEND_STR_FALSE));
+	} else if (Z_TYPE(c->value) == IS_TRUE) {
+		smart_str_append(str, ZSTR_KNOWN(ZEND_STR_TRUE));
 	} else {
 		zend_string *tmp_value_str;
 		zend_string *value_str = zval_get_tmp_string(&c->value, &tmp_value_str);
@@ -6215,7 +6223,7 @@ ZEND_METHOD(ReflectionProperty, skipLazyInitialization)
 		RETURN_THROWS();
 	}
 
-	const zval *src = &object->ce->default_properties_table[OBJ_PROP_TO_NUM(prop->offset)];
+	const zval *src = &CE_DEFAULT_PROPERTIES_TABLE(object->ce)[OBJ_PROP_TO_NUM(prop->offset)];
 	zval *dst = OBJ_PROP(object, prop->offset);
 
 	if (!(Z_PROP_FLAG_P(dst) & IS_PROP_LAZY)) {

@@ -34,6 +34,7 @@
 #include "zend_enum.h"
 #include "zend_object_handlers.h"
 #include "zend_observer.h"
+#include "zend_system_id.h"
 
 #include <stdarg.h>
 
@@ -46,8 +47,6 @@ static zend_module_entry **module_request_startup_handlers;
 static zend_module_entry **module_request_shutdown_handlers;
 static zend_module_entry **module_post_deactivate_handlers;
 static zend_module_entry **modules_dl_loaded;
-
-static zend_class_entry  **class_cleanup_handlers;
 
 ZEND_API void zend_set_dl_use_deepbind(bool use_deepbind)
 {
@@ -1758,7 +1757,7 @@ ZEND_API void object_properties_load(zend_object *object, const HashTable *prope
 	zval *prop, tmp;
 	zend_string *key;
 	zend_long h;
-	const zend_property_info *property_info;
+	zend_property_info *property_info;
 
 	ZEND_HASH_FOREACH_KEY_VAL(properties, h, key, prop) {
 		if (key) {
@@ -1785,18 +1784,56 @@ ZEND_API void object_properties_load(zend_object *object, const HashTable *prope
 			if (property_info != ZEND_WRONG_PROPERTY_INFO &&
 				property_info &&
 				(property_info->flags & ZEND_ACC_STATIC) == 0) {
-				zval *slot = OBJ_PROP(object, property_info->offset);
-				if (UNEXPECTED((property_info->flags & ZEND_ACC_READONLY) && !Z_ISUNDEF_P(slot))) {
-					if (Z_PROP_FLAG_P(slot) & IS_PROP_REINITABLE) {
-						Z_PROP_FLAG_P(slot) &= ~IS_PROP_REINITABLE;
-					} else {
-						zend_readonly_property_modification_error(property_info);
-						return;
-					}
+				bool is_typed = ZEND_TYPE_IS_SET(property_info->type);
+
+				/* Mimick unserialize behaviour for virtual properties. */
+				if (UNEXPECTED(property_info->flags & ZEND_ACC_VIRTUAL)) {
+					zend_throw_error(NULL, "Cannot unserialize value for virtual property %s::$%s", ZSTR_VAL(object->ce->name), zend_get_unmangled_property_name(property_info->name));
+					return;
 				}
+
+				zval *slot = OBJ_PROP(object, property_info->offset);
+				zval val;
+
+				if (is_typed) {
+					if (UNEXPECTED(Z_ISREF_P(prop))) {
+						/* Block taking a reference to a readonly property. */
+						if (UNEXPECTED(property_info->flags & ZEND_ACC_READONLY)) {
+							zend_readonly_property_indirect_modification_error(property_info);
+							return;
+						}
+						if (UNEXPECTED(!zend_verify_prop_assignable_by_ref(property_info, prop, /* strict */ true))) {
+							ZEND_ASSERT(EG(exception));
+							return;
+						}
+						ZVAL_COPY(&val, prop);
+						ZEND_REF_ADD_TYPE_SOURCE(Z_REF_P(&val), property_info);
+					} else {
+						/* Mimick zend_assign_to_typed_prop() by reporting the error before doing work. */
+						if (UNEXPECTED((property_info->flags & ZEND_ACC_READONLY)
+						 && !Z_ISUNDEF_P(slot)
+						 && !(Z_PROP_FLAG_P(slot) & IS_PROP_REINITABLE))) {
+							zend_readonly_property_modification_error(property_info);
+							return;
+						}
+
+						ZVAL_COPY(&val, prop);
+						if (UNEXPECTED(!zend_verify_property_type(property_info, &val, /* strict */ true))) {
+							zval_ptr_dtor(&val);
+							return;
+						}
+					}
+					if (UNEXPECTED(Z_ISREF_P(slot))
+					 && (ZEND_DEBUG || ZEND_REF_HAS_TYPE_SOURCES(Z_REF_P(slot)))) {
+						ZEND_REF_DEL_TYPE_SOURCE(Z_REF_P(slot), property_info);
+					}
+				} else {
+					ZVAL_COPY(&val, prop);
+				}
+
+				Z_PROP_FLAG_P(slot) &= ~IS_PROP_REINITABLE;
 				zval_ptr_dtor(slot);
-				ZVAL_COPY_VALUE(slot, prop);
-				zval_add_ref(slot);
+				ZVAL_COPY_VALUE(slot, &val);
 				if (object->properties) {
 					ZVAL_INDIRECT(&tmp, slot);
 					zend_hash_update(object->properties, key, &tmp);
@@ -2274,6 +2311,9 @@ ZEND_API zend_result array_set_zval_key(HashTable *ht, zval *key, zval *value) /
 			break;
 		case IS_RESOURCE:
 			zend_use_resource_as_offset(key);
+			if (UNEXPECTED(EG(exception))) {
+				return FAILURE;
+			}
 			result = zend_hash_index_update(ht, Z_RES_HANDLE_P(key), value);
 			break;
 		case IS_FALSE:
@@ -2285,9 +2325,14 @@ ZEND_API zend_result array_set_zval_key(HashTable *ht, zval *key, zval *value) /
 		case IS_LONG:
 			result = zend_hash_index_update(ht, Z_LVAL_P(key), value);
 			break;
-		case IS_DOUBLE:
-			result = zend_hash_index_update(ht, zend_dval_to_lval_safe(Z_DVAL_P(key)), value);
+		case IS_DOUBLE: {
+			zend_long lval = zend_dval_to_lval_safe(Z_DVAL_P(key));
+			if (UNEXPECTED(EG(exception))) {
+				return FAILURE;
+			}
+			result = zend_hash_index_update(ht, lval, value);
 			break;
+		}
 		case IS_NULL:
 			zend_error(E_DEPRECATED, "Using null as an array offset is deprecated, use an empty string instead");
 			if (UNEXPECTED(EG(exception))) {
@@ -2523,8 +2568,6 @@ ZEND_API void zend_collect_module_handlers(void) /* {{{ */
 	int shutdown_count = 0;
 	int post_deactivate_count = 0;
 	int dl_loaded_count = 0;
-	zend_class_entry *ce;
-	int class_count = 0;
 
 	/* Collect extensions with request startup/shutdown handlers */
 	ZEND_HASH_MAP_FOREACH_PTR(&module_registry, module) {
@@ -2571,29 +2614,6 @@ ZEND_API void zend_collect_module_handlers(void) /* {{{ */
 			modules_dl_loaded[--dl_loaded_count] = module;
 		}
 	} ZEND_HASH_FOREACH_END();
-
-	/* Collect internal classes with static members */
-	ZEND_HASH_MAP_FOREACH_PTR(CG(class_table), ce) {
-		if (ce->type == ZEND_INTERNAL_CLASS &&
-		    ce->default_static_members_count > 0) {
-		    class_count++;
-		}
-	} ZEND_HASH_FOREACH_END();
-
-	class_cleanup_handlers = (zend_class_entry**)perealloc(
-		class_cleanup_handlers,
-		sizeof(zend_class_entry*) *
-		(class_count + 1), true);
-	class_cleanup_handlers[class_count] = NULL;
-
-	if (class_count) {
-		ZEND_HASH_MAP_FOREACH_PTR(CG(class_table), ce) {
-			if (ce->type == ZEND_INTERNAL_CLASS &&
-			    ce->default_static_members_count > 0) {
-			    class_cleanup_handlers[--class_count] = ce;
-			}
-		} ZEND_HASH_FOREACH_END();
-	}
 }
 /* }}} */
 
@@ -2606,8 +2626,6 @@ ZEND_API void zend_startup_modules(void) /* {{{ */
 
 ZEND_API void zend_destroy_modules(void) /* {{{ */
 {
-	free(class_cleanup_handlers);
-	class_cleanup_handlers = NULL;
 	free(module_request_startup_handlers);
 	module_request_startup_handlers = NULL;
 	zend_hash_graceful_reverse_destroy(&module_registry);
@@ -3080,7 +3098,11 @@ ZEND_API zend_result zend_register_functions(zend_class_entry *scope, const zend
 		internal_function->prototype = NULL;
 		internal_function->prop_info = NULL;
 		internal_function->attributes = NULL;
-		internal_function->frameless_function_infos = ptr->frameless_function_infos;
+		if (type == MODULE_TEMPORARY) {
+			internal_function->frameless_function_infos = NULL;
+		} else {
+			internal_function->frameless_function_infos = ptr->frameless_function_infos;
+		}
 		if (EG(active)) { // at run-time: this ought to only happen if registered with dl() or somehow temporarily at runtime
 			ZEND_MAP_PTR_INIT(internal_function->run_time_cache, zend_arena_calloc(&CG(arena), 1, zend_internal_run_time_cache_reserved_size()));
 		} else {
@@ -3202,6 +3224,7 @@ ZEND_API zend_result zend_register_functions(zend_class_entry *scope, const zend
 				}
 				zend_flf_handlers[zend_flf_count] = flf_info->handler;
 				zend_flf_functions[zend_flf_count] = (zend_function *)reg_function;
+				zend_add_system_entropy("frameless", ZSTR_VAL(reg_function->function_name), &flf_info->num_args, sizeof(flf_info->num_args));
 				zend_flf_count++;
 				flf_info++;
 			}

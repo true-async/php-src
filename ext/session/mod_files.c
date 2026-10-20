@@ -233,11 +233,6 @@ static zend_result ps_files_write(ps_files *data, zend_string *key, zend_string 
 		return FAILURE;
 	}
 
-	/* Truncate file if the amount of new data is smaller than the existing data set. */
-	if (ZSTR_LEN(val) < data->st_size) {
-		php_ignore_value(ftruncate(data->fd, 0));
-	}
-
 #ifdef HAVE_PWRITE
 	n = pwrite(data->fd, ZSTR_VAL(val), ZSTR_LEN(val), 0);
 #else
@@ -271,6 +266,12 @@ static zend_result ps_files_write(ps_files *data, zend_string *key, zend_string 
 		return FAILURE;
 	}
 
+	if (ZSTR_LEN(val) < data->st_size) {
+		php_ignore_value(ftruncate(data->fd, ZSTR_LEN(val)));
+	}
+
+	data->st_size = ZSTR_LEN(val);
+
 	return SUCCESS;
 }
 
@@ -288,12 +289,12 @@ static int ps_files_cleanup_dir(const zend_string *dirname, zend_long maxlifetim
 
 	dir = opendir(ZSTR_VAL(dirname));
 	if (!dir) {
-		php_error_docref(NULL, E_NOTICE, "ps_files_cleanup_dir: opendir(%s) failed: %s (%d)", ZSTR_VAL(dirname), strerror(errno), errno);
+		php_error_docref(NULL, E_NOTICE, "ps_files_cleanup_dir: opendir(%pS) failed: %s (%d)", dirname, strerror(errno), errno);
 		return -1;
 	}
 
 	if (ZSTR_LEN(dirname) >= MAXPATHLEN) {
-		php_error_docref(NULL, E_NOTICE, "ps_files_cleanup_dir: dirname(%s) is too long", ZSTR_VAL(dirname));
+		php_error_docref(NULL, E_NOTICE, "ps_files_cleanup_dir: dirname(%pS) is too long", dirname);
 		closedir(dir);
 		return -1;
 	}

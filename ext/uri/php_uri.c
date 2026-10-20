@@ -358,7 +358,7 @@ ZEND_ATTRIBUTE_NONNULL_ARGS(1, 2) PHPAPI void php_uri_instantiate_uri(
 	if (should_update_this_object) {
 		uri_object = Z_URI_OBJECT_P(ZEND_THIS);
 		if (uri_object->uri != NULL) {
-			zend_throw_error(NULL, "Cannot modify readonly object of class %s", ZSTR_VAL(Z_OBJCE_P(ZEND_THIS)->name));
+			zend_throw_error(NULL, "Cannot modify readonly object of class %pS", Z_OBJCE_P(ZEND_THIS)->name);
 			RETURN_THROWS();
 		}
 	} else {
@@ -387,6 +387,8 @@ ZEND_ATTRIBUTE_NONNULL_ARGS(1, 2) PHPAPI void php_uri_instantiate_uri(
 	if (UNEXPECTED(uri == NULL)) {
 		if (should_throw) {
 			zval_ptr_dtor(&errors);
+			ZVAL_EMPTY_ARRAY(&errors);
+			pass_errors_by_ref_and_free(errors_zv, &errors);
 			RETURN_THROWS();
 		} else {
 			if (pass_errors_by_ref_and_free(errors_zv, &errors) == FAILURE) {
@@ -476,7 +478,7 @@ PHP_METHOD(Uri_WhatWg_InvalidUrlException, __construct)
 		zend_update_property(php_uri_ce_whatwg_invalid_url_exception, Z_OBJ_P(ZEND_THIS), ZEND_STRL("errors"), &tmp);
 	} else {
 		if (!is_list_of_whatwg_validation_errors(Z_ARR_P(errors))) {
-			zend_argument_value_error(2, "must be a list of %s", ZSTR_VAL(php_uri_ce_whatwg_url_validation_error->name));
+			zend_argument_value_error(2, "must be a list of %pS", php_uri_ce_whatwg_url_validation_error->name);
 			RETURN_THROWS();
 		}
 
@@ -729,7 +731,7 @@ PHP_METHOD(Uri_Rfc3986_Uri, withFragment)
 
 static void throw_cannot_recompose_uri_to_string(php_uri_object *object)
 {
-	zend_throw_exception_ex(php_uri_ce_error, 0, "Cannot recompose %s to a string", ZSTR_VAL(object->std.ce->name));
+	zend_throw_exception_ex(php_uri_ce_error, 0, "Cannot recompose %pS to a string", object->std.ce->name);
 }
 
 static void uri_equals(INTERNAL_FUNCTION_PARAMETERS, php_uri_object *that_object, zend_enum_Uri_UriComparisonMode comparison_mode)
@@ -865,52 +867,52 @@ static void uri_unserialize(INTERNAL_FUNCTION_PARAMETERS)
 	php_uri_object *uri_object = php_uri_object_from_obj(Z_OBJ_P(ZEND_THIS));
 	if (uri_object->uri != NULL) {
 		/* Intentionally throw two exceptions for proper chaining. */
-		zend_throw_error(NULL, "Cannot modify readonly object of class %s", ZSTR_VAL(uri_object->std.ce->name));
-		zend_throw_exception_ex(NULL, 0, "Invalid serialization data for %s object", ZSTR_VAL(uri_object->std.ce->name));
+		zend_throw_error(NULL, "Cannot modify readonly object of class %pS", uri_object->std.ce->name);
+		zend_throw_exception_ex(NULL, 0, "Invalid serialization data for %pS object", uri_object->std.ce->name);
 		RETURN_THROWS();
 	}
 
 	/* Verify the expected number of elements, this implicitly ensures that no additional elements are present. */
 	if (zend_hash_num_elements(data) != 2) {
-		zend_throw_exception_ex(NULL, 0, "Invalid serialization data for %s object", ZSTR_VAL(uri_object->std.ce->name));
+		zend_throw_exception_ex(NULL, 0, "Invalid serialization data for %pS object", uri_object->std.ce->name);
 		RETURN_THROWS();
 	}
 
 	/* Unserialize state: "uri" key in the first array */
 	zval *arr = zend_hash_index_find(data, 0);
 	if (arr == NULL || Z_TYPE_P(arr) != IS_ARRAY) {
-		zend_throw_exception_ex(NULL, 0, "Invalid serialization data for %s object", ZSTR_VAL(uri_object->std.ce->name));
+		zend_throw_exception_ex(NULL, 0, "Invalid serialization data for %pS object", uri_object->std.ce->name);
 		RETURN_THROWS();
 	}
 
 	/* Verify the expected number of elements inside the first array, this implicitly ensures that no additional elements are present. */
 	if (zend_hash_num_elements(Z_ARRVAL_P(arr)) != 1) {
-		zend_throw_exception_ex(NULL, 0, "Invalid serialization data for %s object", ZSTR_VAL(uri_object->std.ce->name));
+		zend_throw_exception_ex(NULL, 0, "Invalid serialization data for %pS object", uri_object->std.ce->name);
 		RETURN_THROWS();
 	}
 
 	zval *uri_zv = zend_hash_str_find(Z_ARRVAL_P(arr), ZEND_STRL(PHP_URI_SERIALIZE_URI_FIELD_NAME));
 	if (uri_zv == NULL || Z_TYPE_P(uri_zv) != IS_STRING) {
-		zend_throw_exception_ex(NULL, 0, "Invalid serialization data for %s object", ZSTR_VAL(uri_object->std.ce->name));
+		zend_throw_exception_ex(NULL, 0, "Invalid serialization data for %pS object", uri_object->std.ce->name);
 		RETURN_THROWS();
 	}
 
 	uri_object->uri = uri_object->parser->parse(Z_STRVAL_P(uri_zv), Z_STRLEN_P(uri_zv), NULL, NULL, true);
 	if (uri_object->uri == NULL) {
-		zend_throw_exception_ex(NULL, 0, "Invalid serialization data for %s object", ZSTR_VAL(uri_object->std.ce->name));
+		zend_throw_exception_ex(NULL, 0, "Invalid serialization data for %pS object", uri_object->std.ce->name);
 		RETURN_THROWS();
 	}
 
 	/* Unserialize regular properties: second array */
 	arr = zend_hash_index_find(data, 1);
 	if (arr == NULL || Z_TYPE_P(arr) != IS_ARRAY) {
-		zend_throw_exception_ex(NULL, 0, "Invalid serialization data for %s object", ZSTR_VAL(uri_object->std.ce->name));
+		zend_throw_exception_ex(NULL, 0, "Invalid serialization data for %pS object", uri_object->std.ce->name);
 		RETURN_THROWS();
 	}
 
 	/* Verify that there is no regular property in the second array, because the URI classes have no properties and they are final. */
 	if (zend_hash_num_elements(Z_ARRVAL_P(arr)) > 0) {
-		zend_throw_exception_ex(NULL, 0, "Invalid serialization data for %s object", ZSTR_VAL(uri_object->std.ce->name));
+		zend_throw_exception_ex(NULL, 0, "Invalid serialization data for %pS object", uri_object->std.ce->name);
 		RETURN_THROWS();
 	}
 }
@@ -1404,12 +1406,12 @@ PHP_METHOD(Uri_WhatWg_UrlBuilder, setFragment)
 PHP_METHOD(Uri_WhatWg_UrlBuilder, build)
 {
 	zval *base_url_zv = NULL;
-	zval *errors = NULL;
+	zval *soft_errors = NULL;
 
 	ZEND_PARSE_PARAMETERS_START(0, 2)
 		Z_PARAM_OPTIONAL
 		Z_PARAM_OBJECT_OF_CLASS_OR_NULL(base_url_zv, php_uri_ce_whatwg_url)
-		Z_PARAM_ZVAL(errors)
+		Z_PARAM_ZVAL(soft_errors)
 	ZEND_PARSE_PARAMETERS_END();
 
 	const zval *scheme = Z_WHATWG_URL_PROP_SCHEME_DEREF_P(ZEND_THIS);
@@ -1423,16 +1425,17 @@ PHP_METHOD(Uri_WhatWg_UrlBuilder, build)
 
 	lxb_url_t *base_url = NULL;
 	if (base_url_zv != NULL) {
-		zend_argument_error(NULL, 1, "is not supported yet, and therefore, null must be passed");
-		RETURN_THROWS();
 		base_url = Z_URI_OBJECT_P(base_url_zv)->uri;
 	}
 
 	lxb_url_t *lexbor_url = php_uri_parser_whatwg_build_from_zval(
 		base_url, scheme, username, password, host, port, path, query, fragment,
-		errors
+		soft_errors
 	);
 	if (lexbor_url == NULL) {
+		zval errors;
+		ZVAL_EMPTY_ARRAY(&errors);
+		pass_errors_by_ref_and_free(soft_errors, &errors);
 		RETURN_THROWS();
 	}
 

@@ -111,7 +111,6 @@ void php_clear_stmt_bind(MY_STMT *stmt)
 	if (stmt->stmt) {
 		if (mysqli_stmt_close(stmt->stmt, true)) {
 			php_error_docref(NULL, E_WARNING, "Error occurred while closing statement");
-			return;
 		}
 	}
 
@@ -255,8 +254,8 @@ zval *mysqli_write_property(zend_object *object, zend_string *name, zval *value,
 		const mysqli_prop_handler *hnd = zend_hash_find_ptr(obj->prop_handler, name);
 		if (hnd) {
 			if (!hnd->write_func) {
-				zend_throw_error(NULL, "Cannot write read-only property %s::$%s",
-					ZSTR_VAL(object->ce->name), ZSTR_VAL(name));
+				zend_throw_error(NULL, "Cannot write read-only property %pS::$%pS",
+					object->ce->name, name);
 				return &EG(error_zval);
 			}
 
@@ -401,7 +400,7 @@ static MYSQLND *mysqli_convert_zv_to_mysqlnd(zval * zv)
 		mysqli_object *intern = Z_MYSQLI_P(zv);
 		if (!(my_res = (MYSQLI_RESOURCE *)intern->ptr)) {
 			/* We know that we have a mysqli object, so this failure should be emitted */
-			zend_throw_error(NULL, "%s object is already closed", ZSTR_VAL(intern->zo.ce->name));
+			zend_throw_error(NULL, "%pS object is already closed", intern->zo.ce->name);
 			return NULL;
 		}
 		mysql = (MY_MYSQL *)(my_res->ptr);

@@ -28,6 +28,7 @@
 #include "ext/standard/basic_functions.h" /* for BG(CurrentStatFile) */
 #include "ext/standard/php_string.h" /* for php_memnstr, used by php_stream_get_record() */
 #include "ext/uri/php_uri.h"
+#include "ext/standard/io_poll.h"
 #include <stddef.h>
 #include <fcntl.h>
 #include "php_streams_int.h"
@@ -109,12 +110,9 @@ static int forget_persistent_resource_id_numbers(zval *el)
 fprintf(stderr, "forget_persistent: %s:%p\n", stream->ops->label, stream);
 #endif
 
+	/* Request resources have been destroyed; clear their stale pointers. */
 	stream->res = NULL;
-
-	if (stream->ctx) {
-		zend_list_delete(stream->ctx);
-		stream->ctx = NULL;
-	}
+	stream->ctx = NULL;
 
 	/* The lock and its callback vector come from the request allocator, while
 	 * the stream itself outlives the request. No coroutine is left to hold it
@@ -130,7 +128,7 @@ fprintf(stderr, "forget_persistent: %s:%p\n", stream->ops->label, stream);
 	return 0;
 }
 
-PHP_RSHUTDOWN_FUNCTION(streams)
+ZEND_MODULE_POST_ZEND_DEACTIVATE_D(streams)
 {
 	zval *el;
 
@@ -392,11 +390,14 @@ fprintf(stderr, "stream_free: %s:%p[%s] preserve_handle=%d release_cast=%d remov
 		(close_options & PHP_STREAM_FREE_RSRC_DTOR) == 0);
 #endif
 
+	int flush_result;
 	if (stream->flags & PHP_STREAM_FLAG_WAS_WRITTEN || stream->writefilters.head) {
 		/* make sure everything is saved. The lock is deliberately not taken: a
 		 * close must interrupt the coroutines parked on this stream, not queue
 		 * behind them, and they learn about it from the closed event below. */
-		php_stream_flush_ex(stream, true, NULL);
+		flush_result = php_stream_flush_ex(stream, true, NULL);
+	} else {
+		flush_result = 0;
 	}
 
 	/* If not called from the resource dtor, remove the stream from the resource list. */
@@ -420,10 +421,22 @@ fprintf(stderr, "stream_free: %s:%p[%s] preserve_handle=%d release_cast=%d remov
 				Let's let the cookie code clean it all up.
 			 */
 			stream->in_free = 0;
-			return fclose(stream->stdiocast);
+			ret = fclose(stream->stdiocast);
+			if (!ret) {
+				ret = flush_result;
+			}
+			return ret;
+		}
+
+		/* Watchers must unregister while the fd is still open */
+		if (stream->poll_watchers) {
+			php_io_poll_stream_notify_close(stream);
 		}
 
 		ret = stream->ops->close(stream, preserve_handle ? 0 : 1);
+		if (!ret) {
+			ret = flush_result;
+		}
 		/* When ops->close set stream->pending_free, it kept the abstract
 		 * alive for a parked coroutine to finalize; do not clear abstract. */
 		if (!stream->pending_free) {
@@ -439,6 +452,10 @@ fprintf(stderr, "stream_free: %s:%p[%s] preserve_handle=%d release_cast=%d remov
 	}
 
 	if (close_options & PHP_STREAM_FREE_RELEASE_STREAM) {
+		if (stream->poll_watchers) {
+			php_io_poll_stream_notify_close(stream);
+		}
+
 		while (stream->readfilters.head) {
 			if (stream->readfilters.head->res != NULL) {
 				zend_list_close(stream->readfilters.head->res);

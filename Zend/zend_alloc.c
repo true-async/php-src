@@ -356,6 +356,7 @@ struct _zend_mm_huge_list {
 	void              *ptr;
 	size_t             size;
 	zend_mm_huge_list *next;
+	zend_mm_huge_list *prev;
 #if ZEND_DEBUG
 	zend_mm_debug_info dbg;
 #endif
@@ -1819,8 +1820,9 @@ static zend_always_inline void *zend_mm_realloc_heap(zend_mm_heap *heap, void *p
 
 				/* Check if requested size fits into current bin */
 				if (size <= old_size) {
-					/* Check if truncation is necessary */
-					if (old_bin_num > 0 && size < bin_data_size[old_bin_num - 1]) {
+					/* Check if truncation is necessary. A size that fits the
+					 * bin below moves there, as efree_size() maps it to that bin. */
+					if (old_bin_num > 0 && size <= bin_data_size[old_bin_num - 1]) {
 						/* truncation */
 						ret = zend_mm_alloc_small(heap, ZEND_MM_SMALL_SIZE_TO_BIN(size) ZEND_FILE_LINE_RELAY_CC ZEND_FILE_LINE_ORIG_RELAY_CC);
 						copy_size = use_copy_size ? MIN(size, copy_size) : size;
@@ -1969,6 +1971,10 @@ static void zend_mm_add_huge_block(zend_mm_heap *heap, void *ptr, size_t size ZE
 	list->ptr = ptr;
 	list->size = size;
 	list->next = heap->huge_list;
+	list->prev = NULL;
+	if (heap->huge_list) {
+		heap->huge_list->prev = list;
+	}
 #if ZEND_DEBUG
 	list->dbg.size = dbg_size;
 	list->dbg.filename = __zend_filename;
@@ -1981,22 +1987,28 @@ static void zend_mm_add_huge_block(zend_mm_heap *heap, void *ptr, size_t size ZE
 
 static size_t zend_mm_del_huge_block(zend_mm_heap *heap, void *ptr ZEND_FILE_LINE_DC ZEND_FILE_LINE_ORIG_DC)
 {
-	zend_mm_huge_list *prev = NULL;
 	zend_mm_huge_list *list = heap->huge_list;
 	while (list != NULL) {
 		if (list->ptr == ptr) {
 			size_t size;
 
-			if (prev) {
-				prev->next = list->next;
+			/* Unlinking writes through these, so make sure they still point back
+			 * at this block before trusting them. */
+			ZEND_MM_CHECK(list->prev ? list->prev->next == list : heap->huge_list == list, "zend_mm_heap corrupted");
+			ZEND_MM_CHECK(!list->next || list->next->prev == list, "zend_mm_heap corrupted");
+
+			if (list->prev) {
+				list->prev->next = list->next;
 			} else {
 				heap->huge_list = list->next;
+			}
+			if (list->next) {
+				list->next->prev = list->prev;
 			}
 			size = list->size;
 			zend_mm_free_heap(heap, list ZEND_FILE_LINE_RELAY_CC ZEND_FILE_LINE_ORIG_RELAY_CC);
 			return size;
 		}
-		prev = list;
 		list = list->next;
 	}
 	ZEND_MM_CHECK(0, "zend_mm_heap corrupted");
@@ -2268,6 +2280,10 @@ ZEND_API size_t zend_mm_gc(zend_mm_heap *heap)
 			}
 			ZEND_ASSERT(ZEND_MM_SRUN_BIN_NUM(info) == i);
 			free_counter = ZEND_MM_SRUN_FREE_COUNTER(info) + 1;
+			/* A slot can only be on the free list once, so exceeding the number
+			 * of slots in the page means the list is corrupted, most likely a
+			 * cycle, which would loop here forever. */
+			ZEND_MM_CHECK(free_counter <= bin_elements[i], "zend_mm_heap corrupted");
 			if (free_counter == bin_elements[i]) {
 				has_free_pages = true;
 			}
@@ -2426,6 +2442,9 @@ static zend_long zend_mm_find_leaks_huge(zend_mm_heap *heap, zend_mm_huge_list *
 	while (p) {
 		if (p->dbg.filename == list->dbg.filename && p->dbg.lineno == list->dbg.lineno) {
 			prev->next = p->next;
+			if (p->next) {
+				p->next->prev = prev;
+			}
 			zend_mm_chunk_free(heap, p->ptr, p->size);
 			zend_mm_free_heap(heap, p, NULL, 0, NULL, 0);
 			count++;
@@ -2468,6 +2487,9 @@ static void zend_mm_check_leaks(zend_mm_heap *heap)
 		}
 
 		heap->huge_list = list = list->next;
+		if (list) {
+			list->prev = NULL;
+		}
 		zend_mm_chunk_free(heap, q->ptr, q->size);
 		zend_mm_free_heap(heap, q, NULL, 0, NULL, 0);
 	}

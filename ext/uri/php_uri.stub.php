@@ -39,9 +39,9 @@ namespace Uri\Rfc3986 {
 
     enum UriHostType
     {
-        case IPv4;
-        case IPv6;
-        case IPvFuture;
+        case IpV4;
+        case IpV6;
+        case IpVFuture;
         case RegisteredName;
     }
 
@@ -204,8 +204,8 @@ namespace Uri\WhatWg {
 
     enum UrlHostType
     {
-        case IPv4;
-        case IPv6;
+        case IpV4;
+        case IpV6;
         case Domain;
         case Opaque;
         case Empty;
@@ -240,8 +240,8 @@ namespace Uri\WhatWg {
 
         public function setFragment(?string $fragment): static {}
 
-        /** @param array $errors */
-        public function build(?\Uri\WhatWg\Url $baseUrl = null, &$errors = null): \Uri\WhatWg\Url {}
+        /** @param array $softErrors */
+        public function build(?\Uri\WhatWg\Url $baseUrl = null, &$softErrors = null): \Uri\WhatWg\Url {}
     }
 
     /** @strict-properties */

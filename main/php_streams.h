@@ -114,7 +114,9 @@ typedef struct _php_stream_ops  {
 	/* stdio like functions - these are mandatory! */
 	ssize_t (*write)(php_stream *stream, const char *buf, size_t count);
 	ssize_t (*read)(php_stream *stream, char *buf, size_t count);
+	/* returns 0 on success and non-zero on failure */
 	int    (*close)(php_stream *stream, int close_handle);
+	/* returns 0 on success (including nothing to flush) and non-zero on failure */
 	int    (*flush)(php_stream *stream);
 
 	const char *label; /* label for this ops structure */
@@ -258,6 +260,8 @@ struct _php_stream  {
 	struct _php_stream *enclosing_stream; /* this is a private stream owned by enclosing_stream */
 
 	zend_llist *error_list;
+
+	HashTable *poll_watchers; /* Io\Poll watchers notified before the stream is closed */
 }; /* php_stream */
 
 #define PHP_STREAM_CONTEXT(stream) \
@@ -579,6 +583,8 @@ END_EXTERN_C()
 #define PHP_STREAM_AS_FD_FOR_SELECT 3
 /* cast as fd/socket for copy purposes */
 #define PHP_STREAM_AS_FD_FOR_COPY   4
+/* cast as fd/socket for polling, buffers untouched */
+#define PHP_STREAM_AS_FD_FOR_POLL   5
 
 /* try really, really hard to make sure the cast happens (avoid using this flag if possible) */
 #define PHP_STREAM_CAST_TRY_HARD	0x80000000
@@ -653,7 +659,7 @@ END_EXTERN_C()
 void php_init_stream_wrappers(int module_number);
 void php_shutdown_stream_wrappers(int module_number);
 void php_shutdown_stream_hashes(void);
-PHP_RSHUTDOWN_FUNCTION(streams);
+ZEND_MODULE_POST_ZEND_DEACTIVATE_D(streams);
 
 BEGIN_EXTERN_C()
 PHPAPI zend_result php_register_url_stream_wrapper(const char *protocol, const php_stream_wrapper *wrapper);

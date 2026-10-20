@@ -1,5 +1,5 @@
 /* This is a generated file, edit dl_test.stub.php instead.
- * Stub hash: 3c47a0da41b4548eb68c4124bd54cbac22f60c01 */
+ * Stub hash: 6f3b106c9f5e6d4b0a69451827c10ad6dad0d8f7 */
 
 #include "zend_constants.h"
 
@@ -10,18 +10,31 @@ ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_dl_test_test2, 0, 0, IS_STRING, 
 	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, str, IS_STRING, 0, "\"\"")
 ZEND_END_ARG_INFO()
 
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_dl_test_frameless, 0, 1, IS_LONG, 0)
+	ZEND_ARG_TYPE_INFO(0, value, IS_LONG, 0)
+ZEND_END_ARG_INFO()
+
 #define arginfo_class_DlTest_test arginfo_dl_test_test2
 
 #define arginfo_class_DlTestSuperClass_test arginfo_dl_test_test2
 
+
+ZEND_FRAMELESS_FUNCTION(dl_test_frameless, 1);
+static const zend_frameless_function_info frameless_function_infos_dl_test_frameless[] = {
+	{ ZEND_FRAMELESS_FUNCTION_NAME(dl_test_frameless, 1), 1 },
+	{ 0 },
+};
+
 ZEND_FUNCTION(dl_test_test1);
 ZEND_FUNCTION(dl_test_test2);
+ZEND_FUNCTION(dl_test_frameless);
 ZEND_METHOD(DlTest, test);
 ZEND_METHOD(DlTestSuperClass, test);
 
 static const zend_function_entry ext_functions[] = {
 	ZEND_FE(dl_test_test1, arginfo_dl_test_test1)
 	ZEND_FE(dl_test_test2, arginfo_dl_test_test2)
+	ZEND_RAW_FENTRY("dl_test_frameless", zif_dl_test_frameless, arginfo_dl_test_frameless, 0, frameless_function_infos_dl_test_frameless, NULL)
 	ZEND_FE_END
 };
 
@@ -62,6 +75,12 @@ static zend_class_entry *register_class_DlTestSuperClass(void)
 	zend_string *property_a_name = zend_string_init("a", sizeof("a") - 1, true);
 	zend_declare_typed_property(class_entry, property_a_name, &property_a_default_value, ZEND_ACC_PUBLIC, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_LONG));
 	zend_string_release_ex(property_a_name, true);
+
+	zval property_temporary_default_value;
+	ZVAL_LONG(&property_temporary_default_value, 0);
+	zend_string *property_temporary_name = zend_string_init("temporary", sizeof("temporary") - 1, true);
+	zend_declare_typed_property(class_entry, property_temporary_name, &property_temporary_default_value, ZEND_ACC_PUBLIC, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_LONG));
+	zend_string_release_ex(property_temporary_name, true);
 
 	return class_entry;
 }
