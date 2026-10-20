@@ -685,11 +685,18 @@ ZEND_API const char *get_active_function_name(void) /* {{{ */
 		return NULL;
 	}
 
-	/* When acting on behalf of a suspended coroutine, use its execute_data */
+	/* When acting on behalf of a suspended coroutine with no user frame of our
+	 * own, use its execute_data. User code running inside the acting window, such
+	 * as a callback, reports its own function, as zend_get_executed_filename_ex() does. */
 	const zend_function *func = NULL;
 	zend_coroutine_t *acting = ZEND_ASYNC_ACTING_COROUTINE;
+	const zend_execute_data *user_ex = EG(current_execute_data);
 
-	if (acting != NULL) {
+	while (user_ex && (!user_ex->func || !ZEND_USER_CODE(user_ex->func->type))) {
+		user_ex = user_ex->prev_execute_data;
+	}
+
+	if (acting != NULL && user_ex == NULL) {
 		const zend_execute_data *ex = ZEND_ASYNC_COROUTINE_GET_EXECUTE_DATA(acting);
 		if (ex && ex->func) {
 			func = ex->func;
