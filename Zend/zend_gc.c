@@ -2166,12 +2166,12 @@ static void gc_scope_callback(zend_async_event_t *event,
 	zend_coroutine_t *coroutine = ((zend_coroutine_event_callback_t *) callback)->coroutine;
 	ZEND_ASSERT(coroutine == GC_G(gc_coroutine) && "GC coroutine mismatch");
 
-	// Ignore exceptions in the scope.
-	if (exception == NULL) {
-		// Only when scope is finished without exceptions,
-		// we can resume the GC coroutine.
-		ZEND_ASYNC_RESUME(coroutine);
-	}
+	/* A destructor that threw ends its coroutine with the exception, which the
+	 * scope reports as unhandled on its own. The GC run must still finish:
+	 * left suspended, the GC coroutine keeps its waker on the scope, and the
+	 * garbage of this run is never freed. */
+	(void) exception;
+	ZEND_ASYNC_RESUME(coroutine);
 }
 
 /**

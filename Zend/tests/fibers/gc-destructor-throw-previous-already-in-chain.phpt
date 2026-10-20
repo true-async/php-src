@@ -1,5 +1,7 @@
 --TEST--
 Exception thrown by a GC destructor that already has the exception of a previous, suspended destructor in its previous chain
+--SKIPIF--
+<?php if (extension_loaded("true_async")) die("skip TrueAsync runs GC destructors in a separate coroutine"); ?>
 --FILE--
 <?php
 class Cycle {

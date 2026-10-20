@@ -1,5 +1,7 @@
 --TEST--
 Fibers in destructors 015: Exception thrown by a destructor called by the GC from internal code
+--SKIPIF--
+<?php if (extension_loaded("true_async")) die("skip TrueAsync runs GC destructors in a separate coroutine"); ?>
 --INI--
 zend.enable_gc=1
 --FILE--
