@@ -838,7 +838,10 @@ static zend_result stream_fill_read_buffer_locked(php_stream *stream, size_t siz
 		php_stream_bucket_brigade *brig_inp = &brig_in, *brig_outp = &brig_out, *brig_swap;
 
 		/* allocate a buffer for reading chunks */
-		chunk_buf = emalloc(chunk_size);
+		chunk_buf = femalloc(chunk_size, /* fallible */ true);
+		if (UNEXPECTED(!chunk_buf)) {
+			return FAILURE;
+		}
 
 		while (!stream->eof && (stream->writepos - stream->readpos < (zend_off_t)to_read_now)) {
 			ssize_t justread = 0;
@@ -917,9 +920,20 @@ static zend_result stream_fill_read_buffer_locked(php_stream *stream, size_t siz
 						}
 						/* grow buffer to hold this bucket */
 						if (stream->readbuflen - stream->writepos < bucket->buflen) {
-							stream->readbuflen += bucket->buflen;
-							stream->readbuf = perealloc(stream->readbuf, stream->readbuflen,
-									stream->is_persistent);
+							/* A filter's output is unbounded relative to its input. */
+							size_t newlen = stream->readbuflen + bucket->buflen;
+							unsigned char *newbuf = fperealloc(stream->readbuf, newlen,
+									stream->is_persistent, /* fallible */ true);
+							if (UNEXPECTED(!newbuf)) {
+								while (brig_inp->head) {
+									bucket = brig_inp->head;
+									php_stream_bucket_unlink(bucket);
+									php_stream_bucket_delref(bucket);
+								}
+								break;
+							}
+							stream->readbuf = newbuf;
+							stream->readbuflen = newlen;
 						}
 						if (bucket->buflen) {
 							memcpy(stream->readbuf + stream->writepos, bucket->buf, bucket->buflen);
@@ -988,9 +1002,14 @@ static zend_result stream_fill_read_buffer_locked(php_stream *stream, size_t siz
 			/* grow the buffer if required
 			 * TODO: this can fail for persistent streams */
 			if (stream->readbuflen - stream->writepos < stream->chunk_size) {
-				stream->readbuflen += stream->chunk_size;
-				stream->readbuf = perealloc(stream->readbuf, stream->readbuflen,
-						stream->is_persistent);
+				size_t newlen = stream->readbuflen + stream->chunk_size;
+				unsigned char *newbuf = fperealloc(stream->readbuf, newlen,
+						stream->is_persistent, /* fallible */ true);
+				if (UNEXPECTED(!newbuf)) {
+					return FAILURE;
+				}
+				stream->readbuf = newbuf;
+				stream->readbuflen = newlen;
 			}
 
 			/* The length below is unsigned: a writepos past the end of the
@@ -1146,7 +1165,10 @@ PHPAPI ssize_t php_stream_read(php_stream *stream, char *buf, size_t size)
  * to the copy_to_mem() operation, but only performs a single direct read. */
 PHPAPI zend_string *php_stream_read_to_str(php_stream *stream, size_t len)
 {
-	zend_string *str = zend_string_alloc(len, 0);
+	zend_string *str = zend_string_falloc(len, 0, /* fallible */ true);
+	if (UNEXPECTED(!str)) {
+		return NULL;
+	}
 	ssize_t read = php_stream_read(stream, ZSTR_VAL(str), len);
 	if (read < 0) {
 		zend_string_efree(str);
@@ -1321,6 +1343,9 @@ static char *stream_get_line_locked(php_stream *stream, char *buf, size_t maxlen
 			}
 
 			if (grow_mode) {
+				if (ZEND_HAS_OOM()) {
+					break;
+				}
 				/* allow room for a NUL. If this realloc is really a realloc
 				 * (ie: second time around), we get an extra byte. In most
 				 * cases, with the default chunk size of 8K, we will only
@@ -1517,7 +1542,10 @@ static zend_string *stream_get_record_locked(php_stream *stream, size_t maxlen, 
 		}
 	}
 
-	ret_buf = zend_string_alloc(tent_ret_len, 0);
+	ret_buf = zend_string_falloc(tent_ret_len, 0, /* fallible */ true);
+	if (UNEXPECTED(!ret_buf)) {
+		return NULL;
+	}
 	/* php_stream_read will not call ops->read here because the necessary
 	 * data is guaranteed to be buffered */
 	ZSTR_LEN(ret_buf) = php_stream_read(stream, ZSTR_VAL(ret_buf), tent_ret_len);
@@ -2087,6 +2115,9 @@ PHPAPI ssize_t _php_stream_passthru(php_stream * stream STREAMS_DC)
 
 		if (p) {
 			do {
+				if (ZEND_HAS_OOM()) {
+					break;
+				}
 				/* output functions return int, so pass in int max */
 				if (0 < (b = PHPWRITE(p + bcount, MIN(mapped - bcount, INT_MAX)))) {
 					bcount += b;
@@ -2109,7 +2140,7 @@ PHPAPI ssize_t _php_stream_passthru(php_stream * stream STREAMS_DC)
 	}
 
 	while ((b = php_stream_read(stream, buf, sizeof(buf))) > 0) {
-		if (UNEXPECTED(stream_buffer_lock_closed(lock))) {
+		if (ZEND_HAS_OOM() || UNEXPECTED(stream_buffer_lock_closed(lock))) {
 			break;
 		}
 		PHPWRITE(buf, b);
@@ -2157,7 +2188,10 @@ PHPAPI zend_string *_php_stream_copy_to_mem(php_stream *src, size_t maxlen, bool
 	}
 
 	if (maxlen > 0 && maxlen < 4 * CHUNK_SIZE) {
-		result = zend_string_alloc(maxlen, persistent);
+		result = zend_string_falloc(maxlen, persistent, /* fallible */ true);
+		if (UNEXPECTED(!result)) {
+			return NULL;
+		}
 		ptr = ZSTR_VAL(result);
 		while ((len < maxlen) && !php_stream_eof(src)) {
 			ret = php_stream_read(src, ptr, maxlen - len);
@@ -2204,7 +2238,10 @@ PHPAPI zend_string *_php_stream_copy_to_mem(php_stream *src, size_t maxlen, bool
 		buflen = CHUNK_SIZE;
 	}
 
-	result = zend_string_alloc(buflen, persistent);
+	result = zend_string_falloc(buflen, persistent, /* fallible */ true);
+	if (UNEXPECTED(!result)) {
+		return NULL;
+	}
 	ptr = ZSTR_VAL(result);
 
 	const int min_room = CHUNK_SIZE / 4;
@@ -2225,7 +2262,12 @@ PHPAPI zend_string *_php_stream_copy_to_mem(php_stream *src, size_t maxlen, bool
 			} else {
 				buflen += CHUNK_SIZE;
 			}
-			result = zend_string_extend(result, buflen, persistent);
+			zend_string *grown = zend_string_fextend(result, buflen, persistent, /* fallible */ true);
+			if (UNEXPECTED(!grown)) {
+				zend_string_free(result);
+				return NULL;
+			}
+			result = grown;
 			ptr = ZSTR_VAL(result) + len;
 		} else {
 			ptr += ret;

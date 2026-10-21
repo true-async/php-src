@@ -1,8 +1,14 @@
 PHP                                                                        NEWS
 |||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
-?? ??? ????, PHP 8.6.0RC4
+?? ??? ????, PHP 8.6.0RC5
+
+
+21 Oct 2026, PHP 8.6.0RC4
 
 - Core:
+  . Fixed GHSA-w8hw-w9fx-j79w, GHSA-6wmf-4rv5-p3rp (Avoid state corruption via
+    bailout). (CVE-2026-109618, CVE-2026-109619) (Arnaud, ilutov, Jakub Zelenka,
+    ndossche, Nicolas Grekas)
   . Fixed bug GH-24184 (System ID not being reinitialized after an Apache
     graceful restart, potentially causing incompatible OPcache file cache
     entries to be reused). (Levi Morrison)
@@ -67,8 +73,12 @@ PHP                                                                        NEWS
     is reloaded from memory). (ndossche)
   . Fixed bug GH-24386 (JIT: register operand must be loaded before the typed
     reference check). (ndossche)
+  . Fixed bug GH-24437 (JIT: Fix OP_DATA read from an unwritten slot in
+    zend_jit_assign_dim_op()). (waroad)
 
 - PDO:
+  . Fixed invalid ATTR_ORACLE_NULLS values being accepted and truncated.
+    (Ilia Alshanetsky)
   . Fixed a duplicate warning when ATTR_STATEMENT_CLASS is rejected on a
     persistent connection. (Ilia Alshanetsky)
   . Fixed constructor option errors naming argument #3 ($password) instead
@@ -107,6 +117,10 @@ PHP                                                                        NEWS
   . Fixed proc_open() null descriptor not being inheritable on Windows.
     (Jorg Sowa)
   . Don't share the unserialize() context with enum autoloaders.
+    (Nicolas Grekas)
+  . Fixed bug GH-24399 (usleep() and time_nanosleep() ignore queued APCs on
+    Windows). (Nicolas Grekas)
+  . Fixed glob() not negating bracket expressions that start with "^".
     (Nicolas Grekas)
 
 - Tidy:
