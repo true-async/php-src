@@ -21,9 +21,9 @@
 #include "zend_globals.h"
 #include "zend_stream.h"
 
-#define ZEND_ASYNC_API "TrueAsync ABI v0.26.0"
+#define ZEND_ASYNC_API "TrueAsync ABI v0.27.0"
 #define ZEND_ASYNC_API_VERSION_MAJOR 0
-#define ZEND_ASYNC_API_VERSION_MINOR 26
+#define ZEND_ASYNC_API_VERSION_MINOR 27
 #define ZEND_ASYNC_API_VERSION_PATCH 0
 
 #define ZEND_ASYNC_API_VERSION_NUMBER \
@@ -1303,6 +1303,13 @@ struct _zend_async_process_event_s {
 	zend_process_t process;
 	zend_long exit_code;
 };
+
+/* Process event flags (bits 13+, bits 0-12 reserved for base event flags) */
+/* The waiter left before the child exited and gave its reference to the
+ * reactor. The reactor reaps the child when it exits, or at reactor shutdown
+ * if it already has, and then releases the event. A detached event is hidden:
+ * it does not keep the loop running. Unix only. */
+#define ZEND_ASYNC_PROCESS_F_DETACHED (1u << 13)
 
 /* Thread creation flags (used in thread_flags at spawn time) */
 #define ZEND_THREAD_F_INHERIT        (1u << 0)  /* Inherit parent's function/class tables */
