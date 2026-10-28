@@ -120,6 +120,27 @@ PGresult *pdo_pgsql_get_result_concurrent(pdo_pgsql_db_handle *H)
 	return PQgetResult(pgsql);
 }
 
+/* What PQexec() and its siblings do before they send: read and discard the
+ * results the previous command left, such as the rest of a statement streamed
+ * in single-row mode. PQsend*() refuses with "another command is already in
+ * progress" instead. A copy in progress cannot be ended here; libpq refuses
+ * it as well. */
+static bool pdo_pgsql_exec_start(pdo_pgsql_db_handle *H)
+{
+	PGresult *result;
+
+	while ((result = pdo_pgsql_get_result_concurrent(H)) != NULL) {
+		const ExecStatusType status = PQresultStatus(result);
+
+		PQclear(result);
+		if (status == PGRES_COPY_IN || status == PGRES_COPY_OUT || status == PGRES_COPY_BOTH) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
 static PGresult *pdo_pgsql_collect_results(pdo_pgsql_db_handle *H)
 {
 	PGresult *last_result = NULL;
@@ -154,6 +175,10 @@ PGresult *pdo_pgsql_exec_concurrent(pdo_pgsql_db_handle *H, const char *query)
 		return PQexec(pgsql, query);
 	}
 
+	if (!pdo_pgsql_exec_start(H)) {
+		return NULL;
+	}
+
 	if (!PQsendQuery(pgsql, query)) {
 		return NULL;
 	}
@@ -178,6 +203,10 @@ PGresult *pdo_pgsql_exec_params_concurrent(pdo_pgsql_db_handle *H, const char *q
 			paramLengths, paramFormats, resultFormat);
 	}
 
+	if (!pdo_pgsql_exec_start(H)) {
+		return NULL;
+	}
+
 	if (!PQsendQueryParams(pgsql, query, nParams, paramTypes, paramValues,
 			paramLengths, paramFormats, resultFormat)) {
 		return NULL;
@@ -198,6 +227,10 @@ PGresult *pdo_pgsql_prepare_concurrent(pdo_pgsql_db_handle *H, const char *stmtN
 
 	if (!PDO_PGSQL_ASYNC_AVAIL(H)) {
 		return PQprepare(pgsql, stmtName, query, nParams, paramTypes);
+	}
+
+	if (!pdo_pgsql_exec_start(H)) {
+		return NULL;
 	}
 
 	if (!PQsendPrepare(pgsql, stmtName, query, nParams, paramTypes)) {
@@ -223,6 +256,10 @@ PGresult *pdo_pgsql_exec_prepared_concurrent(pdo_pgsql_db_handle *H, const char 
 			paramLengths, paramFormats, resultFormat);
 	}
 
+	if (!pdo_pgsql_exec_start(H)) {
+		return NULL;
+	}
+
 	if (!PQsendQueryPrepared(pgsql, stmtName, nParams, paramValues,
 			paramLengths, paramFormats, resultFormat)) {
 		return NULL;
@@ -243,6 +280,10 @@ PGresult *pdo_pgsql_close_prepared_concurrent(pdo_pgsql_db_handle *H, const char
 
 	if (!PDO_PGSQL_ASYNC_AVAIL(H)) {
 		return PQclosePrepared(pgsql, stmtName);
+	}
+
+	if (!pdo_pgsql_exec_start(H)) {
+		return NULL;
 	}
 
 	if (!PQsendClosePrepared(pgsql, stmtName)) {
