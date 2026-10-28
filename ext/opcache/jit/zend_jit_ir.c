@@ -10544,6 +10544,12 @@ static int zend_jit_do_fcall(zend_jit_ctx *jit, const zend_op *opline, const zen
 		} else {
 			zend_basic_block *bb;
 
+			/* The VM checks for interrupts on entering a user function
+			 * (ZEND_VM_ENTER_EX). Do the same here: a recursion without loops
+			 * has no other check, and a delayed OOM error or a timeout would
+			 * otherwise never be handled. */
+			zend_jit_check_timeout(jit, NULL, NULL);
+
 			do {
 				if (recursive_call_through_jmp) {
 					ir_ref begin, end;
