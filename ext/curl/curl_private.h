@@ -112,6 +112,8 @@ typedef struct {
 	struct _php_curl_send_headers header;
 	struct _php_curl_error        err;
 	bool                     in_callback;
+	/* curl_exec() waits in a coroutine for this handle's transfer */
+	bool                     in_exec;
 	uint32_t*                     clone;
 	zval                          postfields;
 	/* For CURLOPT_PRIVATE */
@@ -182,5 +184,6 @@ void curl_share_persistent_register_handlers(void);
 void curl_share_free_persistent_curlsh(zval *data);
 void curlfile_register_class(void);
 zend_result curl_cast_object(zend_object *obj, zval *result, int type);
+bool php_curl_check_not_in_exec(php_curl *ch);
 
 #endif  /* _PHP_CURL_PRIVATE_H */

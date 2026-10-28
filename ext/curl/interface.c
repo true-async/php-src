@@ -1690,6 +1690,10 @@ PHP_FUNCTION(curl_copy_handle)
 		Z_PARAM_OBJECT_OF_CLASS(zid, curl_ce)
 	ZEND_PARSE_PARAMETERS_END();
 
+	if (!php_curl_check_not_in_exec(Z_CURL_P(zid))) {
+		RETURN_THROWS();
+	}
+
 	zend_object *new_object = Z_OBJ_P(zid)->handlers->clone_obj(Z_OBJ_P(zid));
 	if (EG(exception)) {
 		if (new_object != NULL) {
@@ -2436,6 +2440,10 @@ PHP_FUNCTION(curl_setopt)
 
 	ch = Z_CURL_P(zid);
 
+	if (!php_curl_check_not_in_exec(ch)) {
+		RETURN_THROWS();
+	}
+
 	RETURN_BOOL(_php_curl_setopt(ch, options, zvalue, 0) == SUCCESS);
 }
 /* }}} */
@@ -2454,6 +2462,10 @@ PHP_FUNCTION(curl_setopt_array)
 	ZEND_PARSE_PARAMETERS_END();
 
 	ch = Z_CURL_P(zid);
+
+	if (!php_curl_check_not_in_exec(ch)) {
+		RETURN_THROWS();
+	}
 
 	ZEND_HASH_FOREACH_KEY_VAL(Z_ARRVAL_P(arr), option, string_key, entry) {
 		if (UNEXPECTED(string_key)) {
@@ -2498,6 +2510,10 @@ PHP_FUNCTION(curl_exec)
 	ZEND_PARSE_PARAMETERS_END();
 
 	ch = Z_CURL_P(zid);
+
+	if (!php_curl_check_not_in_exec(ch)) {
+		RETURN_THROWS();
+	}
 
 	_php_curl_verify_handlers(ch, /* reporterror */ true);
 
@@ -2891,7 +2907,7 @@ PHP_FUNCTION(curl_close)
 
 	ch = Z_CURL_P(zid);
 
-	if (ch->in_callback) {
+	if (curl_async_in_callback(ch)) {
 		zend_throw_error(NULL, "%s(): Attempt to close cURL handle from a callback", get_active_function_name());
 		RETURN_THROWS();
 	}
@@ -3097,8 +3113,12 @@ PHP_FUNCTION(curl_reset)
 
 	ch = Z_CURL_P(zid);
 
-	if (ch->in_callback) {
+	if (curl_async_in_callback(ch)) {
 		zend_throw_error(NULL, "%s(): Attempt to reset cURL handle from a callback", get_active_function_name());
+		RETURN_THROWS();
+	}
+
+	if (!php_curl_check_not_in_exec(ch)) {
 		RETURN_THROWS();
 	}
 
@@ -3107,6 +3127,18 @@ PHP_FUNCTION(curl_reset)
 	_php_curl_set_default_options(ch);
 }
 /* }}} */
+
+/* The transfer curl_exec() waits for owns the handle until it returns. Its
+ * callbacks use the handle as without TrueAsync. */
+bool php_curl_check_not_in_exec(php_curl *ch)
+{
+	if (ch->in_exec && !curl_async_in_callback(ch)) {
+		zend_throw_error(NULL, "%s(): Attempt to use cURL handle while curl_exec() is in progress on it", get_active_function_name());
+		return false;
+	}
+
+	return true;
+}
 
 /* {{{ URL encodes the given string */
 PHP_FUNCTION(curl_escape)

@@ -148,6 +148,9 @@ struct curl_async_write_state_s {
 
 	/* true when this state is used for header writes (selects write_header handler) */
 	bool is_header;
+
+	/* The coroutine running the PHP callback while pending, otherwise NULL */
+	zend_coroutine_t *coroutine;
 };
 
 void curl_async_register_ce(void);
@@ -173,6 +176,14 @@ void curl_async_shutdown(void);
  * - Cleaning up the resumption object and removing the handle from the resume list.
  */
 CURLcode curl_async_perform(php_curl *ch);
+
+/**
+ * @brief Whether the caller runs inside a callback of this handle.
+ *
+ * True inside a callback called synchronously (ch->in_callback) and inside
+ * the coroutine that runs an asynchronous write or header callback.
+ */
+bool curl_async_in_callback(const php_curl *ch);
 
 /**
  * @brief Creates a per-handle async event for an easy handle in a multi context.
