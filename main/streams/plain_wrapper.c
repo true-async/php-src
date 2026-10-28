@@ -971,8 +971,10 @@ static int php_stdiop_close(php_stream *stream, int close_handle)
 		 * it owns a separate fd copy that must be closed explicitly.
 		 * The original fd (data->fd) will be closed by normal logic below.
 		 * When close_handle is 0 (preserve mode), do NOT close the C FILE*
-		 * as it may be stdout/stderr/stdin needed for error display during shutdown. */
-		if (data->file != NULL && close_handle) {
+		 * as it may be stdout/stderr/stdin needed for error display during shutdown.
+		 * A process pipe's FILE* comes from popen() and is left for pclose()
+		 * below, which collects the exit status. */
+		if (data->file != NULL && close_handle && !data->is_process_pipe) {
 			fclose(data->file);
 			data->file = NULL;
 		}
