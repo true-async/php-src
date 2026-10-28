@@ -62,6 +62,12 @@ void gc_bench_print(void);
 /* The default implementation of the gc_collect_cycles callback. */
 ZEND_API int  zend_gc_collect_cycles(void);
 
+/* gc_collect_cycles() for the PHP function: under TrueAsync, where a run is
+ * started in a coroutine of its own, waits for that run, so the caller gets
+ * the number collected and the destructors have run. Returns 0 when the run
+ * cannot be waited for (outside a coroutine, or a run already in progress). */
+ZEND_API int  zend_gc_collect_cycles_and_wait(void);
+
 ZEND_API void zend_gc_get_status(zend_gc_status *status);
 
 void gc_init(void);

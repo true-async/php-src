@@ -299,6 +299,7 @@ typedef struct _zend_gc_globals {
 	zend_async_scope_t *gc_scope; /* async scope where GC was started */
 	zend_async_scope_t *dtor_scope; /* async scope running destructors */
 	zend_coroutine_t *gc_coroutine; /* coroutine where GC was started */
+	int gc_coroutine_count; /* what the last run in gc_coroutine collected */
 	zend_coroutine_t *dtor_coroutine; /* coroutine running destructors */
 	zend_async_microtask_t *microtask; /* microtask for destructors iterator coroutine */
 
@@ -2212,6 +2213,8 @@ static void zend_gc_coroutine(void)
 	const uint32_t runs = GC_G(gc_runs);
 	const int count = zend_gc_collect_cycles();
 
+	GC_G(gc_coroutine_count) = count;
+
 	/* One run answers every root buffer that filled while it was pending. A run that found the
 	 * buffer already drained examined nothing, and its 0 measures nothing either. */
 	if (GC_G(adjust_threshold)) {
@@ -2520,6 +2523,41 @@ finish:
 	GC_G(gc_coroutine) = NULL;
 	GC_G(gc_scope) = NULL;
 	return total_count;
+}
+
+ZEND_API int zend_gc_collect_cycles_and_wait(void)
+{
+	if (!gc_collect_is_deferred()) {
+		return gc_collect_cycles();
+	}
+
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+
+	/* A run in progress may be waiting for this very coroutine, a destructor it
+	 * runs; waiting for the run would never end. Outside a coroutine there is
+	 * nothing to suspend. Both keep the deferred start. */
+	if (coroutine == NULL || GC_G(gc_coroutine) != NULL) {
+		return gc_collect_cycles();
+	}
+
+	start_gc_in_coroutine();
+
+	zend_coroutine_t *gc_coroutine = GC_G(gc_coroutine);
+
+	if (UNEXPECTED(gc_coroutine == NULL || ZEND_ASYNC_WAKER_NEW(coroutine) == NULL)) {
+		return 0;
+	}
+
+	GC_G(gc_coroutine_count) = 0;
+
+	if (EXPECTED(zend_async_resume_when(
+			coroutine, &gc_coroutine->event, false, zend_async_waker_callback_resolve, NULL))) {
+		ZEND_ASYNC_SUSPEND();
+	}
+
+	ZEND_ASYNC_WAKER_DESTROY(coroutine);
+
+	return EG(exception) == NULL ? GC_G(gc_coroutine_count) : 0;
 }
 
 ZEND_API void zend_gc_get_status(zend_gc_status *status)
