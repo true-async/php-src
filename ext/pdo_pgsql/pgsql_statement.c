@@ -346,7 +346,12 @@ stmt_retry:
 					/* it worked */
 					S->is_prepared = true;
 					if (H->prepared_stmts) {
-						zend_hash_str_add_empty_element(H->prepared_stmts, S->stmt_name, strlen(S->stmt_name));
+						/* The table is persistent and so is its key, but only this
+						 * thread uses it: deleting the key changes its refcount. */
+						zend_string *name = zend_string_init(S->stmt_name, strlen(S->stmt_name), 1);
+						GC_MAKE_PERSISTENT_LOCAL(name);
+						zend_hash_add_empty_element(H->prepared_stmts, name);
+						zend_string_release(name);
 					}
 					PQclear(S->result);
 					S->result = NULL;
