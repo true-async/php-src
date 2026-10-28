@@ -21,6 +21,7 @@
 #include "SAPI.h"
 #include "main/php_network.h"
 #include "zend_smart_str.h"
+#include "zend_exceptions.h"
 #ifdef PHP_WIN32
 # include "win32/sockets.h"
 #endif
@@ -1599,6 +1600,40 @@ exit_fail:
 
 #endif /* PHP_CAN_SUPPORT_PROC_OPEN */
 
+#ifndef PHP_WIN32
+/* The waiter was cancelled while the child runs. Nothing else waits for the
+ * child, so it would stay a zombie until PHP exits. A detached event lets the
+ * reactor reap it when it exits, without keeping the loop running. */
+static void async_detach_process(zend_process_t process_h)
+{
+	if (waitpid(process_h, NULL, WNOHANG) != 0) {
+		return;
+	}
+
+	/* The cancellation stays pending; the reactor must not see it. */
+	zend_object *exception = EG(exception);
+	EG(exception) = NULL;
+
+	zend_async_process_event_t *event = ZEND_ASYNC_NEW_PROCESS_EVENT(process_h);
+
+	if (event != NULL) {
+		event->base.flags |= ZEND_ASYNC_EVENT_F_HIDDEN | ZEND_ASYNC_PROCESS_F_DETACHED;
+
+		/* start() reaps a child that has just exited and closes the event at
+		 * once; otherwise the reactor releases it after the exit. */
+		if (!event->base.start(&event->base) || ZEND_ASYNC_EVENT_IS_CLOSED(&event->base)) {
+			ZEND_ASYNC_EVENT_RELEASE(&event->base);
+		}
+	}
+
+	if (EG(exception) != NULL) {
+		zend_exception_set_previous(exception, EG(exception));
+	}
+
+	EG(exception) = exception;
+}
+#endif
+
 static zend_long async_wait_process(zend_process_t process_h, const zend_ulong timeout)
 {
 #ifdef PHP_WIN32
@@ -1647,6 +1682,9 @@ static zend_long async_wait_process(zend_process_t process_h, const zend_ulong t
 	ZEND_ASYNC_EVENT_RELEASE(&event->base);
 
 	if (UNEXPECTED(EG(exception))) {
+#ifndef PHP_WIN32
+		async_detach_process(process_h);
+#endif
 		return -1;
 	}
 
