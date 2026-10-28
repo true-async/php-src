@@ -728,7 +728,9 @@ CURLcode curl_async_perform(php_curl *ch)
 	}
 
 	// Suspend coroutine until curl completes
+	ch->in_exec = true;
 	const bool resumed = ZEND_ASYNC_SUSPEND();
+	ch->in_exec = false;
 
 	/* Not from the event, which the notification may already have disposed: the
 	 * waker carries the completion's code, the handle a throwing callback's. */
@@ -2176,6 +2178,7 @@ static void curl_async_write_user_complete(
 	}
 
 	state->pending = false;
+	state->coroutine = NULL;
 
 	/* Event was cancelled — free orphaned state and bail */
 	if (state->event == NULL) {
@@ -2331,6 +2334,23 @@ static size_t curl_async_write_user_sync(
  *
  * @param is_header  true for CURLOPT_HEADERFUNCTION, false for CURLOPT_WRITEFUNCTION
  */
+bool curl_async_in_callback(const php_curl *ch)
+{
+	if (ch->in_callback) {
+		return true;
+	}
+
+	const curl_async_event_t *curl_event = (const curl_async_event_t *) ch->async_event;
+	const zend_coroutine_t *current = ZEND_ASYNC_CURRENT_COROUTINE;
+
+	if (curl_event == NULL || current == NULL) {
+		return false;
+	}
+
+	return (curl_event->write_state != NULL && curl_event->write_state->coroutine == current)
+		|| (curl_event->header_write_state != NULL && curl_event->header_write_state->coroutine == current);
+}
+
 size_t curl_async_write_user(char *data, const size_t size, const size_t nmemb, php_curl *ch, const bool is_header)
 {
 	size_t length = size * nmemb;
@@ -2458,6 +2478,7 @@ size_t curl_async_write_user(char *data, const size_t size, const size_t nmemb, 
 
 	/* Mark in-flight and pause */
 	state->pending = true;
+	state->coroutine = coro;
 	return CURL_WRITEFUNC_PAUSE;
 #endif
 }

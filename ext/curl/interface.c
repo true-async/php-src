@@ -862,6 +862,10 @@ static int curl_ssh_hostkeyfunction(void *clientp, int keytype, const char *key,
 	php_curl *ch = (php_curl *)clientp;
 	int rval = CURLKHMATCH_MISMATCH; /* cancel connection in case of an exception */
 
+	if (!ZEND_FCC_INITIALIZED(ch->handlers.sshhostkey)) {
+		return rval;
+	}
+
 #if PHP_CURL_DEBUG
 	fprintf(stderr, "curl_ssh_hostkeyfunction() called\n");
 	fprintf(stderr, "clientp = %p, keytype = %d, key = %s, keylen = %zu\n", clientp, keytype, key, keylen);
@@ -1389,8 +1393,11 @@ static void php_curl_copy_fcc_with_option(php_curl *ch, CURLoption option, zend_
 {
 	if (ZEND_FCC_INITIALIZED(*source_fcc)) {
 		zend_fcc_dup(target_fcc, source_fcc);
-		curl_easy_setopt(ch->cp, option, (void *) ch);
 	}
+
+	/* The callback data (i.e. pointer to the curl handle) stays even if a user callback
+	 * is reset to NULL. Ensure the data pointer always points to the new handle. */
+	curl_easy_setopt(ch->cp, option, (void *) ch);
 }
 
 void _php_setup_easy_copy_handlers(php_curl *ch, php_curl *source)
@@ -1410,6 +1417,10 @@ void _php_setup_easy_copy_handlers(php_curl *ch, php_curl *source)
 		Z_ADDREF(source->handlers.write_header->stream);
 	}
 	ch->handlers.write_header->stream = source->handlers.write_header->stream;
+	if (!Z_ISUNDEF(source->handlers.std_err)) {
+		Z_ADDREF(source->handlers.std_err);
+	}
+	ch->handlers.std_err = source->handlers.std_err;
 
 	ch->handlers.write->fp = source->handlers.write->fp;
 	ch->handlers.write_header->fp = source->handlers.write_header->fp;
@@ -1430,7 +1441,6 @@ void _php_setup_easy_copy_handlers(php_curl *ch, php_curl *source)
 	curl_easy_setopt(ch->cp, CURLOPT_FILE,              (void *) ch);
 	curl_easy_setopt(ch->cp, CURLOPT_INFILE,            (void *) ch);
 	curl_easy_setopt(ch->cp, CURLOPT_WRITEHEADER,       (void *) ch);
-	curl_easy_setopt(ch->cp, CURLOPT_DEBUGDATA,         (void *) ch);
 
 	php_curl_copy_fcc_with_option(ch, CURLOPT_SEEKDATA, &ch->handlers.seek, &source->handlers.seek);
 	php_curl_copy_fcc_with_option(ch, CURLOPT_PROGRESSDATA, &ch->handlers.progress, &source->handlers.progress);
@@ -1679,6 +1689,10 @@ PHP_FUNCTION(curl_copy_handle)
 	ZEND_PARSE_PARAMETERS_START(1,1)
 		Z_PARAM_OBJECT_OF_CLASS(zid, curl_ce)
 	ZEND_PARSE_PARAMETERS_END();
+
+	if (!php_curl_check_not_in_exec(Z_CURL_P(zid))) {
+		RETURN_THROWS();
+	}
 
 	zend_object *new_object = Z_OBJ_P(zid)->handlers->clone_obj(Z_OBJ_P(zid));
 	if (EG(exception)) {
@@ -2426,6 +2440,10 @@ PHP_FUNCTION(curl_setopt)
 
 	ch = Z_CURL_P(zid);
 
+	if (!php_curl_check_not_in_exec(ch)) {
+		RETURN_THROWS();
+	}
+
 	RETURN_BOOL(_php_curl_setopt(ch, options, zvalue, 0) == SUCCESS);
 }
 /* }}} */
@@ -2444,6 +2462,10 @@ PHP_FUNCTION(curl_setopt_array)
 	ZEND_PARSE_PARAMETERS_END();
 
 	ch = Z_CURL_P(zid);
+
+	if (!php_curl_check_not_in_exec(ch)) {
+		RETURN_THROWS();
+	}
 
 	ZEND_HASH_FOREACH_KEY_VAL(Z_ARRVAL_P(arr), option, string_key, entry) {
 		if (UNEXPECTED(string_key)) {
@@ -2488,6 +2510,10 @@ PHP_FUNCTION(curl_exec)
 	ZEND_PARSE_PARAMETERS_END();
 
 	ch = Z_CURL_P(zid);
+
+	if (!php_curl_check_not_in_exec(ch)) {
+		RETURN_THROWS();
+	}
 
 	_php_curl_verify_handlers(ch, /* reporterror */ true);
 
@@ -2881,7 +2907,7 @@ PHP_FUNCTION(curl_close)
 
 	ch = Z_CURL_P(zid);
 
-	if (ch->in_callback) {
+	if (curl_async_in_callback(ch)) {
 		zend_throw_error(NULL, "%s(): Attempt to close cURL handle from a callback", get_active_function_name());
 		RETURN_THROWS();
 	}
@@ -3087,8 +3113,12 @@ PHP_FUNCTION(curl_reset)
 
 	ch = Z_CURL_P(zid);
 
-	if (ch->in_callback) {
+	if (curl_async_in_callback(ch)) {
 		zend_throw_error(NULL, "%s(): Attempt to reset cURL handle from a callback", get_active_function_name());
+		RETURN_THROWS();
+	}
+
+	if (!php_curl_check_not_in_exec(ch)) {
 		RETURN_THROWS();
 	}
 
@@ -3097,6 +3127,18 @@ PHP_FUNCTION(curl_reset)
 	_php_curl_set_default_options(ch);
 }
 /* }}} */
+
+/* The transfer curl_exec() waits for owns the handle until it returns. Its
+ * callbacks use the handle as without TrueAsync. */
+bool php_curl_check_not_in_exec(php_curl *ch)
+{
+	if (ch->in_exec && !curl_async_in_callback(ch)) {
+		zend_throw_error(NULL, "%s(): Attempt to use cURL handle while curl_exec() is in progress on it", get_active_function_name());
+		return false;
+	}
+
+	return true;
+}
 
 /* {{{ URL encodes the given string */
 PHP_FUNCTION(curl_escape)

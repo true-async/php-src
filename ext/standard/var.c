@@ -544,6 +544,13 @@ PHPAPI zend_result php_var_export_ex(zval *struc, int level, smart_str *buf) /* 
 	zend_string *key;
 	zval *val;
 
+#ifdef ZEND_CHECK_STACK_LIMIT
+	if (UNEXPECTED(zend_call_stack_overflowed(EG(stack_limit)))) {
+		zend_call_stack_size_error();
+		return FAILURE;
+	}
+#endif
+
 again:
 	switch (Z_TYPE_P(struc)) {
 		case IS_FALSE:
@@ -674,9 +681,14 @@ again:
 								return FAILURE;
 							}
 						}
-						php_object_element_export(val, index, key, level, buf);
+						zend_result result = php_object_element_export(val, index, key, level, buf);
 						if (val == &tmp) {
 							zval_ptr_dtor(val);
+						}
+						if (UNEXPECTED(result == FAILURE)) {
+							ZEND_GUARD_OR_GC_UNPROTECT_RECURSION(guard, EXPORT, zobj);
+							zend_release_properties(myht);
+							return FAILURE;
 						}
 					} ZEND_HASH_FOREACH_END();
 				}
@@ -1431,12 +1443,13 @@ PHPAPI void php_var_serialize_set_incomplete_classes_only(php_serialize_data_t d
 
 PHPAPI void php_var_serialize_destroy(php_serialize_data_t d) {
 	/* fprintf(stderr, "SERIALIZE_DESTROY   == lock: %u, level: %u\n", BG(serialize_lock), BG(serialize).level); */
-	if (BG(serialize_lock) || BG(serialize).level == 1) {
+	if (BG(serialize_lock)) {
 		zend_hash_destroy(&d->ht);
 		efree(d);
-	}
-	if (!BG(serialize_lock) && !--BG(serialize).level) {
+	} else if (!--BG(serialize).level) {
 		BG(serialize).data = NULL;
+		zend_hash_destroy(&d->ht);
+		efree(d);
 	}
 }
 

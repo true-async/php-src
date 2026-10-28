@@ -664,9 +664,7 @@ static ZEND_STACK_ALIGNED void zend_fiber_execute(zend_fiber_transfer *transfer)
 		zend_fiber_release_callable(fiber);
 
 		if (EG(exception)) {
-			if (!(fiber->flags & ZEND_FIBER_FLAG_DESTROYED)
-				|| !(zend_is_graceful_exit(EG(exception)) || zend_is_unwind_exit(EG(exception)))
-			) {
+			if (!(fiber->flags & ZEND_FIBER_FLAG_DESTROYED) || !zend_is_graceful_exit(EG(exception))) {
 				fiber->flags |= ZEND_FIBER_FLAG_THREW;
 				transfer->flags = ZEND_FIBER_TRANSFER_FLAG_ERROR;
 
@@ -1193,7 +1191,11 @@ static void coroutine_entry_point(void)
 
 				zend_clear_exception();
 
-				if (zend_is_graceful_exit(exception) || zend_is_unwind_exit(exception)) {
+				/* exit() goes to the code that resumed the fiber, as without
+				 * TrueAsync; a destroyed fiber has no such code waiting. */
+				if (zend_is_graceful_exit(exception)
+					|| (zend_is_unwind_exit(exception)
+						&& (fiber == NULL || (fiber->flags & ZEND_FIBER_FLAG_DESTROYED)))) {
 					OBJ_RELEASE(exception);
 					exception = NULL;
 					ZEND_ASYNC_SHUTDOWN();

@@ -90,6 +90,10 @@ PHP_FUNCTION(curl_multi_add_handle)
 	mh = Z_CURL_MULTI_P(z_mh);
 	ch = Z_CURL_P(z_ch);
 
+	if (!php_curl_check_not_in_exec(ch)) {
+		RETURN_THROWS();
+	}
+
 	_php_curl_verify_handlers(ch, /* reporterror */ true);
 
 	_php_curl_cleanup_handle(ch);
