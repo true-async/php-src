@@ -53,9 +53,19 @@ static bool pdo_pgsql_await_socket(PGconn *pgsql, async_poll_event events, zend_
 		return false;
 	}
 
+	/* A notice processor that calls PHP may have thrown inside PQconsumeInput(). */
+	if (EG(exception) != NULL) {
+		return false;
+	}
+
 	zend_async_poll_event_t *poll_event = ZEND_ASYNC_NEW_SOCKET_EVENT(socket, events);
 
-	if (poll_event == NULL || EG(exception) != NULL) {
+	if (poll_event == NULL) {
+		return false;
+	}
+
+	if (EG(exception) != NULL) {
+		ZEND_ASYNC_EVENT_RELEASE(&poll_event->base);
 		return false;
 	}
 
