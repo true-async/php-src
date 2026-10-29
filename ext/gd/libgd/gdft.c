@@ -266,8 +266,11 @@ extern int any2eucjp(char *, const char *, unsigned int);
 
 /* 2.0.16: thread safety (the font cache is shared) */
 gdMutexDeclare(gdFontCacheMutex);
-static gdCache_head_t *fontCache = NULL;
-static FT_Library library;
+/* The cache's entries come from the request heap of the thread that fetched them, and the request shutdown of a
+ * thread frees the whole cache, so under ZTS each thread keeps its own cache and FreeType library: one shared across
+ * threads is freed into the wrong heap when another thread's request ends. */
+ZEND_TLS gdCache_head_t *fontCache = NULL;
+ZEND_TLS FT_Library library;
 
 #define Tcl_UniChar int
 #define TCL_UTF_MAX 3
