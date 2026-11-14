@@ -112,7 +112,7 @@ PHP_FUNCTION(stream_socket_client)
 	struct timeval tv;
 	char *hashkey = NULL;
 	php_stream *stream = NULL;
-	int err;
+	int err = 0;
 	zend_long flags = PHP_STREAM_CLIENT_CONNECT;
 	zend_string *errstr = NULL;
 	php_stream_context *context = NULL;
@@ -179,7 +179,7 @@ PHP_FUNCTION(stream_socket_client)
 		/* host might contain binary characters */
 		zend_string *quoted_host = php_addslashes(host);
 
-		php_error_docref(NULL, E_WARNING, "Unable to connect to %s (%s)", ZSTR_VAL(quoted_host), errstr == NULL ? "Unknown error" : ZSTR_VAL(errstr));
+		php_error_docref(NULL, E_WARNING, "Unable to connect to %pS (%s)", quoted_host, errstr == NULL ? "Unknown error" : ZSTR_VAL(errstr));
 		zend_string_release_ex(quoted_host, 0);
 	}
 
@@ -1449,19 +1449,21 @@ PHP_FUNCTION(stream_filter_remove)
 		RETURN_THROWS();
 	}
 
-	php_stream *stream = filter->chain != NULL ? filter->chain->stream : NULL;
-	php_stream_buffer_lock_t *lock = NULL;
+	if (!filter->chain || !filter->chain->stream) {
+		php_error_docref(NULL, E_WARNING, "Unable to flush filter, not removing");
+		RETURN_FALSE;
+	}
+
+	php_stream *stream = filter->chain->stream;
+	const bool read_side = filter->chain == &stream->readfilters;
+	php_stream_buffer_lock_t *lock;
 
 	/* Held across both steps: between the flush and the removal the filter must
 	 * not be reached by another coroutine, and the flush itself suspends. */
-	if (stream != NULL) {
-		const uint8_t side = filter->chain == &stream->readfilters
-				? PHP_STREAM_BUFFER_SIDE_READ : PHP_STREAM_BUFFER_SIDE_WRITE;
-
-		if (UNEXPECTED(!php_stream_buffer_lock_acquire(stream, side, &lock))) {
-			php_error_docref(NULL, E_WARNING, "Unable to flush filter, not removing");
-			RETURN_FALSE;
-		}
+	if (UNEXPECTED(!php_stream_buffer_lock_acquire(stream,
+			read_side ? PHP_STREAM_BUFFER_SIDE_READ : PHP_STREAM_BUFFER_SIDE_WRITE, &lock))) {
+		php_error_docref(NULL, E_WARNING, "Unable to flush filter, not removing");
+		RETURN_FALSE;
 	}
 
 	/* The acquire suspends, and another coroutine removing the same filter
@@ -1472,7 +1474,29 @@ PHP_FUNCTION(stream_filter_remove)
 		RETURN_FALSE;
 	}
 
-	if (php_stream_filter_flush(filter, 1) == FAILURE || php_stream_buffer_lock_is_closed(lock)) {
+	/* The lock is recursive: a callback of the chain this coroutine is applying
+	 * gets here past it, and only the flag stops it. */
+	const uint32_t no_remove_flag = read_side
+			? PHP_STREAM_FLAG_NO_READ_FILTER_REMOVE : PHP_STREAM_FLAG_NO_WRITE_FILTER_REMOVE;
+
+	if (stream->flags & no_remove_flag) {
+		php_stream_buffer_lock_release(lock);
+		php_error_docref(NULL, E_WARNING, "Cannot remove filter while it is being applied");
+		RETURN_FALSE;
+	}
+
+	stream->flags |= no_remove_flag;
+	const zend_result flushed = php_stream_filter_flush(filter, 1);
+
+	if (php_stream_buffer_lock_is_closed(lock)) {
+		php_stream_buffer_lock_release(lock);
+		php_error_docref(NULL, E_WARNING, "Unable to flush filter, not removing");
+		RETURN_FALSE;
+	}
+
+	stream->flags &= ~no_remove_flag;
+
+	if (flushed == FAILURE) {
 		php_stream_buffer_lock_release(lock);
 		php_error_docref(NULL, E_WARNING, "Unable to flush filter, not removing");
 		RETURN_FALSE;

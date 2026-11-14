@@ -129,17 +129,17 @@ ZEND_API void zend_objects_destroy_object(zend_object *object)
 				ZEND_ASSERT(!(destructor->common.fn_flags & ZEND_ACC_PUBLIC));
 				if (!zend_check_method_accessible(destructor, scope)) {
 					zend_throw_error(NULL,
-						"Call to %s %s::__destruct() from %s%s",
-						zend_visibility_string(destructor->common.fn_flags), ZSTR_VAL(object->ce->name),
+						"Call to %s %pS::__destruct() from %s%pS",
+						zend_visibility_string(destructor->common.fn_flags), object->ce->name,
 						scope ? "scope " : "global scope",
-						scope ? ZSTR_VAL(scope->name) : ""
+						scope ? scope->name : ZSTR_EMPTY_ALLOC()
 					);
 					return;
 				}
 			} else {
 				zend_error(E_WARNING,
-					"Call to %s %s::__destruct() from global scope during shutdown ignored",
-					zend_visibility_string(destructor->common.fn_flags), ZSTR_VAL(object->ce->name));
+					"Call to %s %pS::__destruct() from global scope during shutdown ignored",
+					zend_visibility_string(destructor->common.fn_flags), object->ce->name);
 				return;
 			}
 		}
