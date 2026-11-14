@@ -2011,7 +2011,7 @@ ZEND_METHOD(ReflectionFunctionAbstract, getAttributes)
 	const zend_function *fptr;
 
 	GET_REFLECTION_OBJECT_PTR(fptr);
-	
+
 	uint32_t target;
 	if (fptr->common.scope && (fptr->common.fn_flags & (ZEND_ACC_CLOSURE|ZEND_ACC_FAKE_CLOSURE)) != ZEND_ACC_CLOSURE) {
 		target = ZEND_ATTRIBUTE_TARGET_METHOD;
@@ -3396,7 +3396,7 @@ static void reflection_method_invoke(INTERNAL_FUNCTION_PARAMETERS, bool variadic
 				RETURN_THROWS();
 			}
 			object = NULL;
-		} 
+		}
 		obj_ce = mptr->common.scope;
 	} else {
 		if (!object) {
@@ -5149,6 +5149,7 @@ void reflection_class_new_lazy(INTERNAL_FUNCTION_PARAMETERS,
 			strategy | options);
 
 	if (!obj) {
+		zend_release_fcall_info_cache(&fcc);
 		RETURN_THROWS();
 	}
 
@@ -6308,7 +6309,9 @@ ZEND_METHOD(ReflectionProperty, isInitialized)
 
 		if (EXPECTED(IS_VALID_PROPERTY_OFFSET(prop_offset))) {
 			zval *value = OBJ_PROP(Z_OBJ_P(object), prop_offset);
-			RETURN_BOOL(!Z_ISUNDEF_P(value));
+			if (EXPECTED(!Z_ISUNDEF_P(value) || !zend_object_is_lazy(Z_OBJ_P(object)))) {
+				RETURN_BOOL(!Z_ISUNDEF_P(value));
+			}
 		}
 	}
 
@@ -6743,8 +6746,7 @@ handle_magic_get:
 	}
 
 	if (prop->flags & ZEND_ACC_VIRTUAL) {
-		ZEND_ASSERT(prop->hooks);
-		if (!prop->hooks[ZEND_PROPERTY_HOOK_GET]) {
+		if (prop->hooks && !prop->hooks[ZEND_PROPERTY_HOOK_GET]) {
 			RETURN_FALSE;
 		}
 	} else if (obj && (!prop->hooks || !prop->hooks[ZEND_PROPERTY_HOOK_GET])) {
@@ -6768,6 +6770,7 @@ retry_declared:;
 			zend_class_init_statics(ce);
 		}
 		zval *prop_val = CE_STATIC_MEMBERS(ce) + prop->offset;
+		ZVAL_DEINDIRECT(prop_val);
 		RETURN_BOOL(!Z_ISUNDEF_P(prop_val));
 	}
 
@@ -6835,26 +6838,31 @@ handle_magic_set:
 		RETURN_FALSE;
 	}
 
-	if (prop->flags & ZEND_ACC_VIRTUAL) {
-		ZEND_ASSERT(prop->hooks);
+	if ((prop->flags & ZEND_ACC_VIRTUAL) && prop->hooks) {
 		if (!prop->hooks[ZEND_PROPERTY_HOOK_SET]) {
 			RETURN_FALSE;
 		}
-	} else if (obj && (prop->flags & ZEND_ACC_READONLY)) {
-retry:;
-		zval *prop_val = OBJ_PROP(obj, prop->offset);
-		if (Z_TYPE_P(prop_val) == IS_UNDEF
-			&& zend_lazy_object_must_init(obj)
-			&& (Z_PROP_FLAG_P(prop_val) & IS_PROP_LAZY)
-		) {
-			obj = zend_lazy_object_init(obj);
-			if (!obj) {
-				RETURN_THROWS();
-			}
-			goto retry;
-		}
-		if (Z_TYPE_P(prop_val) != IS_UNDEF && !(Z_PROP_FLAG_P(prop_val) & IS_PROP_REINITABLE)) {
+	} else if (prop->flags & ZEND_ACC_VIRTUAL) {
+		if (prop->flags & ZEND_ACC_READONLY) {
 			RETURN_FALSE;
+		}
+	} else if ((prop->flags & ZEND_ACC_READONLY)) {
+		if (obj) {
+retry:;
+			zval *prop_val = OBJ_PROP(obj, prop->offset);
+			if (Z_TYPE_P(prop_val) == IS_UNDEF
+				&& zend_lazy_object_must_init(obj)
+				&& (Z_PROP_FLAG_P(prop_val) & IS_PROP_LAZY)
+			) {
+				obj = zend_lazy_object_init(obj);
+				if (!obj) {
+					RETURN_THROWS();
+				}
+				goto retry;
+			}
+			if (Z_TYPE_P(prop_val) != IS_UNDEF && !(Z_PROP_FLAG_P(prop_val) & IS_PROP_REINITABLE)) {
+				RETURN_FALSE;
+			}
 		}
 	}
 

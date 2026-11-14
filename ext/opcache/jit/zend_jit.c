@@ -581,13 +581,18 @@ static zend_class_entry* zend_get_known_class(const zend_op_array *op_array, con
 		}
 	} else {
 		ZEND_ASSERT(op_type == IS_UNUSED);
+		if ((op_array->fn_flags & ZEND_ACC_TRAIT_CLONE)
+		 || (op_array->scope && (op_array->scope->ce_flags & ZEND_ACC_TRAIT))) {
+			/* self and parent depend on the class using the trait */
+			return NULL;
+		}
 		if ((op.num & ZEND_FETCH_CLASS_MASK) == ZEND_FETCH_CLASS_SELF) {
 			ce = op_array->scope;
 		} else {
 			ZEND_ASSERT((op.num & ZEND_FETCH_CLASS_MASK) == ZEND_FETCH_CLASS_PARENT);
 			ce = op_array->scope;
 			if (ce) {
-				if (ce->parent) {
+				if ((ce->ce_flags & ZEND_ACC_LINKED) && ce->parent) {
 					ce = ce->parent;
 					if (ce->type == ZEND_INTERNAL_CLASS || ce->info.user.filename != op_array->filename) {
 						ce = NULL;
@@ -1193,7 +1198,8 @@ static void zend_jit_allocate_registers(zend_jit_ctx *ctx, const zend_op_array *
 						ra[src].flags |= ZREG_STORE;
 					}
 				} else {
-					int need_move = 0;
+					/* The VM may enter an ENTRY block, so its Phi sources must go through memory */
+					int need_move = (ssa->cfg.blocks[phi->block].flags & (ZEND_BB_ENTRY|ZEND_BB_RECV_ENTRY)) != 0;
 					uint32_t k;
 
 					for (k = 0; k < ssa->cfg.blocks[phi->block].predecessors_count; k++) {
@@ -1284,7 +1290,7 @@ static void zend_jit_allocate_registers(zend_jit_ctx *ctx, const zend_op_array *
 							if (range->start > op_num) {
 								/* further blocks will not be relevant... */
 								break;
-							} else if (op_num < range->end && var_num == (range->var & ~ZEND_LIVE_MASK)) {
+							} else if (op_num < range->end && EX_NUM_TO_VAR(var_num) == (range->var & ~ZEND_LIVE_MASK)) {
 								/* check if opcodes in range may throw */
 								do {
 									if (zend_may_throw(op_array->opcodes + op_num, ssa->ops + op_num, op_array, ssa)) {
@@ -3291,6 +3297,8 @@ static int zend_jit_restart_hot_counters(zend_op_array *op_array)
 	uint32_t i;
 
 	jit_extension = (zend_jit_op_array_hot_extension*)ZEND_FUNC_INFO(op_array);
+	/* The JIT-ed code is gone, so allow compiling it again */
+	jit_extension->func_info.flags &= ~ZEND_FUNC_JITED;
 	for (i = 0; i < op_array->last; i++) {
 		op_array->opcodes[i].handler = jit_extension->orig_handlers[i];
 	}
@@ -3820,6 +3828,7 @@ int zend_jit_check_support(void)
 
 void zend_jit_startup(void *buf, size_t size, bool reattached)
 {
+	ZEND_ASSERT(((uintptr_t)buf & (zend_get_page_size() - 1)) == 0);
 	zend_jit_halt_op = zend_get_halt_op();
 	zend_jit_interrupt_op = zend_get_interrupt_op();
 	zend_jit_profile_counter_rid = zend_get_op_array_extension_handle(ACCELERATOR_PRODUCT_NAME);
@@ -3907,10 +3916,7 @@ void zend_jit_startup(void *buf, size_t size, bool reattached)
 
 	zend_jit_trace_startup(reattached);
 
-	zend_jit_unprotect();
-	/* save JIT buffer pos */
-	dasm_ptr[1] = dasm_ptr[0];
-	zend_jit_protect();
+	zend_jit_save_restart_point();
 }
 
 void zend_jit_shutdown(void)
@@ -4058,6 +4064,17 @@ void zend_jit_restart(void)
 			}
 		}
 
+		zend_jit_protect();
+	}
+}
+
+/* Saves the current JIT buffer position as the one zend_jit_restart() rewinds to,
+ * so that the code generated so far is kept across restarts */
+void zend_jit_save_restart_point(void)
+{
+	if (dasm_ptr) {
+		zend_jit_unprotect();
+		dasm_ptr[1] = dasm_ptr[0];
 		zend_jit_protect();
 	}
 }

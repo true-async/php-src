@@ -581,8 +581,9 @@ static ssize_t php_userstreamop_write(php_stream *stream, const char *buf, size_
 
 	ZVAL_STRINGL(&args[0], (char*)buf, count);
 
-	uint32_t orig_no_fclose = stream->flags & PHP_STREAM_FLAG_NO_FCLOSE;
-	stream->flags |= PHP_STREAM_FLAG_NO_FCLOSE;
+	/* Async: the side's own bit, see PHP_STREAM_FLAG_IN_USER_CALL. */
+	const uint32_t orig_close_guard = stream->flags & PHP_STREAM_FLAG_IN_WRITE_USER_CALL;
+	stream->flags |= PHP_STREAM_FLAG_IN_WRITE_USER_CALL;
 
 	zend_string *func_name = ZSTR_INIT_LITERAL(USERSTREAM_WRITE, false);
 	zend_result call_result = zend_call_method_if_exists(Z_OBJ(us->object), func_name, &retval, 1, args);
@@ -594,8 +595,8 @@ static ssize_t php_userstreamop_write(php_stream *stream, const char *buf, size_
 				"%s::" USERSTREAM_WRITE " is not implemented!", ZSTR_VAL(us->wrapper->ce->name));
 	}
 
-	stream->flags &= ~PHP_STREAM_FLAG_NO_FCLOSE;
-	stream->flags |= orig_no_fclose;
+	stream->flags &= ~PHP_STREAM_FLAG_IN_WRITE_USER_CALL;
+	stream->flags |= orig_close_guard;
 
 	/* Exception occurred */
 	if (Z_ISUNDEF(retval)) {
@@ -631,8 +632,9 @@ static ssize_t php_userstreamop_read(php_stream *stream, char *buf, size_t count
 
 	assert(us != NULL);
 
-	uint32_t orig_no_fclose = stream->flags & PHP_STREAM_FLAG_NO_FCLOSE;
-	stream->flags |= PHP_STREAM_FLAG_NO_FCLOSE;
+	/* Async: the side's own bit, see PHP_STREAM_FLAG_IN_USER_CALL. */
+	const uint32_t orig_close_guard = stream->flags & PHP_STREAM_FLAG_IN_READ_USER_CALL;
+	stream->flags |= PHP_STREAM_FLAG_IN_READ_USER_CALL;
 
 	ZVAL_LONG(&args[0], count);
 	zend_string *func_name = ZSTR_INIT_LITERAL(USERSTREAM_READ, false);
@@ -698,14 +700,14 @@ static ssize_t php_userstreamop_read(php_stream *stream, char *buf, size_t count
 	}
 	zval_ptr_dtor(&retval);
 
-	stream->flags &= ~PHP_STREAM_FLAG_NO_FCLOSE;
-	stream->flags |= orig_no_fclose;
+	stream->flags &= ~PHP_STREAM_FLAG_IN_READ_USER_CALL;
+	stream->flags |= orig_close_guard;
 
 	return didread;
 
 err:
-	stream->flags &= ~PHP_STREAM_FLAG_NO_FCLOSE;
-	stream->flags |= orig_no_fclose;
+	stream->flags &= ~PHP_STREAM_FLAG_IN_READ_USER_CALL;
+	stream->flags |= orig_close_guard;
 	return -1;
 }
 

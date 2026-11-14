@@ -106,10 +106,22 @@ PHP_RSHUTDOWN_FUNCTION(user_filters)
 	return SUCCESS;
 }
 
+static void userfilter_release_brigade(php_stream_bucket_brigade *brigade)
+{
+	php_stream_bucket *bucket;
+
+	while ((bucket = brigade->head)) {
+		php_stream_bucket_unlink(bucket);
+		php_stream_bucket_delref(bucket);
+	}
+}
+
 static void userfilter_dtor(php_stream_filter *thisfilter)
 {
 	zval *obj = &thisfilter->abstract;
 	zval retval;
+
+	userfilter_release_brigade(&thisfilter->buffer);
 
 	if (Z_ISUNDEF_P(obj)) {
 		/* If there's no object associated then there's nothing to dispose of */
@@ -126,8 +138,15 @@ static void userfilter_dtor(php_stream_filter *thisfilter)
 	zval_ptr_dtor(obj);
 }
 
+/* The close guard of the side the filter is applied on. */
+static uint32_t userfilter_close_guard(const php_stream *stream, const php_stream_filter *filter)
+{
+	return filter->chain == &stream->readfilters
+			? PHP_STREAM_FLAG_IN_READ_USER_CALL : PHP_STREAM_FLAG_IN_WRITE_USER_CALL;
+}
+
 static zend_result userfilter_assign_stream(php_stream *stream, zval *obj,
-		zend_string **stream_name_p, uint32_t orig_no_fclose)
+		zend_string **stream_name_p, uint32_t close_guard, uint32_t orig_close_guard)
 {
 	/* Give the userfilter class a hook back to the stream */
 	const zend_class_entry *old_scope = EG(fake_scope);
@@ -147,8 +166,8 @@ static zend_result userfilter_assign_stream(php_stream *stream, zval *obj,
 		if (EG(exception)) {
 			EG(fake_scope) = old_scope;
 			zend_string_release(stream_name);
-			stream->flags &= ~PHP_STREAM_FLAG_NO_FCLOSE;
-			stream->flags |= orig_no_fclose;
+			stream->flags &= ~close_guard;
+			stream->flags |= orig_close_guard;
 			return FAILURE;
 		}
 		*stream_name_p = stream_name;
@@ -182,15 +201,28 @@ static php_stream_filter_status_t userfilter_filter(
 	}
 
 	/* Make sure the stream is not closed while the filter callback executes. */
-	uint32_t orig_no_fclose = stream->flags & PHP_STREAM_FLAG_NO_FCLOSE;
-	stream->flags |= PHP_STREAM_FLAG_NO_FCLOSE;
+	const uint32_t close_guard = userfilter_close_guard(stream, thisfilter);
+	const uint32_t orig_close_guard = stream->flags & close_guard;
+	stream->flags |= close_guard;
 
 	zend_string *stream_name = NULL;
-	if (userfilter_assign_stream(stream, obj, &stream_name, orig_no_fclose) == FAILURE) {
+	if (userfilter_assign_stream(stream, obj, &stream_name, close_guard, orig_close_guard) == FAILURE) {
 		if (buckets_in->head) {
 			php_error_docref(NULL, E_WARNING, "Unprocessed filter buckets remaining on input brigade");
+			userfilter_release_brigade(buckets_in);
 		}
 		return PSFS_ERR_FATAL;
+	}
+
+	/* Re-present input kept back by a previous PSFS_FEED_ME */
+	if (thisfilter->buffer.head) {
+		php_stream_bucket *bucket = thisfilter->buffer.tail;
+		while (bucket) {
+			php_stream_bucket *prev = bucket->prev;
+			php_stream_bucket_unlink(bucket);
+			php_stream_bucket_prepend(buckets_in, bucket);
+			bucket = prev;
+		}
 	}
 
 	ZVAL_STRINGL(&func_name, "filter", sizeof("filter")-1);
@@ -228,7 +260,22 @@ static php_stream_filter_status_t userfilter_filter(
 	}
 
 	if (buckets_in->head) {
-		php_error_docref(NULL, E_WARNING, "Unprocessed filter buckets remaining on input brigade");
+		if (ret == PSFS_FEED_ME && !(flags & PSFS_FLAG_FLUSH_CLOSE)) {
+			/* Keep the input for the next call and make sure the buckets own their data */
+			php_stream_bucket *bucket;
+			while ((bucket = buckets_in->head)) {
+				bucket = php_stream_bucket_make_writeable(bucket);
+				php_stream_bucket_append(&thisfilter->buffer, bucket);
+			}
+		} else {
+			php_error_docref(NULL, E_WARNING, "Unprocessed filter buckets remaining on input brigade");
+			userfilter_release_brigade(buckets_in);
+		}
+	}
+
+	/* Filter could've broken contract and added buckets anyway. */
+	if (ret != PSFS_PASS_ON && buckets_out->head) {
+		userfilter_release_brigade(buckets_out);
 	}
 
 	/* filter resources are cleaned up by the stream destructor,
@@ -247,8 +294,8 @@ static php_stream_filter_status_t userfilter_filter(
 	zval_ptr_dtor(&args[1]);
 	zval_ptr_dtor(&args[0]);
 
-	stream->flags &= ~PHP_STREAM_FLAG_NO_FCLOSE;
-	stream->flags |= orig_no_fclose;
+	stream->flags &= ~close_guard;
+	stream->flags |= orig_close_guard;
 
 	return ret;
 }
@@ -277,11 +324,12 @@ static zend_result userfilter_seek(
 	}
 
 	/* Make sure the stream is not closed while the filter callback executes. */
-	uint32_t orig_no_fclose = stream->flags & PHP_STREAM_FLAG_NO_FCLOSE;
-	stream->flags |= PHP_STREAM_FLAG_NO_FCLOSE;
+	const uint32_t close_guard = userfilter_close_guard(stream, thisfilter);
+	const uint32_t orig_close_guard = stream->flags & close_guard;
+	stream->flags |= close_guard;
 
 	zend_string *stream_name = NULL;
-	if (userfilter_assign_stream(stream, obj, &stream_name, orig_no_fclose) == FAILURE) {
+	if (userfilter_assign_stream(stream, obj, &stream_name, close_guard, orig_close_guard) == FAILURE) {
 		return FAILURE;
 	}
 
@@ -306,8 +354,8 @@ static zend_result userfilter_seek(
 		zend_string_release(stream_name);
 	}
 
-	stream->flags &= ~PHP_STREAM_FLAG_NO_FCLOSE;
-	stream->flags |= orig_no_fclose;
+	stream->flags &= ~close_guard;
+	stream->flags |= orig_close_guard;
 
 	return ret;
 }

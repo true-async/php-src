@@ -191,6 +191,18 @@ struct _php_stream_wrapper	{
 
 #define PHP_STREAM_FLAG_NO_IO						0x400
 
+#define PHP_STREAM_FLAG_NO_READ_FILTER_REMOVE		0x800
+#define PHP_STREAM_FLAG_NO_WRITE_FILTER_REMOVE		0x1000
+
+/* Async: a userland call of the read or the write side is running - a user
+ * filter callback or a userspace stream read/write - and fclose() is refused.
+ * The two sides run at once, each under its own buffer lock, so each side keeps
+ * its own bit. */
+#define PHP_STREAM_FLAG_IN_READ_USER_CALL			0x20000000
+#define PHP_STREAM_FLAG_IN_WRITE_USER_CALL			0x40000000
+#define PHP_STREAM_FLAG_IN_USER_CALL \
+	(PHP_STREAM_FLAG_IN_READ_USER_CALL | PHP_STREAM_FLAG_IN_WRITE_USER_CALL)
+
 #define PHP_STREAM_FLAG_WAS_WRITTEN					0x80000000
 
 struct _php_stream  {

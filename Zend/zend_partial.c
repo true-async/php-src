@@ -82,8 +82,8 @@ static zend_never_inline ZEND_COLD void zp_args_underflow(
 			"exactly" : "at least";
 
 	zend_argument_count_error(
-		"Partial application of %s() expects %s %d arguments, %d given",
-		ZSTR_VAL(symbol), limit, expected, args);
+		"Partial application of %pS() expects %s %d arguments, %d given",
+		symbol, limit, expected, args);
 
 	zend_string_release(symbol);
 }
@@ -94,8 +94,8 @@ static zend_never_inline ZEND_COLD void zp_args_overflow(
 	zend_string *symbol = get_function_or_method_name(function);
 
 	zend_argument_count_error(
-		"Partial application of %s() expects at most %d arguments, %d given",
-		ZSTR_VAL(symbol), expected, args);
+		"Partial application of %pS() expects at most %d arguments, %d given",
+		symbol, expected, args);
 
 	zend_string_release(symbol);
 }
@@ -109,8 +109,8 @@ static zend_result zp_args_check(const zend_function *function,
 		ZEND_HASH_MAP_FOREACH_STR_KEY_VAL(extra_named_args, zend_string *key, zval *arg) {
 			if (UNEXPECTED(Z_IS_PLACEHOLDER_P(arg))) {
 				zend_throw_error(NULL,
-						"Cannot use named placeholder for unknown or variadic parameter $%s",
-						ZSTR_VAL(key));
+						"Cannot use named placeholder for unknown or variadic parameter $%pS",
+						key);
 				return FAILURE;
 			}
 		} ZEND_HASH_FOREACH_END();
@@ -221,7 +221,7 @@ static zp_names *zp_assign_names(uint32_t argc, zval *argv,
 		zend_string *orig_name = zp_get_func_param_name(function, function->common.num_args);
 		zend_string *new_name;
 		for (uint32_t n = 0;; n++) {
-			new_name = zend_strpprintf_unchecked(0, "%S%" PRIu32, orig_name, n);
+			new_name = zend_strpprintf(0, "%pS%" PRIu32, orig_name, n);
 			if (!zp_name_exists(names, argc, new_name)) {
 				break;
 			}
@@ -242,7 +242,7 @@ static zp_names *zp_assign_names(uint32_t argc, zval *argv,
 		zend_string *new_name = zend_string_copy(orig_name);
 		while (zp_name_exists(names, argc, new_name)) {
 			zend_string_release(new_name);
-			new_name = zend_strpprintf_unchecked(0, "%S%" PRIu32, orig_name, n);
+			new_name = zend_strpprintf(0, "%pS%" PRIu32, orig_name, n);
 			n++;
 		}
 		names->params[offset] = new_name;
@@ -663,8 +663,8 @@ static zend_ast *zp_compile_forwarding_call(
 		call_ast = zend_ast_create(ZEND_AST_CALL, func_name_ast, args_ast);
 	}
 
-	/* Void functions can not 'return $expr' */
-	if (ZEND_TYPE_FULL_MASK(return_type) & MAY_BE_VOID) {
+	/* Void and never functions can not 'return $expr' */
+	if (ZEND_TYPE_FULL_MASK(return_type) & (MAY_BE_VOID|MAY_BE_NEVER)) {
 		stmts_ast = zend_ast_list_add(stmts_ast, call_ast);
 	} else {
 		zend_ast *return_ast = zend_ast_create(ZEND_AST_RETURN, call_ast);
@@ -701,7 +701,8 @@ static zend_op_array *zp_compile(zval *this_ptr, zend_function *function,
 		uint32_t argc, zval *argv, zend_array *extra_named_params,
 		const zend_array *named_positions,
 		zend_string *declaring_filename,
-		const uint32_t *declaring_lineno_ptr, void **cache_slot,
+		const uint32_t *declaring_lineno_ptr,
+		const zend_op_array *declaring_op_array, void **cache_slot,
 		zend_string *pfa_name, uint32_t flags, uint32_t const_args) {
 
 	zend_op_array *op_array = NULL;
@@ -1008,7 +1009,7 @@ static zend_op_array *zp_compile(zval *this_ptr, zend_function *function,
 		const char *tmp = getenv("DUMP_PFA_AST");
 		if (tmp && ZEND_ATOL(tmp)) {
 			zend_string *str = zend_ast_export("", closure_ast, "");
-			fprintf(stderr, "PFA AST: %s\n", ZSTR_VAL(str));
+			fprintf(stderr, "PFA AST: %pS\n", str);
 			zend_string_release(str);
 		}
 	}
@@ -1016,7 +1017,8 @@ static zend_op_array *zp_compile(zval *this_ptr, zend_function *function,
 
 	/* Takes ownership of closure_ast */
 	op_array = zend_accel_compile_pfa(closure_ast, declaring_filename,
-			declaring_lineno_ptr, function, pfa_name, flags & ZEND_PARTIAL_CACHEABLE_IN_SHM);
+			declaring_lineno_ptr, declaring_op_array, function, pfa_name,
+			flags & ZEND_PARTIAL_CACHEABLE_IN_SHM);
 
 clean:
 	zp_names_dtor(var_names, argc);
@@ -1040,7 +1042,8 @@ static const zend_op_array *zp_get_op_array(zval *this_ptr, zend_function *funct
 		uint32_t argc, zval *argv, zend_array *extra_named_params,
 		const zend_array *named_positions,
 		zend_string *declaring_filename,
-		const uint32_t *declaring_lineno_ptr, void **cache_slot,
+		const uint32_t *declaring_lineno_ptr,
+		const zend_op_array *declaring_op_array, void **cache_slot,
 		zend_string *pfa_name, uint32_t flags, uint32_t const_args) {
 
 	if (EXPECTED(function->type == ZEND_INTERNAL_FUNCTION
@@ -1056,7 +1059,7 @@ static const zend_op_array *zp_get_op_array(zval *this_ptr, zend_function *funct
 	if (UNEXPECTED(!op_array)) {
 		op_array = zp_compile(this_ptr, function, argc, argv,
 			extra_named_params, named_positions, declaring_filename, declaring_lineno_ptr,
-			cache_slot, pfa_name, flags, const_args);
+			declaring_op_array, cache_slot, pfa_name, flags, const_args);
 	}
 
 	if (EXPECTED(op_array) && !(function->common.fn_flags & ZEND_ACC_NEVER_CACHE)) {
@@ -1110,8 +1113,8 @@ static void zp_bind(zval *result, zend_function *function, uint32_t argc, zval *
 			zend_string *need_msg = zend_type_to_string_resolved(arg_info->type,
 					function->common.scope);
 			zend_argument_type_error_ex(function, offset + 1,
-					"must be of type %s, %s given",
-					ZSTR_VAL(need_msg), zend_zval_value_name(var));
+					"must be of type %pS, %s given",
+					need_msg, zend_zval_value_name(var));
 			zend_string_release(need_msg);
 			zval_ptr_dtor(result);
 			ZVAL_NULL(result);
@@ -1135,7 +1138,8 @@ void zend_partial_create(zval *result, zend_class_entry *scope, zval *this_ptr, 
 		uint32_t argc, zval *argv, zend_array *extra_named_params,
 		const zend_array *named_positions,
 		zend_string *declaring_filename,
-		const uint32_t *declaring_lineno_ptr, void **cache_slot,
+		const uint32_t *declaring_lineno_ptr,
+		const zend_op_array *declaring_op_array, void **cache_slot,
 		zend_string *pfa_name, uint32_t flags, uint32_t const_args) {
 
 	ZEND_ASSERT(pfa_name);
@@ -1143,7 +1147,7 @@ void zend_partial_create(zval *result, zend_class_entry *scope, zval *this_ptr, 
 	const zend_op_array *op_array = zp_get_op_array(this_ptr, function, argc, argv,
 			extra_named_params, named_positions,
 			declaring_filename, declaring_lineno_ptr,
-			cache_slot, pfa_name, flags, const_args);
+			declaring_op_array, cache_slot, pfa_name, flags, const_args);
 
 	if (UNEXPECTED(!op_array)) {
 		ZEND_ASSERT(EG(exception));

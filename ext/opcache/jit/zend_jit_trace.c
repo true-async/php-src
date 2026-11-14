@@ -2405,6 +2405,7 @@ propagate_arg:
 				/* Add statically inferred restrictions */
 				if (ssa_ops[idx].op1_def >= 0) {
 					if (opline->opcode == ZEND_SEND_VAR_EX
+					 && opline->op2_type != IS_CONST
 					 && frame
 					 && frame->call
 					 && frame->call->func
@@ -3367,7 +3368,10 @@ static zend_jit_reg_var* zend_jit_trace_allocate_registers(zend_jit_trace_rec *t
 		} else if (p->stop >= ZEND_JIT_TRACE_STOP_LINK) {
 			for (i = 0; i < op_array->last_var + op_array->T; i++) {
 				int var = STACK_VAR(stack, i);
+				/* A side trace must define the variable, otherwise it may set ZREG_STORE on
+				 * variables inherited from the parent trace that are only stored when linking. */
 				if (var >= 0 && RA_HAS_REG(var)
+				 && ssa->vars[var].definition >= 0
 				 && !(RA_REG_FLAGS(var) & (ZREG_LOAD|ZREG_STORE|ZREG_LAST_USE))) {
 					RA_REG_FLAGS(var) |= ZREG_STORE;
 				}
@@ -4543,7 +4547,7 @@ static zend_vm_opcode_handler_t zend_jit_trace(zend_jit_trace_rec *trace_buffer,
 							ssa->var_info[ssa_op->result_def].type &= ~MAY_BE_GUARD;
 						} else if (opline->result_type != IS_UNUSED
 						 && (res_info & (MAY_BE_ANY|MAY_BE_GUARD)) == (MAY_BE_DOUBLE|MAY_BE_GUARD)
-						 && !(res_info & MAY_BE_STRING)) {
+						 && !(op1_info & MAY_BE_STRING)) {
 							ssa->var_info[ssa_op->result_def].type &= ~MAY_BE_GUARD;
 						}
 						goto done;
@@ -8866,7 +8870,7 @@ int ZEND_FASTCALL zend_jit_trace_exit(uint32_t exit_num, zend_jit_registers_buf 
 		return 1;
 	/* Lock-free check if the side trace was already JIT-ed or blacklist-ed in another process */
 	} else if (t->exit_info[exit_num].flags & (ZEND_JIT_EXIT_JITED|ZEND_JIT_EXIT_BLACKLISTED)) {
-		return 0;
+		return EX(opline) == zend_jit_traces[t->root].opline;
 	}
 
 	ZEND_ASSERT(EX(func)->type == ZEND_USER_FUNCTION);

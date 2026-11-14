@@ -95,6 +95,26 @@ static php_stream_buffer_block_t *stream_buffer_block_of(const php_stream_buffer
 	return (php_stream_buffer_block_t *) ((char *) side - side->rank * sizeof(php_stream_buffer_lock_t));
 }
 
+/* Closes both sides in one sequence that cannot suspend: a coroutine holding
+ * or waiting for either learns the stream is gone, and stream_buffer_lock()
+ * refuses any newcomer. The block stays reachable until the free drops it. */
+static void stream_buffer_lock_close(php_stream *stream)
+{
+	if (stream->buffer_lock == NULL) {
+		return;
+	}
+
+	php_stream_buffer_block_t *block = stream_buffer_block_of((php_stream_buffer_lock_t *) stream->buffer_lock);
+
+	for (uint8_t rank = 0; rank < 2; rank++) {
+		zend_async_event_t *side = &block->sides[rank].base;
+
+		if (!ZEND_ASYNC_EVENT_IS_CLOSED(side)) {
+			ZEND_ASYNC_CALLBACKS_NOTIFY_AND_CLOSE(side, NULL, NULL);
+		}
+	}
+}
+
 static int forget_persistent_resource_id_numbers(zval *el)
 {
 	php_stream *stream;
@@ -390,6 +410,12 @@ fprintf(stderr, "stream_free: %s:%p[%s] preserve_handle=%d release_cast=%d remov
 		(close_options & PHP_STREAM_FREE_RSRC_DTOR) == 0);
 #endif
 
+	/* Before the flush, which suspends: a coroutine arriving meanwhile would
+	 * take a free side and walk into the chain this free destroys. */
+	if (close_options & PHP_STREAM_FREE_RELEASE_STREAM) {
+		stream_buffer_lock_close(stream);
+	}
+
 	int flush_result;
 	if (stream->flags & PHP_STREAM_FLAG_WAS_WRITTEN || stream->writefilters.head) {
 		/* make sure everything is saved. The lock is deliberately not taken: a
@@ -495,15 +521,12 @@ fprintf(stderr, "stream_free: %s:%p[%s] preserve_handle=%d release_cast=%d remov
 		 * once it runs, that the stream is gone. */
 		if (stream->buffer_lock != NULL) {
 			php_stream_buffer_block_t *block = stream_buffer_block_of((php_stream_buffer_lock_t *) stream->buffer_lock);
+
+			stream_buffer_lock_close(stream);
 			stream->buffer_lock = NULL;
 
-			/* Both sides, in one sequence that cannot suspend: a coroutine
-			 * holding either of them learns the stream is gone. */
 			for (uint8_t rank = 0; rank < 2; rank++) {
-				zend_async_event_t *side = &block->sides[rank].base;
-
-				ZEND_ASYNC_CALLBACKS_NOTIFY_AND_CLOSE(side, NULL, NULL);
-				ZEND_ASYNC_EVENT_RELEASE(side);
+				ZEND_ASYNC_EVENT_RELEASE(&block->sides[rank].base);
 			}
 		}
 
@@ -667,6 +690,11 @@ static bool stream_buffer_lock(php_stream *stream, stream_buffer_side side, php_
 			? stream_buffer_block_of((php_stream_buffer_lock_t *) stream->buffer_lock)
 			: stream_buffer_block_create(stream);
 	php_stream_buffer_lock_t *lock = &block->sides[side];
+
+	/* A free in progress closed the side: it grants nobody, its owner included. */
+	if (UNEXPECTED(ZEND_ASYNC_EVENT_IS_CLOSED(&lock->base))) {
+		return false;
+	}
 
 	/* Keep the event alive independently of the stream, including for the
 	 * owner: ops->read/write may return after fclose() freed the stream. */
@@ -872,6 +900,8 @@ static zend_result stream_fill_read_buffer_locked(php_stream *stream, size_t siz
 			}
 
 			/* wind the handle... */
+			uint32_t orig_no_remove = stream->flags & PHP_STREAM_FLAG_NO_READ_FILTER_REMOVE;
+			stream->flags |= PHP_STREAM_FLAG_NO_READ_FILTER_REMOVE;
 			for (filter = stream->readfilters.head; filter; filter = filter->next) {
 				status = filter->fops->filter(stream, filter, brig_inp, brig_outp, NULL, flags);
 
@@ -902,6 +932,8 @@ static zend_result stream_fill_read_buffer_locked(php_stream *stream, size_t siz
 				brig_outp = brig_swap;
 				memset(brig_outp, 0, sizeof(*brig_outp));
 			}
+			stream->flags &= ~PHP_STREAM_FLAG_NO_READ_FILTER_REMOVE;
+			stream->flags |= orig_no_remove;
 
 			switch (status) {
 				case PSFS_PASS_ON:
@@ -1680,6 +1712,8 @@ static ssize_t php_stream_write_filtered(php_stream *stream, const char *buf, si
 		php_stream_bucket_append(&brig_in, bucket);
 	}
 
+	uint32_t orig_no_remove = stream->flags & PHP_STREAM_FLAG_NO_WRITE_FILTER_REMOVE;
+	stream->flags |= PHP_STREAM_FLAG_NO_WRITE_FILTER_REMOVE;
 	for (php_stream_filter *filter = stream->writefilters.head; filter; filter = filter->next) {
 		/* for our return value, we are interested in the number of bytes consumed from
 		 * the first filter in the chain */
@@ -1703,6 +1737,12 @@ static ssize_t php_stream_write_filtered(php_stream *stream, const char *buf, si
 		brig_inp = brig_outp;
 		brig_outp = brig_swap;
 		memset(brig_outp, 0, sizeof(*brig_outp));
+	}
+
+	/* A close in the loop has freed the stream. */
+	if (!stream_buffer_lock_closed(lock)) {
+		stream->flags &= ~PHP_STREAM_FLAG_NO_WRITE_FILTER_REMOVE;
+		stream->flags |= orig_no_remove;
 	}
 
 	switch (status) {
@@ -1862,6 +1902,12 @@ static zend_result php_stream_filters_seek(php_stream *stream, php_stream_filter
 		bool is_start_seeking, zend_off_t offset, int whence, int chain_type,
 		php_stream_buffer_lock_t *lock)
 {
+	const uint32_t no_remove_flag = chain_type == PHP_STREAM_FILTER_READ ?
+			PHP_STREAM_FLAG_NO_READ_FILTER_REMOVE : PHP_STREAM_FLAG_NO_WRITE_FILTER_REMOVE;
+	const uint32_t orig_no_remove = stream->flags & no_remove_flag;
+
+	stream->flags |= no_remove_flag;
+
 	while (filter) {
 		php_stream_filter_seekable_t seekable = (chain_type == PHP_STREAM_FILTER_READ) ?
 				filter->read_seekable : filter->write_seekable;
@@ -1876,11 +1922,15 @@ static zend_result php_stream_filters_seek(php_stream *stream, php_stream_filter
 
 			if (result == FAILURE) {
 				php_error_docref(NULL, E_WARNING, "Stream filter seeking for %s failed", filter->fops->label);
+				stream->flags &= ~no_remove_flag;
+				stream->flags |= orig_no_remove;
 				return FAILURE;
 			}
 		}
 		filter = filter->next;
 	}
+	stream->flags &= ~no_remove_flag;
+	stream->flags |= orig_no_remove;
 	return SUCCESS;
 }
 

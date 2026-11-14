@@ -80,6 +80,9 @@ static zend_array *zho_build_properties_ex(zend_object *zobj, bool check_access,
 			if (prop_info->flags & ZEND_ACC_STATIC) {
 				continue;
 			}
+			if (!prop_info->hooks && (prop_info->flags & ZEND_ACC_VIRTUAL)) {
+				continue;
+			}
 			zend_string *property_name = prop_info->name;
 			/* When promoting properties from protected to public, use the unmangled name to preserve order. */
 			if (prop_info->flags & ZEND_ACC_PROTECTED) {
@@ -166,8 +169,8 @@ static void zho_declared_it_fetch_current(zend_object_iterator *iter)
 		if (hooked_iter->by_ref
 		 && (get == NULL
 		  || !(get->common.fn_flags & ZEND_ACC_RETURN_REFERENCE))) {
-			zend_throw_error(NULL, "Cannot create reference to property %s::$%s",
-				ZSTR_VAL(zobj->ce->name), zend_get_unmangled_property_name(prop_info->name));
+			zend_throw_error(NULL, "Cannot create reference to property %pS::$%s",
+				zobj->ce->name, zend_get_unmangled_property_name(prop_info->name));
 			return;
 		}
 		zend_string *unmangled_name = prop_info->name;
@@ -195,8 +198,8 @@ static void zho_declared_it_fetch_current(zend_object_iterator *iter)
 		} else if (Z_TYPE_P(property) != IS_REFERENCE) {
 			if (UNEXPECTED(prop_info->flags & ZEND_ACC_READONLY)) {
 				zend_throw_error(NULL,
-					"Cannot acquire reference to readonly property %s::$%s",
-					ZSTR_VAL(prop_info->ce->name), zend_get_unmangled_property_name(prop_info->name));
+					"Cannot acquire reference to readonly property %pS::$%s",
+					prop_info->ce->name, zend_get_unmangled_property_name(prop_info->name));
 				return;
 			}
 			ZVAL_MAKE_REF(property);
