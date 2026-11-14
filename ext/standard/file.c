@@ -786,7 +786,7 @@ PHPAPI PHP_FUNCTION(fclose)
 		PHP_Z_PARAM_STREAM(stream)
 	ZEND_PARSE_PARAMETERS_END();
 
-	if ((stream->flags & PHP_STREAM_FLAG_NO_FCLOSE) != 0) {
+	if ((stream->flags & (PHP_STREAM_FLAG_NO_FCLOSE | PHP_STREAM_FLAG_IN_USER_CALL)) != 0) {
 		php_error_docref(NULL, E_WARNING, "cannot close the provided stream, as it must not be manually closed");
 		RETURN_FALSE;
 	}
@@ -874,7 +874,7 @@ PHP_FUNCTION(pclose)
 		PHP_Z_PARAM_STREAM(stream)
 	ZEND_PARSE_PARAMETERS_END();
 
-	if ((stream->flags & PHP_STREAM_FLAG_NO_FCLOSE) != 0) {
+	if ((stream->flags & (PHP_STREAM_FLAG_NO_FCLOSE | PHP_STREAM_FLAG_IN_USER_CALL)) != 0) {
 		php_error_docref(NULL, E_WARNING, "cannot close the provided stream, as it must not be manually closed");
 		RETURN_LONG(-1);
 	}
