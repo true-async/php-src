@@ -1858,7 +1858,10 @@ ZEND_API void object_properties_load(zend_object *object, const HashTable *prope
 					object->ce->name, h);
 			}
 
-			prop = zend_hash_index_update(zend_std_get_properties_ex(object), h, prop);
+			/* Property tables only have string keys */
+			zend_string *name = zend_long_to_str(h);
+			prop = zend_hash_update(zend_std_get_properties_ex(object), name, prop);
+			zend_string_release_ex(name, false);
 			zval_add_ref(prop);
 		}
 	} ZEND_HASH_FOREACH_END();
@@ -3486,6 +3489,9 @@ ZEND_API void zend_deactivate_modules(void) /* {{{ */
 			if (module->request_shutdown_func) {
 				zend_try {
 					module->request_shutdown_func(module->type, module->module_number);
+				} zend_catch {
+					/* module shutdown is incomplete */
+					_exit(1);
 				} zend_end_try();
 			}
 		} ZEND_HASH_FOREACH_END();
@@ -3496,6 +3502,9 @@ ZEND_API void zend_deactivate_modules(void) /* {{{ */
 			const zend_module_entry *module = *p;
 			zend_try {
 				module->request_shutdown_func(module->type, module->module_number);
+			} zend_catch {
+				/* module shutdown is incomplete */
+				_exit(1);
 			} zend_end_try();
 			p++;
 		}

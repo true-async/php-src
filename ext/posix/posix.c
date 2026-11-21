@@ -83,6 +83,15 @@ static PHP_MINIT_FUNCTION(posix)
 }
 /* }}} */
 
+/* {{{ PHP_RSHUTDOWN_FUNCTION(posix) */
+static PHP_RSHUTDOWN_FUNCTION(posix)
+{
+	POSIX_G(last_error) = 0;
+
+	return SUCCESS;
+}
+/* }}} */
+
 /* {{{ posix_module_entry */
 zend_module_entry posix_module_entry = {
 	STANDARD_MODULE_HEADER,
@@ -91,7 +100,7 @@ zend_module_entry posix_module_entry = {
 	PHP_MINIT(posix),
 	NULL,
 	NULL,
-	NULL,
+	PHP_RSHUTDOWN(posix),
 	PHP_MINFO(posix),
 	PHP_POSIX_VERSION,
 	PHP_MODULE_GLOBALS(posix),
@@ -733,6 +742,11 @@ PHP_FUNCTION(posix_access)
 		Z_PARAM_OPTIONAL
 		Z_PARAM_LONG(mode)
 	ZEND_PARSE_PARAMETERS_END();
+
+	if (filename_len == 0) {
+		zend_argument_must_not_be_empty_error(1);
+		RETURN_THROWS();
+	}
 
 	path = expand_filepath(filename, NULL);
 	if (!path) {
