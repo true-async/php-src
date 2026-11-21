@@ -21,9 +21,9 @@
 #include "zend_globals.h"
 #include "zend_stream.h"
 
-#define ZEND_ASYNC_API "TrueAsync ABI v0.27.0"
+#define ZEND_ASYNC_API "TrueAsync ABI v0.28.0"
 #define ZEND_ASYNC_API_VERSION_MAJOR 0
-#define ZEND_ASYNC_API_VERSION_MINOR 27
+#define ZEND_ASYNC_API_VERSION_MINOR 28
 #define ZEND_ASYNC_API_VERSION_PATCH 0
 
 #define ZEND_ASYNC_API_VERSION_NUMBER \
@@ -325,6 +325,12 @@ typedef struct _zend_async_listen_event_s zend_async_listen_event_t;
 #define ZEND_ASYNC_LISTEN_F_REUSEPORT  (1u << 0) /* SO_REUSEPORT / UV_TCP_REUSEPORT */
 #define ZEND_ASYNC_LISTEN_F_IPV6ONLY   (1u << 1) /* IPV6_V6ONLY on AF_INET6 */
 #define ZEND_ASYNC_LISTEN_F_UNIX       (1u << 2) /* AF_UNIX socket — host is a filesystem path, port ignored */
+/* The caller never stops this TCP listener to hold connections back, so the
+ * reactor may accept ahead of it (on Windows, libuv's 32 pending AcceptEx
+ * instead of one). Stopping it is still allowed and still pauses it, but the
+ * connections already accepted ahead then reach start() in no stated order.
+ * Ignored on an AF_UNIX listener. */
+#define ZEND_ASYNC_LISTEN_F_NO_PAUSE   (1u << 3)
 
 /* Flags for zend_async_udp_bind_fn. Bitfield; unknown bits must be ignored
  * by reactors for forward compatibility. Added for HTTP/3 UDP listeners —
