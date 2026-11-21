@@ -3967,6 +3967,19 @@ void accel_shutdown(void)
 	accel_startup_ok = false;
 }
 
+/* Whether a scheduled restart can ever run in this process. Under ZTS a restart
+ * waits until no thread reads the shared memory, and a thread stops reading it
+ * only when its request ends. A CLI request lasts as long as the process, so the
+ * wait would never end while every later request ran without the cache. */
+bool zend_accel_restart_can_run(void)
+{
+#ifdef ZTS
+	return !accel_sapi_is_cli();
+#else
+	return true;
+#endif
+}
+
 void zend_accel_schedule_restart(zend_accel_restart_reason reason)
 {
 	const char *zend_accel_restart_reason_text[ACCEL_RESTART_USER + 1] = {
@@ -3977,6 +3990,19 @@ void zend_accel_schedule_restart(zend_accel_restart_reason reason)
 
 	if (ZCSG(restart_pending)) {
 		/* don't schedule twice */
+		return;
+	}
+
+	if (!zend_accel_restart_can_run()) {
+		/* The cache stays as it is: full, so scripts that do not fit are
+		 * compiled without being stored. */
+		if (reason != ACCEL_RESTART_USER && !ZSMMG(memory_exhausted)) {
+			ZSMMG(memory_exhausted) = true;
+			zend_accel_error(ACCEL_LOG_WARNING,
+				"Cache is full (%s) and cannot be restarted in a CLI process; restart the process",
+				zend_accel_restart_reason_text[reason]);
+		}
+
 		return;
 	}
 

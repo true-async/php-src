@@ -324,6 +324,7 @@ void start_accel_extension(void);
 void accel_shutdown(void);
 ZEND_RINIT_FUNCTION(zend_accelerator);
 zend_result accel_post_deactivate(void);
+bool zend_accel_restart_can_run(void);
 void zend_accel_schedule_restart(zend_accel_restart_reason reason);
 void zend_accel_schedule_restart_if_necessary(zend_accel_restart_reason reason);
 accel_time_t zend_get_file_handle_timestamp(zend_file_handle *file_handle, size_t *size);
