@@ -940,6 +940,12 @@ ZEND_FUNCTION(opcache_reset)
 		RETURN_FALSE;
 	}
 
+	if (!zend_accel_restart_can_run()) {
+		php_error_docref(NULL, E_WARNING, "The opcode cache cannot be reset in a CLI process; "
+			"restart the process, or invalidate scripts with opcache_invalidate()");
+		RETURN_FALSE;
+	}
+
 	/* exclusive lock */
 	zend_shared_alloc_lock();
 	zend_accel_schedule_restart(ACCEL_RESTART_USER);
