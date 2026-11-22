@@ -74,8 +74,13 @@ int _pdo_mysql_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt, const char *file, int lin
 	einfo->file = file;
 	einfo->line = line;
 
+	/* A statement's message is request memory whatever the handle: the
+	 * statement never outlives the request, and its destructor cannot tell
+	 * from the PDO object, which may already be gone. */
+	const bool persistent = S == NULL && dbh->is_persistent;
+
 	if (einfo->errmsg) {
-		pefree(einfo->errmsg, dbh->is_persistent);
+		pefree(einfo->errmsg, persistent);
 		einfo->errmsg = NULL;
 	}
 
@@ -86,26 +91,26 @@ int _pdo_mysql_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt, const char *file, int lin
 					"Cannot execute queries while there are pending result sets. "
 					"Consider unsetting the previous PDOStatement or calling "
 					"PDOStatement::closeCursor()",
-					dbh->is_persistent);
+					persistent);
 			} else {
 				einfo->errmsg = pestrdup(
 					"Cannot execute queries while other unbuffered queries are active.  "
 					"Consider using PDOStatement::fetchAll().  Alternatively, if your code "
 					"is only ever going to run against mysql, you may enable query "
 					"buffering by setting the Pdo\\Mysql::ATTR_USE_BUFFERED_QUERY attribute.",
-					dbh->is_persistent);
+					persistent);
 			}
 		} else if (einfo->errcode == 2057) {
 			einfo->errmsg = pestrdup(
 				"A stored procedure returning result sets of different size was called. "
 				"This is not supported by libmysql",
-				dbh->is_persistent);
+				persistent);
 
 		} else {
 			if (S && S->stmt) {
-				einfo->errmsg = pestrdup(mysql_stmt_error(S->stmt), dbh->is_persistent);
+				einfo->errmsg = pestrdup(mysql_stmt_error(S->stmt), persistent);
 			} else {
-				einfo->errmsg = pestrdup(mysql_error(H->server), dbh->is_persistent);
+				einfo->errmsg = pestrdup(mysql_error(H->server), persistent);
 			}
 		}
 	} else { /* no error */
