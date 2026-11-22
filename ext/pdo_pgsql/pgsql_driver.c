@@ -986,6 +986,12 @@ static zend_result pdo_pgsql_check_liveness(pdo_dbh_t *dbh)
 {
 	pdo_pgsql_db_handle *H = (pdo_pgsql_db_handle *)dbh->driver_data;
 	if (!PQconsumeInput(H->server) || PQstatus(H->server) == CONNECTION_BAD) {
+		/* A pool slot reconnected in place would skip PDO::ATTR_POOL_INIT_SQL:
+		 * report it dead, so the pool builds a configured one. */
+		if (dbh->pool != NULL) {
+			return FAILURE;
+		}
+
 		PQreset(H->server);
 	}
 	return (PQstatus(H->server) == CONNECTION_OK) ? SUCCESS : FAILURE;
