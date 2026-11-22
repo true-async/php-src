@@ -153,6 +153,7 @@ static void pdo_mysql_fetch_error_func(pdo_dbh_t *dbh, pdo_stmt_t *stmt, zval *i
 /* }}} */
 
 static inline int mysql_handle_autocommit(pdo_dbh_t *dbh);
+static bool pdo_mysql_in_transaction(pdo_dbh_t *dbh);
 
 /* {{{ pdo_mysql_pool_before_acquire */
 static bool pdo_mysql_pool_before_acquire(pdo_dbh_t *dbh)
@@ -391,12 +392,63 @@ end:
 /* }}} */
 
 /* {{{ mysql_handle_doer */
+/* Read and drop what a statement run on a pool slot returned, so the slot can
+ * run the next command: nothing reads these results later, and an unread one
+ * fails every command after it with 2014, in whichever coroutine gets the
+ * slot. Returns false with the error on dbh when a result fails part way. */
+static bool pdo_mysql_pool_discard_results(pdo_dbh_t *dbh, const bool was_in_txn)
+{
+	pdo_mysql_db_handle *H = (pdo_mysql_db_handle *)dbh->driver_data;
+
+	for (;;) {
+		if (mysql_field_count(H->server) > 0) {
+			MYSQL_RES *result = mysql_use_result(H->server);
+			if (result != NULL) {
+				mysql_free_result(result);
+			}
+
+			if (mysql_errno(H->server)) {
+				break;
+			}
+		}
+
+		if (!mysql_more_results(H->server)) {
+			return true;
+		}
+
+		if (mysql_next_result(H->server)) {
+			break;
+		}
+	}
+
+	pdo_mysql_error(dbh);
+
+	if (was_in_txn) {
+#ifdef PDO_USE_MYSQLND
+		/* An error after the first row arrives in place of the EOF that
+		 * carries the server status, and mysqlnd cleared the status at the
+		 * header: put back the transaction, as an error in the header leaves
+		 * it, so rollBack() still reaches it. */
+		H->server->data->upsert_status->server_status |= SERVER_STATUS_IN_TRANS;
+#endif
+		/* Unsure state stays with this coroutine and is reset before reuse. */
+		dbh->pool_session_dirty = true;
+	}
+
+	return false;
+}
+
 static zend_long mysql_handle_doer(pdo_dbh_t *dbh, const zend_string *sql)
 {
 	pdo_mysql_db_handle *H = (pdo_mysql_db_handle *)dbh->driver_data;
 	PDO_DBG_ENTER("mysql_handle_doer");
 	PDO_DBG_INF_FMT("dbh=%p", dbh);
 	PDO_DBG_INF_FMT("sql=%.*s", (int)ZSTR_LEN(sql), ZSTR_VAL(sql));
+
+	/* Off a pool the doer leaves an unread result as upstream does: the
+	 * damage stays with the caller's own connection. */
+	const bool pooled = dbh->pool != NULL;
+	const bool was_in_txn = pooled && pdo_mysql_in_transaction(dbh);
 
 	if (mysql_real_query(H->server, ZSTR_VAL(sql), ZSTR_LEN(sql))) {
 		pdo_mysql_error(dbh);
@@ -405,7 +457,21 @@ static zend_long mysql_handle_doer(pdo_dbh_t *dbh, const zend_string *sql)
 		my_ulonglong c = mysql_affected_rows(H->server);
 		if (c == (my_ulonglong) -1) {
 			pdo_mysql_error(dbh);
-			PDO_DBG_RETURN(H->einfo.errcode ? -1 : 0);
+			if (H->einfo.errcode) {
+				PDO_DBG_RETURN(-1);
+			}
+
+			if (pooled && !pdo_mysql_pool_discard_results(dbh, was_in_txn)) {
+				PDO_DBG_RETURN(-1);
+			}
+
+			PDO_DBG_RETURN(0);
+		} else if (pooled) {
+			if (!pdo_mysql_pool_discard_results(dbh, was_in_txn)) {
+				PDO_DBG_RETURN(-1);
+			}
+
+			PDO_DBG_RETURN((int)c);
 		} else {
 
 			/* MULTI_QUERY support - eat up all unfetched result sets */

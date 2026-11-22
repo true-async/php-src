@@ -53,6 +53,13 @@ echo "one statement: ", $one->query('PRAGMA foreign_keys')->fetchColumn(), "\n";
 var_dump($one->getAttribute(PDO::ATTR_POOL_INIT_SQL));
 var_dump($pdo->getAttribute(PDO::ATTR_POOL_INIT_SQL));
 
+// Statements that return rows are fine: the rows are discarded.
+$rows = new PDO("sqlite:$dbfile", null, null, [
+    PDO::ATTR_POOL_ENABLED => true,
+    PDO::ATTR_POOL_INIT_SQL => ['PRAGMA busy_timeout = 5000', 'SELECT 1'],
+]);
+echo "rows discarded: ", $rows->query('PRAGMA busy_timeout')->fetchColumn(), "\n";
+
 // Without a pool the attribute is ignored, like the other pool attributes.
 $direct = new PDO("sqlite:$dbfile", null, null, [
     PDO::ATTR_POOL_INIT_SQL => ['PRAGMA foreign_keys = ON'],
@@ -60,7 +67,7 @@ $direct = new PDO("sqlite:$dbfile", null, null, [
 echo "no pool: ", $direct->query('PRAGMA foreign_keys')->fetchColumn(), "\n";
 var_dump($direct->getAttribute(PDO::ATTR_POOL_INIT_SQL));
 
-unset($pdo, $one, $direct);
+unset($pdo, $one, $rows, $direct);
 @unlink($dbfile);
 
 echo "Done\n";
@@ -81,6 +88,7 @@ array(2) {
   [1]=>
   string(25) "PRAGMA cache_size = -4321"
 }
+rows discarded: 5000
 no pool: 0
 bool(false)
 Done
