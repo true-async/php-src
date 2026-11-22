@@ -125,6 +125,9 @@ class PDO
     /* Connection pool attributes (requires async extension) */
     /**
      * Share one connection between coroutines through a pool (bool).
+     * A transaction left open by a coroutine is rolled back when its
+     * connection returns to the pool; a connection whose rollback fails,
+     * or that is still in a transaction after it, is closed instead.
      *
      * @cvalue LONG_CONST(PDO_ATTR_POOL_ENABLED)
      */

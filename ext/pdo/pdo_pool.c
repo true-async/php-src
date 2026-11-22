@@ -625,8 +625,21 @@ static bool pdo_pool_before_release(zend_async_pool_t *pool, zval *resource)
 	/* Ask the driver, not our flag: raw SQL and autocommit=0 open transactions
 	 * beginTransaction() never sees. */
 	if (conn->methods != NULL) {
-		if (pdo_pool_conn_in_transaction(conn) && conn->methods->rollback != NULL) {
-			conn->methods->rollback(conn);
+		if (pdo_pool_conn_in_transaction(conn)) {
+			/* A slot whose transaction cannot be closed is destroyed: closing
+			 * the connection makes the server roll it back. A dead connection,
+			 * a live one refusing ROLLBACK (2014, XA) and completion_type =
+			 * CHAIN, which opens the next transaction, all end here. */
+			if (conn->methods->rollback == NULL || !conn->methods->rollback(conn)) {
+				return false;
+			}
+
+			/* Without a driver hook pdo_pool_conn_in_transaction() reads this flag. */
+			conn->in_txn = false;
+
+			if (pdo_pool_conn_in_transaction(conn)) {
+				return false;
+			}
 		}
 
 		conn->in_txn = false;
