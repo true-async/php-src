@@ -1,5 +1,5 @@
 /* This is a generated file, edit pdo_dbh.stub.php instead.
- * Stub hash: 17503c79a00357e162630c426421f718ca938ac8 */
+ * Stub hash: 2d5f06be7bfd10855429ae6d9c5eef4055fb29d8 */
 
 #include "zend_attributes.h"
 
