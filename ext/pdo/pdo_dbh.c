@@ -455,6 +455,18 @@ PDO_API void php_pdo_internal_construct_driver(INTERNAL_FUNCTION_PARAMETERS, zen
 			RETURN_THROWS();
 		}
 
+		/* The lookup below and the registration after the connect are split by
+		 * the connect, which suspends: two coroutines would register the same
+		 * key, or one would get a connection another is inside a transaction on.
+		 * The main flow opens persistent connections; coroutines use a pool. */
+		if (is_persistent && ZEND_ASYNC_CURRENT_COROUTINE != NULL
+				&& !ZEND_COROUTINE_IS_MAIN(ZEND_ASYNC_CURRENT_COROUTINE)) {
+			zend_string_release_ex(hash_key, false);
+			zend_throw_exception_ex(php_pdo_get_exception(), 0,
+				"PDO::ATTR_PERSISTENT cannot be used inside a coroutine; use PDO::ATTR_POOL_ENABLED");
+			RETURN_THROWS();
+		}
+
 		if (is_persistent) {
 			/* let's see if we have one cached.... */
 			if ((le = zend_hash_find_ptr(&EG(persistent_list), hash_key)) != NULL) {

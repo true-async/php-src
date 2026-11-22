@@ -13,8 +13,8 @@ try {
 ?>
 --FILE--
 <?php
-// Built without the shared test includes: they start the async reactor, and a
-// persistent connection used after that fails at exit for a reason of its own.
+// Built without the shared test includes, which start the async reactor: the
+// test covers a persistent connection used before it starts.
 $db = new PDO(
     getenv('PDO_MYSQL_TEST_DSN') ?: 'mysql:host=localhost;dbname=test',
     getenv('PDO_MYSQL_TEST_USER') ?: 'root',

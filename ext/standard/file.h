@@ -100,6 +100,7 @@ typedef struct {
 	HashTable *stream_wrappers;			/* per-request copy of url_stream_wrappers_hash */
 	HashTable *stream_filters;			/* per-request copy of stream_filters_hash */
 	HashTable *wrapper_logged_errors;	/* key: wrapper address; value: linked list of error entries */
+	HashTable *persistent_buffer_locks;	/* key: persistent stream address; value: the stream, whose buffer lock is request memory */
 	php_stream_error_state stream_error_state;
 	int pclose_wait;
 #ifdef HAVE_GETHOSTBYNAME_R
