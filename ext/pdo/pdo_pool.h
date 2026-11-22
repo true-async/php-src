@@ -41,6 +41,13 @@ void pdo_pool_record_conn_attribute(pdo_dbh_t *dbh, zend_long attr, zval *value)
  * with its coroutine and is reset before anyone else gets it. */
 void pdo_pool_note_statement(pdo_dbh_t *conn, const zend_string *sql);
 
+/* Run PDO::ATTR_POOL_INIT_SQL on a pooled connection. A driver that resets a
+ * slot's session in pool_before_acquire calls this where it replays the
+ * connect-time configuration. Returns false, without throwing, when a
+ * statement failed (the driver's error is on conn), left a transaction open,
+ * or the pool closed meanwhile; the slot must then not be handed out. */
+PDO_API bool pdo_pool_run_init_sql(pdo_dbh_t *conn);
+
 /* Get PHP Pool wrapper object for getPool() method */
 zend_object *pdo_pool_get_wrapper(pdo_dbh_t *dbh);
 

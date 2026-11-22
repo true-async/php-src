@@ -141,7 +141,10 @@ void pdo_raise_impl_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt, pdo_error_type sqlst
 		zend_update_property(pdo_ex, Z_OBJ(ex), "errorInfo", sizeof("errorInfo")-1, &info);
 		zval_ptr_dtor(&info);
 
-		zend_throw_exception_object(&ex);
+		/* A pool acquire that failed because its coroutine is being cancelled. */
+		if (!pdo_keep_pending_cancellation(Z_OBJ(ex))) {
+			zend_throw_exception_object(&ex);
+		}
 	}
 
 	zend_string_release_ex(message, false);
@@ -556,6 +559,16 @@ PDO_API void php_pdo_internal_construct_driver(INTERNAL_FUNCTION_PARAMETERS, zen
 		/* Create pool before attribute processing so driver-specific
 		 * attributes can be dispatched through pooled connections */
 		pdo_pool_create(dbh, options);
+		if (UNEXPECTED(EG(exception))) {
+			/* A malformed pool option, or a pre-warmed connection that failed.
+			 * No driver: a subclass that catches this must not get a usable
+			 * object, and PDO_CONSTRUCT_CHECK tests the driver. */
+			pdo_pool_destroy(dbh);
+			dbh->driver = NULL;
+			dbh->methods = NULL;
+			zend_restore_error_handling(&zeh);
+			return;
+		}
 		goto options;
 	}
 
@@ -586,7 +599,7 @@ options:
 				ZVAL_DEREF(attr_value);
 
 				/* Skip pool attributes: dispatching one would acquire a slot. */
-				if (long_key >= PDO_ATTR_POOL_ENABLED && long_key <= PDO_ATTR_POOL_STMT_CACHE_SIZE) {
+				if (long_key >= PDO_ATTR_POOL_ENABLED && long_key <= PDO_ATTR_POOL_INIT_SQL) {
 					continue;
 				}
 
@@ -1106,6 +1119,12 @@ static bool pdo_dbh_attribute_set(pdo_dbh_t *dbh, zend_long attr, zval *value, u
 			}
 			return true;
 		}
+		/* Existing slots would keep the old baseline: rejected without
+		 * acquiring one, as the default path below would. */
+		case PDO_ATTR_POOL_INIT_SQL:
+			pdo_raise_impl_error(dbh, NULL, "IM001", "PDO::ATTR_POOL_INIT_SQL is a construction-only attribute");
+			return false;
+
 		/* Don't throw a ValueError as the attribute might be a driver specific one */
 		default:;
 	}
@@ -1224,6 +1243,15 @@ PHP_METHOD(PDO, getAttribute)
 		case PDO_ATTR_POOL_HEALTHCHECK_INTERVAL:
 			pdo_raise_impl_error(dbh, NULL, "IM001", "PDO::ATTR_POOL_HEALTHCHECK_INTERVAL is a construction-only attribute and cannot be read at runtime");
 			RETURN_FALSE;
+
+		case PDO_ATTR_POOL_INIT_SQL:
+			if (dbh->pool == NULL) {
+				RETURN_FALSE;
+			}
+			if (dbh->pool_init_sql == NULL) {
+				RETURN_EMPTY_ARRAY();
+			}
+			RETURN_ARR(zend_array_dup(dbh->pool_init_sql));
 
 		default:
 			break;

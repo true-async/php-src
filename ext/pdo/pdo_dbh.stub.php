@@ -154,6 +154,14 @@ class PDO
      * @cvalue LONG_CONST(PDO_ATTR_POOL_STMT_CACHE_SIZE)
      */
     public const int ATTR_POOL_STMT_CACHE_SIZE = UNKNOWN;
+    /**
+     * SQL run on every pooled connection after it connects and after it is
+     * cleaned for reuse (string or list of strings, construction only). The
+     * statements must not return rows, open a transaction or change autocommit.
+     *
+     * @cvalue LONG_CONST(PDO_ATTR_POOL_INIT_SQL)
+     */
+    public const int ATTR_POOL_INIT_SQL = UNKNOWN;
 
     /** @cvalue LONG_CONST(PDO_ERRMODE_SILENT) */
     public const int ERRMODE_SILENT = UNKNOWN;

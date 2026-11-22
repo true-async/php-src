@@ -205,6 +205,12 @@ static bool pdo_mysql_pool_before_acquire(pdo_dbh_t *dbh)
 		PDO_DBG_RETURN(false);
 	}
 
+	/* As at connect: after the driver's own init commands and under PDO's
+	 * autocommit, so a statement that reads a table opens no transaction. */
+	if (!pdo_pool_run_init_sql(dbh)) {
+		PDO_DBG_RETURN(false);
+	}
+
 	/* The reset released the statements the cache tracked. */
 	if (H->stmt_cache) {
 		pdo_pool_stmt_cache_destroy(H->stmt_cache);
