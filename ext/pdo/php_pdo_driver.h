@@ -134,6 +134,7 @@ enum pdo_attribute_type {
 	PDO_ATTR_POOL_MAX,				/* maximum total connections (int) */
 	PDO_ATTR_POOL_HEALTHCHECK_INTERVAL,	/* healthcheck interval in ms (int, 0 = disabled) */
 	PDO_ATTR_POOL_STMT_CACHE_SIZE,	/* per-physical-connection prepared-stmt cache LRU capacity (int, 0 = disabled, default) */
+	PDO_ATTR_POOL_INIT_SQL,			/* statements run on every physical connection after connect and after a reset (list<string>) */
 
 	/* this defines the start of the range for driver specific options.
 	 * Drivers should define their own attribute constants beginning with this
@@ -548,6 +549,10 @@ struct _pdo_dbh_t {
 
 	/* setAttribute() values replayed onto every slot, attribute => value. */
 	HashTable *pool_conn_attributes;
+
+	/* PDO::ATTR_POOL_INIT_SQL on the template: a packed list of owned,
+	 * non-empty strings, NULL when not given. Released in pdo_pool_destroy(). */
+	zend_array *pool_init_sql;
 
 	/* Driver-owned per-template auxiliary state for pool mode (e.g. SQLite UDF
 	 * registry). NULL by default. Lifetime: allocated by driver on demand,

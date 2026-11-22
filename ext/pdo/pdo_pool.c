@@ -228,7 +228,7 @@ static void pdo_pool_free_conn(pdo_dbh_t *conn)
  * that recorded them. Rejections already reported themselves to userland. */
 static void pdo_pool_apply_conn_attributes(const pdo_dbh_t *dbh, pdo_dbh_t *conn)
 {
-	if (dbh->pool_conn_attributes == NULL || conn->methods == NULL
+	if (dbh == NULL || dbh->pool_conn_attributes == NULL || conn->methods == NULL
 		|| conn->methods->set_attribute == NULL) {
 		return;
 	}
@@ -373,6 +373,120 @@ void pdo_pool_note_statement(pdo_dbh_t *conn, const zend_string *sql)
 	}
 }
 
+typedef enum {
+	PDO_POOL_INIT_SQL_OK,
+	PDO_POOL_INIT_SQL_FAILED,       /* the driver's error is on the slot */
+	PDO_POOL_INIT_SQL_TXN_LEFT_OPEN,
+	PDO_POOL_INIT_SQL_POOL_CLOSED,
+} pdo_pool_init_sql_result;
+
+static pdo_pool_init_sql_result pdo_pool_exec_init_sql(pdo_dbh_t *conn)
+{
+	zend_async_pool_t *const pool = conn->pool;
+
+	if (pool == NULL) {
+		return PDO_POOL_INIT_SQL_OK;
+	}
+
+	/* The PDO object went while the connect suspended. */
+	const pdo_dbh_t *const template_dbh = (const pdo_dbh_t *)pool->user_data;
+	if (template_dbh == NULL || ZEND_ASYNC_EVENT_IS_CLOSED(&pool->event)) {
+		return PDO_POOL_INIT_SQL_POOL_CLOSED;
+	}
+
+	if (template_dbh->pool_init_sql == NULL) {
+		return PDO_POOL_INIT_SQL_OK;
+	}
+
+	if (UNEXPECTED(conn->methods == NULL || conn->methods->doer == NULL)) {
+		return PDO_POOL_INIT_SQL_FAILED;
+	}
+
+	/* A statement may suspend, and the PDO object may be destroyed meanwhile:
+	 * the list must outlive it, and a closed pool wants no more slots. */
+	zend_array *const init_sql = template_dbh->pool_init_sql;
+	GC_ADDREF(init_sql);
+
+	pdo_pool_init_sql_result result = PDO_POOL_INIT_SQL_OK;
+	zval *sql;
+
+	ZEND_HASH_PACKED_FOREACH_VAL(init_sql, sql) {
+		/* The doer, not PDO::exec(): this is the slot's baseline, not a
+		 * coroutine's change, so the slot must not be marked dirty. */
+		if (conn->methods->doer(conn, Z_STR_P(sql)) < 0) {
+			result = PDO_POOL_INIT_SQL_FAILED;
+			break;
+		}
+
+		/* A cancellation that arrived while the statement ran: the slot is
+		 * half configured, and nothing more may run under the exception. */
+		if (UNEXPECTED(EG(exception) != NULL)) {
+			result = PDO_POOL_INIT_SQL_FAILED;
+			break;
+		}
+
+		if (ZEND_ASYNC_EVENT_IS_CLOSED(&pool->event)) {
+			result = PDO_POOL_INIT_SQL_POOL_CLOSED;
+			break;
+		}
+	} ZEND_HASH_FOREACH_END();
+
+	zend_array_release(init_sql);
+
+	/* Every coroutine handed this slot would run inside that transaction. */
+	if (result == PDO_POOL_INIT_SQL_OK && pdo_pool_conn_in_transaction(conn)) {
+		result = PDO_POOL_INIT_SQL_TXN_LEFT_OPEN;
+	}
+
+	return result;
+}
+
+PDO_API bool pdo_pool_run_init_sql(pdo_dbh_t *conn)
+{
+	return pdo_pool_exec_init_sql(conn) == PDO_POOL_INIT_SQL_OK;
+}
+
+/* Raise why a new slot failed its init SQL, before it is discarded, so the
+ * acquire that wanted it can report the reason. */
+static void pdo_pool_throw_init_sql_error(pdo_dbh_t *conn, pdo_pool_init_sql_result result)
+{
+	pdo_error_type sqlstate = "HY000";
+
+	if (result == PDO_POOL_INIT_SQL_POOL_CLOSED) {
+		return;
+	}
+
+	if (result == PDO_POOL_INIT_SQL_TXN_LEFT_OPEN) {
+		pdo_throw_exception(0, "PDO::ATTR_POOL_INIT_SQL left a transaction open", &sqlstate);
+		return;
+	}
+
+	zend_long native_code = 0;
+	const char *message = "PDO::ATTR_POOL_INIT_SQL failed";
+	zval info;
+
+	/* The layout pdo_handle_error() reads: SQLSTATE, then what the driver appends. */
+	array_init(&info);
+	add_next_index_string(&info, conn->error_code);
+
+	if (conn->methods != NULL && conn->methods->fetch_err != NULL) {
+		conn->methods->fetch_err(conn, NULL, &info);
+
+		const zval *const code = zend_hash_index_find(Z_ARRVAL(info), 1);
+		if (code != NULL && Z_TYPE_P(code) == IS_LONG) {
+			native_code = Z_LVAL_P(code);
+		}
+
+		const zval *const text = zend_hash_index_find(Z_ARRVAL(info), 2);
+		if (text != NULL && Z_TYPE_P(text) == IS_STRING) {
+			message = Z_STRVAL_P(text);
+		}
+	}
+
+	pdo_throw_exception((unsigned int)native_code, (char *)message, &conn->error_code);
+	zval_ptr_dtor(&info);
+}
+
 /* Factory: creates a new driver connection */
 static bool pdo_pool_factory(zend_async_pool_t *pool, zval *result)
 {
@@ -417,7 +531,17 @@ static bool pdo_pool_factory(zend_async_pool_t *pool, zval *result)
 		return false;
 	}
 
+	/* The connect may have suspended, and the PDO object may be gone. */
+	dbh = (const pdo_dbh_t *)pool->user_data;
 	pdo_pool_apply_conn_attributes(dbh, conn);
+
+	/* After the driver's own init commands, so these win where they overlap. */
+	const pdo_pool_init_sql_result init_sql_result = pdo_pool_exec_init_sql(conn);
+	if (UNEXPECTED(init_sql_result != PDO_POOL_INIT_SQL_OK)) {
+		pdo_pool_throw_init_sql_error(conn, init_sql_result);
+		pdo_pool_free_conn(conn);
+		return false;
+	}
 
 	/* Driver owns driver_data now — free credential copies */
 	if (conn->data_source) { efree((char *)conn->data_source); conn->data_source = NULL; }
@@ -701,6 +825,79 @@ PDO_API uint32_t pdo_pool_stmt_cache_capacity(const pdo_pool_stmt_cache_t *cache
  * Public API
  */
 
+/* Read PDO::ATTR_POOL_INIT_SQL into a list the template owns: one string is
+ * one statement. Throws and returns false when the value is malformed. */
+static bool pdo_pool_parse_init_sql(zval *options, zend_array **out)
+{
+	*out = NULL;
+
+	zval *value = options != NULL && Z_TYPE_P(options) == IS_ARRAY
+		? zend_hash_index_find(Z_ARRVAL_P(options), PDO_ATTR_POOL_INIT_SQL)
+		: NULL;
+	if (value == NULL) {
+		return true;
+	}
+
+	ZVAL_DEREF(value);
+
+	if (Z_TYPE_P(value) == IS_STRING) {
+		if (Z_STRLEN_P(value) == 0) {
+			zend_argument_value_error(4, "PDO::ATTR_POOL_INIT_SQL element 0 must not be empty");
+			return false;
+		}
+
+		zend_array *list = zend_new_array(1);
+		zend_hash_real_init_packed(list);
+		zval copy;
+		ZVAL_STR_COPY(&copy, Z_STR_P(value));
+		zend_hash_next_index_insert_new(list, &copy);
+		*out = list;
+		return true;
+	}
+
+	if (Z_TYPE_P(value) != IS_ARRAY) {
+		zend_argument_type_error(4, "PDO::ATTR_POOL_INIT_SQL must be of type array|string, %s given",
+			zend_zval_value_name(value));
+		return false;
+	}
+
+	if (!zend_array_is_list(Z_ARRVAL_P(value))) {
+		zend_argument_value_error(4, "PDO::ATTR_POOL_INIT_SQL must be a list");
+		return false;
+	}
+
+	/* A copy, element by element: the caller's array may hold references. */
+	zend_array *list = zend_new_array(zend_hash_num_elements(Z_ARRVAL_P(value)));
+	zend_hash_real_init_packed(list);
+	zend_ulong index;
+	zval *element;
+
+	ZEND_HASH_FOREACH_NUM_KEY_VAL(Z_ARRVAL_P(value), index, element) {
+		ZVAL_DEREF(element);
+
+		if (Z_TYPE_P(element) != IS_STRING) {
+			zend_argument_type_error(4, "PDO::ATTR_POOL_INIT_SQL element " ZEND_ULONG_FMT
+				" must be of type string, %s given", index, zend_zval_value_name(element));
+			zend_array_release(list);
+			return false;
+		}
+
+		if (Z_STRLEN_P(element) == 0) {
+			zend_argument_value_error(4, "PDO::ATTR_POOL_INIT_SQL element " ZEND_ULONG_FMT
+				" must not be empty", index);
+			zend_array_release(list);
+			return false;
+		}
+
+		zval copy;
+		ZVAL_STR_COPY(&copy, Z_STR_P(element));
+		zend_hash_next_index_insert_new(list, &copy);
+	} ZEND_HASH_FOREACH_END();
+
+	*out = list;
+	return true;
+}
+
 /* Create pool for a PDO handle based on options */
 bool pdo_pool_create(pdo_dbh_t *dbh, zval *options)
 {
@@ -721,6 +918,11 @@ bool pdo_pool_create(pdo_dbh_t *dbh, zval *options)
 	if (stmt_cache_size > UINT32_MAX) stmt_cache_size = UINT32_MAX;
 	dbh->pool_stmt_cache_size = (uint32_t)stmt_cache_size;
 
+	/* Before the pool exists: the ATTR_POOL_MIN warm-up below already needs it. */
+	if (!pdo_pool_parse_init_sql(options, &dbh->pool_init_sql)) {
+		return false;
+	}
+
 	dbh->pool = ZEND_ASYNC_NEW_POOL(
 		pdo_pool_factory,
 		pdo_pool_destructor,
@@ -733,6 +935,10 @@ bool pdo_pool_create(pdo_dbh_t *dbh, zval *options)
 	);
 
 	if (UNEXPECTED(dbh->pool == NULL)) {
+		if (dbh->pool_init_sql != NULL) {
+			zend_array_release(dbh->pool_init_sql);
+			dbh->pool_init_sql = NULL;
+		}
 		return false;
 	}
 
@@ -812,6 +1018,9 @@ void pdo_pool_destroy(pdo_dbh_t *dbh)
 
 	/* Step 3: Close and dispose the pool via event lifecycle */
 	if (dbh->pool) {
+		/* A factory or hook suspended in the driver reads the template
+		 * through this when it resumes: past here it is freed. */
+		dbh->pool->user_data = NULL;
 		ZEND_ASYNC_POOL_CLOSE(dbh->pool);
 		ZEND_ASYNC_EVENT_RELEASE(&dbh->pool->event);
 		dbh->pool = NULL;
@@ -825,6 +1034,11 @@ void pdo_pool_destroy(pdo_dbh_t *dbh)
 		zend_hash_destroy(dbh->pool_conn_attributes);
 		efree(dbh->pool_conn_attributes);
 		dbh->pool_conn_attributes = NULL;
+	}
+
+	if (dbh->pool_init_sql != NULL) {
+		zend_array_release(dbh->pool_init_sql);
+		dbh->pool_init_sql = NULL;
 	}
 }
 

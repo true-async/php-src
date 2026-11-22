@@ -1,5 +1,5 @@
 /* This is a generated file, edit pdo_dbh.stub.php instead.
- * Stub hash: 96874f55febea4b7713b65f5a1a4eaf9d14ba571 */
+ * Stub hash: 17503c79a00357e162630c426421f718ca938ac8 */
 
 #include "zend_attributes.h"
 
@@ -487,6 +487,12 @@ static zend_class_entry *register_class_PDO(void)
 	zend_string *const_ATTR_POOL_STMT_CACHE_SIZE_name = zend_string_init_interned("ATTR_POOL_STMT_CACHE_SIZE", sizeof("ATTR_POOL_STMT_CACHE_SIZE") - 1, true);
 	zend_declare_typed_class_constant(class_entry, const_ATTR_POOL_STMT_CACHE_SIZE_name, &const_ATTR_POOL_STMT_CACHE_SIZE_value, ZEND_ACC_PUBLIC, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_LONG));
 	zend_string_release_ex(const_ATTR_POOL_STMT_CACHE_SIZE_name, true);
+
+	zval const_ATTR_POOL_INIT_SQL_value;
+	ZVAL_LONG(&const_ATTR_POOL_INIT_SQL_value, LONG_CONST(PDO_ATTR_POOL_INIT_SQL));
+	zend_string *const_ATTR_POOL_INIT_SQL_name = zend_string_init_interned("ATTR_POOL_INIT_SQL", sizeof("ATTR_POOL_INIT_SQL") - 1, true);
+	zend_declare_typed_class_constant(class_entry, const_ATTR_POOL_INIT_SQL_name, &const_ATTR_POOL_INIT_SQL_value, ZEND_ACC_PUBLIC, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_LONG));
+	zend_string_release_ex(const_ATTR_POOL_INIT_SQL_name, true);
 
 	zval const_ERRMODE_SILENT_value;
 	ZVAL_LONG(&const_ERRMODE_SILENT_value, LONG_CONST(PDO_ERRMODE_SILENT));
