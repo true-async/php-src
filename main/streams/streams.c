@@ -134,18 +134,34 @@ fprintf(stderr, "forget_persistent: %s:%p\n", stream->ops->label, stream);
 	stream->res = NULL;
 	stream->ctx = NULL;
 
-	/* The lock and its callback vector come from the request allocator, while
-	 * the stream itself outlives the request. No coroutine is left to hold it
-	 * here, so drop it and let the next request build its own. */
-	if (stream->buffer_lock != NULL) {
+	return 0;
+}
+
+/* The lock and its callback vector come from the request allocator, while a
+ * persistent stream outlives the request. No coroutine is left to hold it at
+ * request end, so drop it and let the next request build its own. The streams
+ * are found through FG(persistent_buffer_locks), not EG(persistent_list):
+ * mysqlnd takes its streams out of that list. */
+static void forget_persistent_buffer_locks(void)
+{
+	if (FG(persistent_buffer_locks) == NULL) {
+		return;
+	}
+
+	php_stream *stream;
+
+	ZEND_HASH_FOREACH_PTR(FG(persistent_buffer_locks), stream) {
 		php_stream_buffer_block_t *block = stream_buffer_block_of((php_stream_buffer_lock_t *) stream->buffer_lock);
+
 		stream->buffer_lock = NULL;
 		zend_async_callbacks_free(&block->sides[0].base);
 		zend_async_callbacks_free(&block->sides[1].base);
 		efree(block);
-	}
+	} ZEND_HASH_FOREACH_END();
 
-	return 0;
+	zend_hash_destroy(FG(persistent_buffer_locks));
+	efree(FG(persistent_buffer_locks));
+	FG(persistent_buffer_locks) = NULL;
 }
 
 ZEND_MODULE_POST_ZEND_DEACTIVATE_D(streams)
@@ -155,6 +171,8 @@ ZEND_MODULE_POST_ZEND_DEACTIVATE_D(streams)
 	ZEND_HASH_FOREACH_VAL(&EG(persistent_list), el) {
 		forget_persistent_resource_id_numbers(el);
 	} ZEND_HASH_FOREACH_END();
+
+	forget_persistent_buffer_locks();
 	return SUCCESS;
 }
 
@@ -525,6 +543,10 @@ fprintf(stderr, "stream_free: %s:%p[%s] preserve_handle=%d release_cast=%d remov
 			stream_buffer_lock_close(stream);
 			stream->buffer_lock = NULL;
 
+			if (stream->is_persistent) {
+				zend_hash_index_del(FG(persistent_buffer_locks), (zend_ulong) (uintptr_t) stream);
+			}
+
 			for (uint8_t rank = 0; rank < 2; rank++) {
 				ZEND_ASYNC_EVENT_RELEASE(&block->sides[rank].base);
 			}
@@ -666,6 +688,15 @@ static php_stream_buffer_block_t *stream_buffer_block_create(php_stream *stream)
 	}
 
 	stream->buffer_lock = &block->sides[STREAM_SIDE_WRITE].base;
+
+	if (stream->is_persistent) {
+		if (FG(persistent_buffer_locks) == NULL) {
+			FG(persistent_buffer_locks) = emalloc(sizeof(HashTable));
+			zend_hash_init(FG(persistent_buffer_locks), 8, NULL, NULL, 0);
+		}
+
+		zend_hash_index_add_new_ptr(FG(persistent_buffer_locks), (zend_ulong) (uintptr_t) stream, stream);
+	}
 
 	return block;
 }

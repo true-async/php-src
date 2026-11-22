@@ -4137,6 +4137,8 @@ php_stream *php_openssl_ssl_socket_factory(const char *proto, size_t protolen,
 	memset(sslsock, 0, sizeof(*sslsock));
 
 	sslsock->s.is_blocked = true;
+	/* A persistent stream outlives the request; the reactor's handles do not. */
+	sslsock->s.is_sync = persistent_id ? 1 : 0;
 	/* this timeout is used by standard stream funcs, therefore it should use the default value */
 #ifdef _WIN32
 	sslsock->s.timeout.tv_sec = (long)FG(default_socket_timeout);
