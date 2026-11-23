@@ -171,7 +171,8 @@ static int pdo_mysql_stmt_dtor(pdo_stmt_t *stmt) /* {{{ */
 		S->query = NULL;
 	}
 
-	if (S->H != NULL && S->H->results_owner == S) {
+	/* H is freed with the PDO object, which can go first (a cycle at shutdown). */
+	if (php_pdo_stmt_valid_db_obj_handle(stmt) && S->H->results_owner == S) {
 		S->H->results_owner = NULL;
 	}
 
