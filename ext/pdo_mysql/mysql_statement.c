@@ -92,6 +92,80 @@ static void pdo_mysql_stmt_take_results(pdo_mysql_stmt *S)
 	S->H->results_owner = S->execution;
 }
 
+#ifdef PDO_USE_MYSQLND
+/* Mid-result: closing a statement now would read off what is pending, which
+ * may be another statement's, and mysqlnd would skip COM_STMT_CLOSE. */
+static bool pdo_mysql_conn_busy(const pdo_mysql_db_handle *H)
+{
+	const enum mysqlnd_connection_state state = GET_CONNECTION_STATE(&H->server->data->state);
+
+	return state != CONN_READY && state != CONN_QUIT_SENT;
+}
+
+/* Closes a statement that owns nothing pending on a busy connection: the
+ * client side now, the server side once the connection is idle. */
+static void pdo_mysql_close_deferred(pdo_mysql_db_handle *H, MYSQLND_STMT *stmt)
+{
+	const zend_ulong id = stmt->data->stmt_id;
+
+	/* close_on_server walks further result sets while the statement has a
+	 * result; here that is only its old metadata. */
+	stmt->m->free_stmt_result(stmt);
+	mysql_stmt_close(stmt);
+
+	if (id == 0) {
+		return;
+	}
+
+	if (H->deferred_closes_count == H->deferred_closes_size) {
+		H->deferred_closes_size = H->deferred_closes_size ? H->deferred_closes_size * 2 : 4;
+		H->deferred_closes = perealloc(H->deferred_closes, H->deferred_closes_size * sizeof(zend_ulong), 1);
+	}
+
+	H->deferred_closes[H->deferred_closes_count++] = id;
+}
+
+void pdo_mysql_drop_deferred_closes(pdo_mysql_db_handle *H)
+{
+	if (H->deferred_closes != NULL) {
+		pefree(H->deferred_closes, 1);
+		H->deferred_closes = NULL;
+	}
+
+	H->deferred_closes_count = 0;
+	H->deferred_closes_size = 0;
+}
+
+void pdo_mysql_flush_deferred_closes(pdo_mysql_db_handle *H)
+{
+	if (H->deferred_closes_count == 0 || H->server == NULL) {
+		return;
+	}
+
+	MYSQLND_CONN_DATA *const conn = H->server->data;
+	if (GET_CONNECTION_STATE(&conn->state) != CONN_READY || mysql_more_results(H->server)) {
+		return;
+	}
+
+	/* Taken off H first: a close may suspend, and another statement freed
+	 * meanwhile appends to a fresh list. */
+	zend_ulong *const ids = H->deferred_closes;
+	const uint32_t count = H->deferred_closes_count;
+	H->deferred_closes = NULL;
+	H->deferred_closes_count = 0;
+	H->deferred_closes_size = 0;
+
+	for (uint32_t i = 0; i < count; i++) {
+		/* A failed send leaves the connection unusable: the rest go with it. */
+		if (conn->command->stmt_close(conn, ids[i]) != PASS) {
+			break;
+		}
+	}
+
+	pefree(ids, 1);
+}
+#endif
+
 /* Whether the connection is gone: mysqlnd closes it on any failed read, and
  * libmysqlclient reports 2006 or 2013. stmt_errno is the statement's error,
  * 0 for none. */
@@ -172,6 +246,13 @@ static int pdo_mysql_stmt_dtor(pdo_stmt_t *stmt) /* {{{ */
 				pdo_pool_stmt_cache_entry_t *entry = pdo_pool_stmt_cache_insert(
 					S->H->stmt_cache, S->query, &evicted);
 				if (UNEXPECTED(evicted != NULL)) {
+#ifdef PDO_USE_MYSQLND
+					/* A cached statement owns nothing pending. */
+					if (evicted->driver_data != NULL && pdo_mysql_conn_busy(S->H)) {
+						pdo_mysql_close_deferred(S->H, evicted->driver_data);
+						evicted->driver_data = NULL;
+					}
+#endif
 					/* close the LRU stmt being kicked out */
 					pdo_pool_stmt_cache_entry_free(evicted);
 				}
@@ -183,6 +264,12 @@ static int pdo_mysql_stmt_dtor(pdo_stmt_t *stmt) /* {{{ */
 			}
 		}
 		if (!stashed) {
+#ifdef PDO_USE_MYSQLND
+			if (php_pdo_stmt_valid_db_obj_handle(stmt) && pdo_mysql_conn_busy(S->H)
+				&& !pdo_mysql_stmt_owns_results(S)) {
+				pdo_mysql_close_deferred(S->H, S->stmt);
+			} else
+#endif
 			mysql_stmt_close(S->stmt);
 		}
 		S->stmt = NULL;
@@ -226,6 +313,12 @@ static int pdo_mysql_stmt_dtor(pdo_stmt_t *stmt) /* {{{ */
 			stmt->pooled_conn->conn_broken = true;
 		}
 	}
+
+#ifdef PDO_USE_MYSQLND
+	if (php_pdo_stmt_valid_db_obj_handle(stmt)) {
+		pdo_mysql_flush_deferred_closes(S->H);
+	}
+#endif
 
 	efree(S);
 	PDO_DBG_RETURN(1);
@@ -453,9 +546,15 @@ static int pdo_mysql_stmt_execute(pdo_stmt_t *stmt) /* {{{ */
 			PDO_DBG_RETURN(0);
 		}
 
+#ifdef PDO_USE_MYSQLND
+		pdo_mysql_flush_deferred_closes(H);
+#endif
 		PDO_DBG_RETURN(pdo_mysql_stmt_execute_prepared(stmt));
 	}
 
+#ifdef PDO_USE_MYSQLND
+	pdo_mysql_flush_deferred_closes(H);
+#endif
 	if (mysql_real_query(H->server, ZSTR_VAL(stmt->active_query_string), ZSTR_LEN(stmt->active_query_string)) != 0) {
 		pdo_mysql_error_stmt(stmt);
 		PDO_DBG_RETURN(0);
