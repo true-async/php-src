@@ -259,6 +259,56 @@ void pdo_pool_record_conn_attribute(pdo_dbh_t *dbh, zend_long attr, zval *value)
 
 /* Mark statements that leave session state behind. Coarse on purpose: a false
  * positive costs one reset, a false negative hands over a held lock. */
+static bool pdo_pool_is_space(char c)
+{
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+}
+
+static bool pdo_pool_word_is(const char *word, size_t len, const char *kw)
+{
+	const size_t kw_len = strlen(kw);
+
+	return len == kw_len && zend_binary_strncasecmp(word, len, kw, kw_len, kw_len) == 0;
+}
+
+/* Whether a CREATE (or, with event_only, an ALTER) defines a stored program,
+ * whose body holds statement separators of its own. p is past the keyword.
+ * The kind follows OR REPLACE, AGGREGATE and DEFINER = CURRENT_USER; a
+ * DEFINER naming an account contains '@' and never gets here. */
+static bool pdo_pool_defines_program(const char *p, const char *const end, bool event_only)
+{
+	while (p < end) {
+		while (p < end && pdo_pool_is_space(*p)) {
+			p++;
+		}
+
+		const char *const word = p;
+		while (p < end && !pdo_pool_is_space(*p)) {
+			p++;
+		}
+		const size_t len = (size_t)(p - word);
+
+		if (pdo_pool_word_is(word, len, "EVENT")) {
+			return true;
+		}
+
+		if (!event_only && (pdo_pool_word_is(word, len, "PROCEDURE") || pdo_pool_word_is(word, len, "FUNCTION")
+				|| pdo_pool_word_is(word, len, "TRIGGER"))) {
+			return true;
+		}
+
+		const bool prefix = pdo_pool_word_is(word, len, "OR") || pdo_pool_word_is(word, len, "REPLACE")
+			|| pdo_pool_word_is(word, len, "AGGREGATE") || (len > 0 && word[0] == '=')
+			|| (len >= 7 && zend_binary_strncasecmp(word, 7, "DEFINER", 7, 7) == 0)
+			|| (len >= 12 && zend_binary_strncasecmp(word, 12, "CURRENT_USER", 12, 12) == 0);
+		if (!prefix) {
+			return false;
+		}
+	}
+
+	return false;
+}
+
 void pdo_pool_note_statement(pdo_dbh_t *conn, const zend_string *sql)
 {
 	if (conn == NULL || conn->pool == NULL || conn->pool_session_dirty) {
@@ -348,14 +398,22 @@ void pdo_pool_note_statement(pdo_dbh_t *conn, const zend_string *sql)
 		{ "CREATE", 6 }, { "DROP", 4 }, { "ALTER", 5 },
 	};
 
+	bool is_ddl = false;
 	for (size_t i = 0; i < sizeof(ddl) / sizeof(ddl[0]); i++) {
 		if (left >= ddl[i].len
 			&& zend_binary_strncasecmp(p, ddl[i].len, ddl[i].kw, ddl[i].len, ddl[i].len) == 0) {
-			return;
+			/* A stored program's body has its own separators, so where the
+			 * statement ends cannot be told: the split below would pin the
+			 * slot to every multi-statement CREATE PROCEDURE. */
+			if (i != 1 && pdo_pool_defines_program(p + ddl[i].len, end, i == 2)) {
+				return;
+			}
+			is_ddl = true;
+			break;
 		}
 	}
 
-	if (zend_memnistr(p, "GET_LOCK", sizeof("GET_LOCK") - 1, end) != NULL) {
+	if (!is_ddl && zend_memnistr(p, "GET_LOCK", sizeof("GET_LOCK") - 1, end) != NULL) {
 		conn->pool_session_dirty = true;
 		return;
 	}
