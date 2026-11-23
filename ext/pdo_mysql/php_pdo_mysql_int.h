@@ -127,6 +127,14 @@ typedef struct {
 	uint64_t results_owner;
 	/* Last execution number handed out on this connection. */
 	uint64_t executions;
+#ifdef PDO_USE_MYSQLND
+	/* Server-side ids of statements closed while the connection was busy:
+	 * COM_STMT_CLOSE waits until it is idle. Persistent memory, whatever
+	 * the handle's. */
+	zend_ulong *deferred_closes;
+	uint32_t deferred_closes_count;
+	uint32_t deferred_closes_size;
+#endif
 } pdo_mysql_db_handle;
 
 typedef struct {
@@ -182,6 +190,13 @@ extern const struct pdo_stmt_methods mysql_stmt_methods;
 
 /* Cache-entry dtor: closes a cached MYSQL_STMT/MYSQLND_STMT on eviction. */
 void pdo_mysql_cached_stmt_close(void *driver_data);
+#ifdef PDO_USE_MYSQLND
+/* Sends COM_STMT_CLOSE for the deferred ids if the connection is idle;
+ * otherwise keeps them for the next call. */
+void pdo_mysql_flush_deferred_closes(pdo_mysql_db_handle *H);
+/* Forgets the deferred ids: the server freed them with a reset or close. */
+void pdo_mysql_drop_deferred_closes(pdo_mysql_db_handle *H);
+#endif
 
 enum {
 	PDO_MYSQL_ATTR_USE_BUFFERED_QUERY = PDO_ATTR_DRIVER_SPECIFIC,
