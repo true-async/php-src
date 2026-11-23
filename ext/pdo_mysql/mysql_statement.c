@@ -25,6 +25,9 @@
 #include "ext/pdo/php_pdo_driver.h"
 #include "php_pdo_mysql.h"
 #include "php_pdo_mysql_int.h"
+#ifdef PDO_USE_MYSQLND
+#	include "ext/mysqlnd/mysqlnd_connection.h"
+#endif
 
 #ifdef PDO_USE_MYSQLND
 #	define pdo_mysql_stmt_execute_prepared(stmt) pdo_mysql_stmt_execute_prepared_mysqlnd(stmt)
@@ -76,6 +79,40 @@ static void pdo_mysql_free_result(pdo_mysql_stmt *S)
 	}
 }
 
+/* Reads off what a statement's execution left on the connection: unread rows
+ * and further result sets (CALL), as closing it would. The statement stays
+ * prepared. May suspend. Returns false when the connection was lost on the
+ * way. */
+static bool pdo_mysql_stmt_read_off_results(pdo_mysql_stmt *S)
+{
+	mysql_stmt_free_result(S->stmt);
+
+	while (mysql_more_results(S->H->server)) {
+		/* A lost connection keeps reporting more results. */
+		if (mysql_stmt_next_result(S->stmt) != 0) {
+			break;
+		}
+
+		mysql_stmt_free_result(S->stmt);
+	}
+
+#ifdef PDO_USE_MYSQLND
+	/* Any other state is legitimate: another statement may still be reading
+	 * on this connection. */
+	return GET_CONNECTION_STATE(&S->H->server->data->state) != CONN_QUIT_SENT;
+#else
+	const unsigned int errors[] = { mysql_stmt_errno(S->stmt), mysql_errno(S->H->server) };
+
+	for (size_t i = 0; i < sizeof(errors) / sizeof(errors[0]); i++) {
+		if (errors[i] == CR_SERVER_GONE_ERROR || errors[i] == CR_SERVER_LOST) {
+			return false;
+		}
+	}
+
+	return true;
+#endif
+}
+
 static int pdo_mysql_stmt_dtor(pdo_stmt_t *stmt) /* {{{ */
 {
 	pdo_mysql_stmt *S = (pdo_mysql_stmt*)stmt->driver_data;
@@ -98,17 +135,28 @@ static int pdo_mysql_stmt_dtor(pdo_stmt_t *stmt) /* {{{ */
 		if (S->from_cache && S->query && S->H && S->H->stmt_cache != NULL
 			&& php_pdo_stmt_valid_db_obj_handle(stmt))
 		{
-			pdo_pool_stmt_cache_entry_t *evicted = NULL;
-			pdo_pool_stmt_cache_entry_t *entry = pdo_pool_stmt_cache_insert(
-				S->H->stmt_cache, S->query, &evicted);
-			if (UNEXPECTED(evicted != NULL)) {
-				/* close the LRU stmt being kicked out */
-				pdo_pool_stmt_cache_entry_free(evicted);
-			}
-			if (EXPECTED(entry != NULL)) {
-				entry->driver_data = S->stmt;
-				entry->driver_data_dtor = pdo_mysql_cached_stmt_close;
-				stashed = true;
+			/* A cached statement must not leave its result on the connection:
+			 * the slot returns to the pool busy and every later query fails
+			 * with 2014. */
+			if (!pdo_mysql_stmt_read_off_results(S)) {
+				/* The slot, not the template: only the slot's flag is read. */
+				if (stmt->pooled_conn != NULL) {
+					stmt->pooled_conn->conn_broken = true;
+				}
+			} else if (S->H->stmt_cache != NULL) {
+				/* Checked again: reading off may have suspended. */
+				pdo_pool_stmt_cache_entry_t *evicted = NULL;
+				pdo_pool_stmt_cache_entry_t *entry = pdo_pool_stmt_cache_insert(
+					S->H->stmt_cache, S->query, &evicted);
+				if (UNEXPECTED(evicted != NULL)) {
+					/* close the LRU stmt being kicked out */
+					pdo_pool_stmt_cache_entry_free(evicted);
+				}
+				if (EXPECTED(entry != NULL)) {
+					entry->driver_data = S->stmt;
+					entry->driver_data_dtor = pdo_mysql_cached_stmt_close;
+					stashed = true;
+				}
 			}
 		}
 		if (!stashed) {

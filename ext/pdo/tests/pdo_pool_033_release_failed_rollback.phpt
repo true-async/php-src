@@ -90,9 +90,9 @@ echo "-- clean transactional release keeps the slot\n";
 $pdo = PDOPoolTest::poolFactory(1);
 report($admin, $pdo, first_coroutine($pdo, 'beginTransaction'));
 
-echo "-- the rollback fails on a live connection: an unread cursor\n";
-// The dropped statement goes to the statement cache with its result unread;
-// MySQL refuses the release-time rollback with 2014.
+echo "-- an unread cursor dropped inside the transaction\n";
+// The dropped statement goes to the statement cache with its rows read off,
+// so the release-time rollback succeeds and the slot is kept.
 $pdo = PDOPoolTest::poolFactory(1, [
     PDO::ATTR_POOL_STMT_CACHE_SIZE => 8,
     PDO::ATTR_EMULATE_PREPARES => false,
@@ -159,9 +159,9 @@ echo "Done\n";
   row 1 is free
   next coroutine: same connection, in transaction: false
   pool count: 1
--- the rollback fails on a live connection: an unread cursor
+-- an unread cursor dropped inside the transaction
   row 1 is free
-  next coroutine: another connection, in transaction: false
+  next coroutine: same connection, in transaction: false
   pool count: 1
 -- the connection is killed inside a transaction (beginTransaction)
   row 1 is free
