@@ -461,7 +461,7 @@ static zend_long mysql_handle_doer(pdo_dbh_t *dbh, const zend_string *sql)
 	} else {
 		/* Only a query that ran replaced the pending sets; a refused one (2014)
 		 * leaves them to their statement. */
-		H->results_owner = NULL;
+		H->results_owner = 0;
 		my_ulonglong c = mysql_affected_rows(H->server);
 		if (c == (my_ulonglong) -1) {
 			pdo_mysql_error(dbh);

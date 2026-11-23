@@ -79,6 +79,32 @@ static void pdo_mysql_free_result(pdo_mysql_stmt *S)
 	}
 }
 
+static bool pdo_mysql_stmt_owns_results(const pdo_mysql_stmt *S)
+{
+	return S->execution != 0 && S->H->results_owner == S->execution;
+}
+
+/* Whether the connection is gone: mysqlnd closes it on any failed read, and
+ * libmysqlclient reports 2006 or 2013. stmt_errno is the statement's error,
+ * 0 for none. */
+static bool pdo_mysql_conn_lost(pdo_mysql_db_handle *H, unsigned int stmt_errno)
+{
+#ifdef PDO_USE_MYSQLND
+	(void)stmt_errno;
+	return GET_CONNECTION_STATE(&H->server->data->state) == CONN_QUIT_SENT;
+#else
+	const unsigned int errors[] = { stmt_errno, mysql_errno(H->server) };
+
+	for (size_t i = 0; i < sizeof(errors) / sizeof(errors[0]); i++) {
+		if (errors[i] == CR_SERVER_GONE_ERROR || errors[i] == CR_SERVER_LOST) {
+			return true;
+		}
+	}
+
+	return false;
+#endif
+}
+
 /* Reads off what a statement's execution left on the connection: unread rows
  * and further result sets (CALL), as closing it would. The statement stays
  * prepared. May suspend. Returns false when the connection was lost on the
@@ -89,7 +115,7 @@ static bool pdo_mysql_stmt_read_off_results(pdo_mysql_stmt *S)
 
 	/* The flag is the connection's: pending sets may belong to a statement
 	 * executed later, which still reads them. */
-	while (S->H->results_owner == S && mysql_more_results(S->H->server)) {
+	while (pdo_mysql_stmt_owns_results(S) && mysql_more_results(S->H->server)) {
 		/* A lost connection keeps reporting more results. */
 		if (mysql_stmt_next_result(S->stmt) != 0) {
 			break;
@@ -98,21 +124,9 @@ static bool pdo_mysql_stmt_read_off_results(pdo_mysql_stmt *S)
 		mysql_stmt_free_result(S->stmt);
 	}
 
-#ifdef PDO_USE_MYSQLND
-	/* Any other state is legitimate: another statement may still be reading
-	 * on this connection. */
-	return GET_CONNECTION_STATE(&S->H->server->data->state) != CONN_QUIT_SENT;
-#else
-	const unsigned int errors[] = { mysql_stmt_errno(S->stmt), mysql_errno(S->H->server) };
-
-	for (size_t i = 0; i < sizeof(errors) / sizeof(errors[0]); i++) {
-		if (errors[i] == CR_SERVER_GONE_ERROR || errors[i] == CR_SERVER_LOST) {
-			return false;
-		}
-	}
-
-	return true;
-#endif
+	/* Any other failure is legitimate: another statement may still be
+	 * reading on this connection. */
+	return !pdo_mysql_conn_lost(S->H, mysql_stmt_errno(S->stmt));
 }
 
 static int pdo_mysql_stmt_dtor(pdo_stmt_t *stmt) /* {{{ */
@@ -145,8 +159,7 @@ static int pdo_mysql_stmt_dtor(pdo_stmt_t *stmt) /* {{{ */
 				if (stmt->pooled_conn != NULL) {
 					stmt->pooled_conn->conn_broken = true;
 				}
-			} else if (S->H->stmt_cache != NULL) {
-				/* Checked again: reading off may have suspended. */
+			} else {
 				pdo_pool_stmt_cache_entry_t *evicted = NULL;
 				pdo_pool_stmt_cache_entry_t *entry = pdo_pool_stmt_cache_insert(
 					S->H->stmt_cache, S->query, &evicted);
@@ -172,10 +185,7 @@ static int pdo_mysql_stmt_dtor(pdo_stmt_t *stmt) /* {{{ */
 	}
 
 	/* H is freed with the PDO object, which can go first (a cycle at shutdown). */
-	const bool owns_results = php_pdo_stmt_valid_db_obj_handle(stmt) && S->H->results_owner == S;
-	if (owns_results) {
-		S->H->results_owner = NULL;
-	}
+	const bool owns_results = php_pdo_stmt_valid_db_obj_handle(stmt) && pdo_mysql_stmt_owns_results(S);
 
 #ifndef PDO_USE_MYSQLND
 	if (S->params) {
@@ -201,6 +211,11 @@ static int pdo_mysql_stmt_dtor(pdo_stmt_t *stmt) /* {{{ */
 			if (res) {
 				mysql_free_result(res);
 			}
+		}
+
+		/* On the slot, not the template: only the slot's flag is read. */
+		if (stmt->pooled_conn != NULL && pdo_mysql_conn_lost(S->H, 0)) {
+			stmt->pooled_conn->conn_broken = true;
 		}
 	}
 
@@ -438,7 +453,8 @@ static int pdo_mysql_stmt_execute(pdo_stmt_t *stmt) /* {{{ */
 
 	/* A refused command (2014) leaves the pending sets to their statement. */
 	if (ret) {
-		H->results_owner = S;
+		S->execution = ++H->executions;
+		H->results_owner = S->execution;
 	}
 
 	PDO_DBG_RETURN(ret);
