@@ -25,6 +25,9 @@
 #include "ext/pdo/php_pdo_driver.h"
 #include "php_pdo_mysql.h"
 #include "php_pdo_mysql_int.h"
+#ifdef PDO_USE_MYSQLND
+#	include "ext/mysqlnd/mysqlnd_connection.h"
+#endif
 
 #ifdef PDO_USE_MYSQLND
 #	define pdo_mysql_stmt_execute_prepared(stmt) pdo_mysql_stmt_execute_prepared_mysqlnd(stmt)
@@ -76,6 +79,64 @@ static void pdo_mysql_free_result(pdo_mysql_stmt *S)
 	}
 }
 
+static bool pdo_mysql_stmt_owns_results(const pdo_mysql_stmt *S)
+{
+	return S->execution != 0 && S->H->results_owner == S->execution;
+}
+
+/* Called once the server ran the statement: whatever it left on the
+ * connection is this statement's, even if reading the response fails. */
+static void pdo_mysql_stmt_take_results(pdo_mysql_stmt *S)
+{
+	S->execution = ++S->H->executions;
+	S->H->results_owner = S->execution;
+}
+
+/* Whether the connection is gone: mysqlnd closes it on any failed read, and
+ * libmysqlclient reports 2006 or 2013. stmt_errno is the statement's error,
+ * 0 for none. */
+static bool pdo_mysql_conn_lost(pdo_mysql_db_handle *H, unsigned int stmt_errno)
+{
+#ifdef PDO_USE_MYSQLND
+	(void)stmt_errno;
+	return GET_CONNECTION_STATE(&H->server->data->state) == CONN_QUIT_SENT;
+#else
+	const unsigned int errors[] = { stmt_errno, mysql_errno(H->server) };
+
+	for (size_t i = 0; i < sizeof(errors) / sizeof(errors[0]); i++) {
+		if (errors[i] == CR_SERVER_GONE_ERROR || errors[i] == CR_SERVER_LOST) {
+			return true;
+		}
+	}
+
+	return false;
+#endif
+}
+
+/* Reads off what a statement's execution left on the connection: unread rows
+ * and further result sets (CALL), as closing it would. The statement stays
+ * prepared. May suspend. Returns false when the connection was lost on the
+ * way. */
+static bool pdo_mysql_stmt_read_off_results(pdo_mysql_stmt *S)
+{
+	mysql_stmt_free_result(S->stmt);
+
+	/* The flag is the connection's: pending sets may belong to a statement
+	 * executed later, which still reads them. */
+	while (pdo_mysql_stmt_owns_results(S) && mysql_more_results(S->H->server)) {
+		/* A lost connection keeps reporting more results. */
+		if (mysql_stmt_next_result(S->stmt) != 0) {
+			break;
+		}
+
+		mysql_stmt_free_result(S->stmt);
+	}
+
+	/* Any other failure is legitimate: another statement may still be
+	 * reading on this connection. */
+	return !pdo_mysql_conn_lost(S->H, mysql_stmt_errno(S->stmt));
+}
+
 static int pdo_mysql_stmt_dtor(pdo_stmt_t *stmt) /* {{{ */
 {
 	pdo_mysql_stmt *S = (pdo_mysql_stmt*)stmt->driver_data;
@@ -98,17 +159,27 @@ static int pdo_mysql_stmt_dtor(pdo_stmt_t *stmt) /* {{{ */
 		if (S->from_cache && S->query && S->H && S->H->stmt_cache != NULL
 			&& php_pdo_stmt_valid_db_obj_handle(stmt))
 		{
-			pdo_pool_stmt_cache_entry_t *evicted = NULL;
-			pdo_pool_stmt_cache_entry_t *entry = pdo_pool_stmt_cache_insert(
-				S->H->stmt_cache, S->query, &evicted);
-			if (UNEXPECTED(evicted != NULL)) {
-				/* close the LRU stmt being kicked out */
-				pdo_pool_stmt_cache_entry_free(evicted);
-			}
-			if (EXPECTED(entry != NULL)) {
-				entry->driver_data = S->stmt;
-				entry->driver_data_dtor = pdo_mysql_cached_stmt_close;
-				stashed = true;
+			/* A cached statement must not leave its result on the connection:
+			 * the slot returns to the pool busy and every later query fails
+			 * with 2014. */
+			if (!pdo_mysql_stmt_read_off_results(S)) {
+				/* The slot, not the template: only the slot's flag is read. */
+				if (stmt->pooled_conn != NULL) {
+					stmt->pooled_conn->conn_broken = true;
+				}
+			} else {
+				pdo_pool_stmt_cache_entry_t *evicted = NULL;
+				pdo_pool_stmt_cache_entry_t *entry = pdo_pool_stmt_cache_insert(
+					S->H->stmt_cache, S->query, &evicted);
+				if (UNEXPECTED(evicted != NULL)) {
+					/* close the LRU stmt being kicked out */
+					pdo_pool_stmt_cache_entry_free(evicted);
+				}
+				if (EXPECTED(entry != NULL)) {
+					entry->driver_data = S->stmt;
+					entry->driver_data_dtor = pdo_mysql_cached_stmt_close;
+					stashed = true;
+				}
 			}
 		}
 		if (!stashed) {
@@ -120,6 +191,9 @@ static int pdo_mysql_stmt_dtor(pdo_stmt_t *stmt) /* {{{ */
 		zend_string_release(S->query);
 		S->query = NULL;
 	}
+
+	/* H is freed with the PDO object, which can go first (a cycle at shutdown). */
+	const bool owns_results = php_pdo_stmt_valid_db_obj_handle(stmt) && pdo_mysql_stmt_owns_results(S);
 
 #ifndef PDO_USE_MYSQLND
 	if (S->params) {
@@ -133,7 +207,8 @@ static int pdo_mysql_stmt_dtor(pdo_stmt_t *stmt) /* {{{ */
 	}
 #endif
 
-	if (!S->done && php_pdo_stmt_valid_db_obj_handle(stmt)) {
+	/* The pending sets may be a later statement's, which still reads them. */
+	if (!S->done && owns_results) {
 		while (mysql_more_results(S->H->server)) {
 			MYSQL_RES *res;
 			if (mysql_next_result(S->H->server) != 0) {
@@ -144,6 +219,11 @@ static int pdo_mysql_stmt_dtor(pdo_stmt_t *stmt) /* {{{ */
 			if (res) {
 				mysql_free_result(res);
 			}
+		}
+
+		/* On the slot, not the template: only the slot's flag is read. */
+		if (stmt->pooled_conn != NULL && pdo_mysql_conn_lost(S->H, 0)) {
+			stmt->pooled_conn->conn_broken = true;
 		}
 	}
 
@@ -320,6 +400,8 @@ static int pdo_mysql_stmt_execute_prepared_libmysql(pdo_stmt_t *stmt) /* {{{ */
 		PDO_DBG_RETURN(0);
 	}
 
+	pdo_mysql_stmt_take_results(S);
+
 	PDO_DBG_RETURN(pdo_mysql_stmt_after_execute_prepared(stmt));
 }
 /* }}} */
@@ -342,6 +424,8 @@ static int pdo_mysql_stmt_execute_prepared_mysqlnd(pdo_stmt_t *stmt) /* {{{ */
 		}
 		PDO_DBG_RETURN(0);
 	}
+
+	pdo_mysql_stmt_take_results(S);
 
 	PDO_DBG_RETURN(pdo_mysql_stmt_after_execute_prepared(stmt));
 }
@@ -377,6 +461,8 @@ static int pdo_mysql_stmt_execute(pdo_stmt_t *stmt) /* {{{ */
 		PDO_DBG_RETURN(0);
 	}
 
+	pdo_mysql_stmt_take_results(S);
+
 	PDO_DBG_RETURN(pdo_mysql_fill_stmt_from_result(stmt));
 }
 /* }}} */
@@ -390,6 +476,13 @@ static int pdo_mysql_stmt_next_rowset(pdo_stmt_t *stmt) /* {{{ */
 
 	/* ensure that we free any previous unfetched results */
 	pdo_mysql_free_result(S);
+
+	/* The connection's pending sets may be another statement's: reading one
+	 * here would take it from its owner. */
+	if (!pdo_mysql_stmt_owns_results(S)) {
+		S->done = 1;
+		PDO_DBG_RETURN(0);
+	}
 
 	if (S->stmt) {
 		mysql_stmt_free_result(S->stmt);

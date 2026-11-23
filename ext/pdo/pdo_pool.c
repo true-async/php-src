@@ -787,6 +787,12 @@ PDO_API pdo_pool_stmt_cache_entry_t *pdo_pool_stmt_cache_insert(
 		return NULL;
 	}
 
+	/* Two live statements of one SQL both come back here; the first one in
+	 * stays, the caller closes the second. */
+	if (zend_hash_exists(&cache->entries, nsql)) {
+		return NULL;
+	}
+
 	if (UNEXPECTED(zend_hash_num_elements(&cache->entries) >= cache->capacity)) {
 		/* Evict LRU = first inserted (head of insertion order). */
 		Bucket *b = NULL;
@@ -800,7 +806,7 @@ PDO_API pdo_pool_stmt_cache_entry_t *pdo_pool_stmt_cache_insert(
 		}
 		if (b != NULL) {
 			pdo_pool_stmt_cache_entry_t *evicted = Z_PTR(b->val);
-			zend_hash_del(&cache->entries, evicted->nsql);
+			zend_hash_del_bucket(&cache->entries, b);
 			*evicted_out = evicted;
 		}
 	}
