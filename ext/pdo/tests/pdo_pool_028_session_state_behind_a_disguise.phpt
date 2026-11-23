@@ -33,6 +33,9 @@ $forms = [
     'versioned mysql'   => "/*!40101 SET SESSION sql_mode='ANSI_QUOTES' */",
     'versioned mariadb' => "/*M!100000 SET SESSION sql_mode='ANSI_QUOTES' */",
     'second statement'  => "DO 1; SET SESSION sql_mode='ANSI_QUOTES'",
+    // DDL is skipped by the lock scan, not by the statement split.
+    'after DROP'        => "DROP TABLE IF EXISTS pdo_pool_028_none; SET SESSION sql_mode='ANSI_QUOTES'",
+    'after CREATE'      => "CREATE TABLE IF NOT EXISTS pdo_pool_028_t (a INT); SET SESSION sql_mode='ANSI_QUOTES'",
 ];
 
 foreach ($forms as $label => $sql) {
@@ -66,6 +69,7 @@ await(spawn(function () use ($pdo) {
 }));
 
 $pdo->exec("DROP PROCEDURE pdo_pool_028_proc");
+$pdo->exec("DROP TABLE IF EXISTS pdo_pool_028_t");
 
 echo "Done\n";
 ?>
@@ -77,5 +81,7 @@ hash comment       clean
 versioned mysql    clean
 versioned mariadb  clean
 second statement   clean
+after DROP         clean
+after CREATE       clean
 lock via CALL      clean
 Done
