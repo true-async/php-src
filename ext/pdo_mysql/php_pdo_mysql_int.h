@@ -121,6 +121,12 @@ typedef struct {
 	pdo_pool_stmt_cache_t *stmt_cache;
 	/* DSN schema: the reset drops it and mysqlnd stores it nowhere. */
 	char *pool_dbname;
+	/* Execution number of the statement that owns any result sets still
+	 * pending on the connection; 0 after exec(). A number, not a pointer:
+	 * a freed statement's address can be reused by the next one. */
+	uint64_t results_owner;
+	/* Last execution number handed out on this connection. */
+	uint64_t executions;
 } pdo_mysql_db_handle;
 
 typedef struct {
@@ -159,6 +165,9 @@ typedef struct {
 	/* Canonical SQL (post pdo_parse_params), used as the cache key. NULL when
 	 * the cache path is not engaged. */
 	zend_string				*query;
+	/* This statement's last successful execution on H, see
+	 * pdo_mysql_db_handle.results_owner; 0 before the first. */
+	uint64_t				execution;
 } pdo_mysql_stmt;
 
 extern const pdo_driver_t pdo_mysql_driver;
