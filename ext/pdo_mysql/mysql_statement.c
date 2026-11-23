@@ -172,7 +172,8 @@ static int pdo_mysql_stmt_dtor(pdo_stmt_t *stmt) /* {{{ */
 	}
 
 	/* H is freed with the PDO object, which can go first (a cycle at shutdown). */
-	if (php_pdo_stmt_valid_db_obj_handle(stmt) && S->H->results_owner == S) {
+	const bool owns_results = php_pdo_stmt_valid_db_obj_handle(stmt) && S->H->results_owner == S;
+	if (owns_results) {
 		S->H->results_owner = NULL;
 	}
 
@@ -188,7 +189,8 @@ static int pdo_mysql_stmt_dtor(pdo_stmt_t *stmt) /* {{{ */
 	}
 #endif
 
-	if (!S->done && php_pdo_stmt_valid_db_obj_handle(stmt)) {
+	/* The pending sets may be a later statement's, which still reads them. */
+	if (!S->done && owns_results) {
 		while (mysql_more_results(S->H->server)) {
 			MYSQL_RES *res;
 			if (mysql_next_result(S->H->server) != 0) {
@@ -413,8 +415,8 @@ static int pdo_mysql_stmt_execute(pdo_stmt_t *stmt) /* {{{ */
 	/* ensure that we free any previous unfetched results */
 	pdo_mysql_free_result(S);
 	S->done = 0;
-	H->results_owner = S;
 
+	int ret;
 	if (S->stmt) {
 		uint32_t num_bound_params =
 			stmt->bound_params ? zend_hash_num_elements(stmt->bound_params) : 0;
@@ -425,15 +427,21 @@ static int pdo_mysql_stmt_execute(pdo_stmt_t *stmt) /* {{{ */
 			PDO_DBG_RETURN(0);
 		}
 
-		PDO_DBG_RETURN(pdo_mysql_stmt_execute_prepared(stmt));
-	}
-
-	if (mysql_real_query(H->server, ZSTR_VAL(stmt->active_query_string), ZSTR_LEN(stmt->active_query_string)) != 0) {
+		ret = pdo_mysql_stmt_execute_prepared(stmt);
+	} else if (mysql_real_query(H->server, ZSTR_VAL(stmt->active_query_string),
+			ZSTR_LEN(stmt->active_query_string)) != 0) {
 		pdo_mysql_error_stmt(stmt);
 		PDO_DBG_RETURN(0);
+	} else {
+		ret = pdo_mysql_fill_stmt_from_result(stmt);
 	}
 
-	PDO_DBG_RETURN(pdo_mysql_fill_stmt_from_result(stmt));
+	/* A refused command (2014) leaves the pending sets to their statement. */
+	if (ret) {
+		H->results_owner = S;
+	}
+
+	PDO_DBG_RETURN(ret);
 }
 /* }}} */
 

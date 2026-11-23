@@ -455,12 +455,13 @@ static zend_long mysql_handle_doer(pdo_dbh_t *dbh, const zend_string *sql)
 	const bool pooled = dbh->pool != NULL;
 	const bool was_in_txn = pooled && pdo_mysql_in_transaction(dbh);
 
-	H->results_owner = NULL;
-
 	if (mysql_real_query(H->server, ZSTR_VAL(sql), ZSTR_LEN(sql))) {
 		pdo_mysql_error(dbh);
 		PDO_DBG_RETURN(-1);
 	} else {
+		/* Only a query that ran replaced the pending sets; a refused one (2014)
+		 * leaves them to their statement. */
+		H->results_owner = NULL;
 		my_ulonglong c = mysql_affected_rows(H->server);
 		if (c == (my_ulonglong) -1) {
 			pdo_mysql_error(dbh);

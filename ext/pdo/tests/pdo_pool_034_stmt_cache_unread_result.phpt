@@ -140,20 +140,50 @@ foreach ([false => "unbuffered", true => "buffered"] as $buffered => $label) {
 }
 
 foreach ([false => "unbuffered", true => "buffered"] as $buffered => $label) {
-    echo "-- cached while another statement's CALL still has result sets, $label\n";
-    $pdo = pool($buffered);
-    echo await(spawn(fn () => attempt(function () use ($pdo) {
-        $done = $pdo->prepare("SELECT 42");
-        $done->execute();
-        $done->fetchAll();
-        $done->closeCursor();
+    foreach ([false => "read to the end", true => "cursor closed"] as $close => $how) {
+        echo "-- cached while another statement's CALL still has result sets, $label, $how\n";
+        $pdo = pool($buffered);
+        echo await(spawn(fn () => attempt(function () use ($pdo, $close) {
+            $done = $pdo->prepare("SELECT 42");
+            $done->execute();
+            $done->fetchAll();
+            if ($close) {
+                $done->closeCursor();
+            }
+            $call = $pdo->prepare("CALL pdo_pool_034_proc()");
+            $call->execute();
+            $first = implode(",", $call->fetchAll(PDO::FETCH_COLUMN));
+            unset($done); // must not read off the CALL's sets
+            $more = $call->nextRowset();
+            $second = $more ? implode(",", $call->fetchAll(PDO::FETCH_COLUMN)) : "";
+            return "sets $first | $second, nextRowset " . var_export($more, true);
+        }))), "\n";
+    }
+}
+
+// A refused command produced nothing: the CALL's rows and sets stay its own.
+$refusers = [
+    "execute" => function (PDO $pdo, PDOStatement $other) { $other->execute(); },
+    "exec" => function (PDO $pdo, PDOStatement $other) { $pdo->exec("DO 1"); },
+];
+foreach ($refusers as $label => $refuse) {
+    echo "-- $label refused while a CALL is mid-read\n";
+    $pdo = pool();
+    echo await(spawn(fn () => attempt(function () use ($pdo, $refuse) {
+        $other = $pdo->prepare("SELECT 42");
+        $other->execute();
+        $other->fetchAll();
         $call = $pdo->prepare("CALL pdo_pool_034_proc()");
         $call->execute();
-        $first = implode(",", $call->fetchAll(PDO::FETCH_COLUMN));
-        unset($done); // must not read off the CALL's sets
-        $more = $call->nextRowset();
-        $second = $more ? implode(",", $call->fetchAll(PDO::FETCH_COLUMN)) : "";
-        return "sets $first | $second, nextRowset " . var_export($more, true);
+        $call->fetch();
+        try {
+            $refuse($pdo, $other);
+            $refused = "not refused";
+        } catch (PDOException $e) {
+            $refused = "refused " . $e->errorInfo[1];
+        }
+        unset($call);
+        return "$refused, next query " . $pdo->query("SELECT 7")->fetchAll(PDO::FETCH_COLUMN)[0];
     }))), "\n";
 }
 
@@ -177,8 +207,16 @@ same connection, rows 1,2,3, new prepares 0
 sets 1,2,3 | second, new prepares 0, next query 7
 -- CALL, buffered, first result set partly read
 sets 1,2,3 | second, new prepares 0, next query 7
--- cached while another statement's CALL still has result sets, unbuffered
+-- cached while another statement's CALL still has result sets, unbuffered, read to the end
 sets 1,2,3 | second, nextRowset true
--- cached while another statement's CALL still has result sets, buffered
+-- cached while another statement's CALL still has result sets, unbuffered, cursor closed
 sets 1,2,3 | second, nextRowset true
+-- cached while another statement's CALL still has result sets, buffered, read to the end
+sets 1,2,3 | second, nextRowset true
+-- cached while another statement's CALL still has result sets, buffered, cursor closed
+sets 1,2,3 | second, nextRowset true
+-- execute refused while a CALL is mid-read
+refused 2014, next query 7
+-- exec refused while a CALL is mid-read
+refused 2014, next query 7
 Done
