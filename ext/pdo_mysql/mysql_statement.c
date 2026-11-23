@@ -87,7 +87,9 @@ static bool pdo_mysql_stmt_read_off_results(pdo_mysql_stmt *S)
 {
 	mysql_stmt_free_result(S->stmt);
 
-	while (mysql_more_results(S->H->server)) {
+	/* The flag is the connection's: pending sets may belong to a statement
+	 * executed later, which still reads them. */
+	while (S->H->results_owner == S && mysql_more_results(S->H->server)) {
 		/* A lost connection keeps reporting more results. */
 		if (mysql_stmt_next_result(S->stmt) != 0) {
 			break;
@@ -167,6 +169,10 @@ static int pdo_mysql_stmt_dtor(pdo_stmt_t *stmt) /* {{{ */
 	if (S->query) {
 		zend_string_release(S->query);
 		S->query = NULL;
+	}
+
+	if (S->H != NULL && S->H->results_owner == S) {
+		S->H->results_owner = NULL;
 	}
 
 #ifndef PDO_USE_MYSQLND
@@ -406,6 +412,7 @@ static int pdo_mysql_stmt_execute(pdo_stmt_t *stmt) /* {{{ */
 	/* ensure that we free any previous unfetched results */
 	pdo_mysql_free_result(S);
 	S->done = 0;
+	H->results_owner = S;
 
 	if (S->stmt) {
 		uint32_t num_bound_params =

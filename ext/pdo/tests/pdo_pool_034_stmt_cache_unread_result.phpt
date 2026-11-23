@@ -139,6 +139,24 @@ foreach ([false => "unbuffered", true => "buffered"] as $buffered => $label) {
     }))), "\n";
 }
 
+foreach ([false => "unbuffered", true => "buffered"] as $buffered => $label) {
+    echo "-- cached while another statement's CALL still has result sets, $label\n";
+    $pdo = pool($buffered);
+    echo await(spawn(fn () => attempt(function () use ($pdo) {
+        $done = $pdo->prepare("SELECT 42");
+        $done->execute();
+        $done->fetchAll();
+        $done->closeCursor();
+        $call = $pdo->prepare("CALL pdo_pool_034_proc()");
+        $call->execute();
+        $first = implode(",", $call->fetchAll(PDO::FETCH_COLUMN));
+        unset($done); // must not read off the CALL's sets
+        $more = $call->nextRowset();
+        $second = $more ? implode(",", $call->fetchAll(PDO::FETCH_COLUMN)) : "";
+        return "sets $first | $second, nextRowset " . var_export($more, true);
+    }))), "\n";
+}
+
 unset($pdo);
 $admin->exec("DROP PROCEDURE pdo_pool_034_proc");
 $admin->exec("DROP TABLE pdo_pool_034");
@@ -159,4 +177,8 @@ same connection, rows 1,2,3, new prepares 0
 sets 1,2,3 | second, new prepares 0, next query 7
 -- CALL, buffered, first result set partly read
 sets 1,2,3 | second, new prepares 0, next query 7
+-- cached while another statement's CALL still has result sets, unbuffered
+sets 1,2,3 | second, nextRowset true
+-- cached while another statement's CALL still has result sets, buffered
+sets 1,2,3 | second, nextRowset true
 Done

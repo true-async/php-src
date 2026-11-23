@@ -121,6 +121,10 @@ typedef struct {
 	pdo_pool_stmt_cache_t *stmt_cache;
 	/* DSN schema: the reset drops it and mysqlnd stores it nowhere. */
 	char *pool_dbname;
+	/* The pdo_mysql_stmt executed last, which owns any result sets still
+	 * pending on the connection; NULL after exec(). Compared, never
+	 * dereferenced. */
+	const void *results_owner;
 } pdo_mysql_db_handle;
 
 typedef struct {

@@ -455,6 +455,8 @@ static zend_long mysql_handle_doer(pdo_dbh_t *dbh, const zend_string *sql)
 	const bool pooled = dbh->pool != NULL;
 	const bool was_in_txn = pooled && pdo_mysql_in_transaction(dbh);
 
+	H->results_owner = NULL;
+
 	if (mysql_real_query(H->server, ZSTR_VAL(sql), ZSTR_LEN(sql))) {
 		pdo_mysql_error(dbh);
 		PDO_DBG_RETURN(-1);
