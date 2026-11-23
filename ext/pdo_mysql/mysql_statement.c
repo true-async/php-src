@@ -84,6 +84,14 @@ static bool pdo_mysql_stmt_owns_results(const pdo_mysql_stmt *S)
 	return S->execution != 0 && S->H->results_owner == S->execution;
 }
 
+/* Called once the server ran the statement: whatever it left on the
+ * connection is this statement's, even if reading the response fails. */
+static void pdo_mysql_stmt_take_results(pdo_mysql_stmt *S)
+{
+	S->execution = ++S->H->executions;
+	S->H->results_owner = S->execution;
+}
+
 /* Whether the connection is gone: mysqlnd closes it on any failed read, and
  * libmysqlclient reports 2006 or 2013. stmt_errno is the statement's error,
  * 0 for none. */
@@ -392,6 +400,8 @@ static int pdo_mysql_stmt_execute_prepared_libmysql(pdo_stmt_t *stmt) /* {{{ */
 		PDO_DBG_RETURN(0);
 	}
 
+	pdo_mysql_stmt_take_results(S);
+
 	PDO_DBG_RETURN(pdo_mysql_stmt_after_execute_prepared(stmt));
 }
 /* }}} */
@@ -415,6 +425,8 @@ static int pdo_mysql_stmt_execute_prepared_mysqlnd(pdo_stmt_t *stmt) /* {{{ */
 		PDO_DBG_RETURN(0);
 	}
 
+	pdo_mysql_stmt_take_results(S);
+
 	PDO_DBG_RETURN(pdo_mysql_stmt_after_execute_prepared(stmt));
 }
 /* }}} */
@@ -431,7 +443,6 @@ static int pdo_mysql_stmt_execute(pdo_stmt_t *stmt) /* {{{ */
 	pdo_mysql_free_result(S);
 	S->done = 0;
 
-	int ret;
 	if (S->stmt) {
 		uint32_t num_bound_params =
 			stmt->bound_params ? zend_hash_num_elements(stmt->bound_params) : 0;
@@ -442,22 +453,17 @@ static int pdo_mysql_stmt_execute(pdo_stmt_t *stmt) /* {{{ */
 			PDO_DBG_RETURN(0);
 		}
 
-		ret = pdo_mysql_stmt_execute_prepared(stmt);
-	} else if (mysql_real_query(H->server, ZSTR_VAL(stmt->active_query_string),
-			ZSTR_LEN(stmt->active_query_string)) != 0) {
+		PDO_DBG_RETURN(pdo_mysql_stmt_execute_prepared(stmt));
+	}
+
+	if (mysql_real_query(H->server, ZSTR_VAL(stmt->active_query_string), ZSTR_LEN(stmt->active_query_string)) != 0) {
 		pdo_mysql_error_stmt(stmt);
 		PDO_DBG_RETURN(0);
-	} else {
-		ret = pdo_mysql_fill_stmt_from_result(stmt);
 	}
 
-	/* A refused command (2014) leaves the pending sets to their statement. */
-	if (ret) {
-		S->execution = ++H->executions;
-		H->results_owner = S->execution;
-	}
+	pdo_mysql_stmt_take_results(S);
 
-	PDO_DBG_RETURN(ret);
+	PDO_DBG_RETURN(pdo_mysql_fill_stmt_from_result(stmt));
 }
 /* }}} */
 
@@ -470,6 +476,13 @@ static int pdo_mysql_stmt_next_rowset(pdo_stmt_t *stmt) /* {{{ */
 
 	/* ensure that we free any previous unfetched results */
 	pdo_mysql_free_result(S);
+
+	/* The connection's pending sets may be another statement's: reading one
+	 * here would take it from its owner. */
+	if (!pdo_mysql_stmt_owns_results(S)) {
+		S->done = 1;
+		PDO_DBG_RETURN(0);
+	}
 
 	if (S->stmt) {
 		mysql_stmt_free_result(S->stmt);
