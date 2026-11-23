@@ -76,9 +76,9 @@ $i = 1;
 print("Handle 4:\n");
 do {
     print('Rowset ' . $i++ . "\n");
-    if ($handle1->columnCount() > 0)
+    if ($handle4->columnCount() > 0)
         print("Results detected\n");
-} while($handle1->nextRowset());
+} while($handle4->nextRowset());
 ?>
 --CLEAN--
 <?php
