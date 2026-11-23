@@ -313,7 +313,7 @@ static bool mysql_handle_preparer(pdo_dbh_t *dbh, zend_string *sql, pdo_stmt_t *
 	 * Checkout model: on hit we take the MYSQL_STMT* out of the cache, on dtor we
 	 * insert it back (or close on eviction). Two concurrent stmts on the same SQL
 	 * cannot share a single MYSQL_STMT* (client-side state), so the second is a
-	 * miss and prepares fresh; on its dtor it replaces the cached entry. */
+	 * miss and prepares fresh; on its dtor it is closed if the first is cached. */
 	if (H->stmt_cache != NULL) {
 		zend_string *const key = nsql ? nsql : sql;
 		pdo_pool_stmt_cache_entry_t *const entry = pdo_pool_stmt_cache_take(H->stmt_cache, key);

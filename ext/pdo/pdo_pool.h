@@ -126,6 +126,8 @@ PDO_API pdo_pool_stmt_cache_entry_t *pdo_pool_stmt_cache_lookup(pdo_pool_stmt_ca
  * entry from the table and writes its pointer into *evicted_out — caller
  * is responsible for calling pdo_pool_stmt_cache_entry_free on it (after
  * any driver-side teardown). On no eviction *evicted_out is set to NULL.
+ * Returns NULL, evicting nothing, when nsql is already cached: the caller
+ * keeps and releases its own statement.
  *
  * The caller fills server_stmt_name / driver_data on the returned entry
  * after insert.
